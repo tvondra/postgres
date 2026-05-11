@@ -233,7 +233,7 @@ static QueueEntry *priorityqueues_pop(pairingheap *heap);
 static QueueEntry *priorityqueues_peek(pairingheap *heap);
 
 /*
- * Phased of the gjoin state machine.
+ * Phases of the gjoin state machine.
  *
  * XXX We should follow the logic that (R < S), and R = inner, S = outer.
  */
@@ -247,15 +247,15 @@ typedef enum GJoinPhase {
 	GJOIN_LOAD_OUTER,	/* load a buffer of tuples for S */
 	GJOIN_NEXT_OUTER,	/* advance to the next outer tuple */
 	GJOIN_NEXT_INNER,	/* advance to the next inner tuple */
-	GJOIN_EVICT_INNER
+	GJOIN_EVICT_INNER	/* evict buffer from the inner side */
 } GJoinPhase;
 
 /* ----------------
- *	 GJoinJoinState information
+ *	 GJoinState information
  *
  * ----------------
  */
-typedef struct GJoinJoinState
+typedef struct GJoinState
 {
 	CustomJoinState	cstate;
 
@@ -349,7 +349,7 @@ typedef struct GJoinJoinState
 	GJoinPosition	pos_inner;
 	GJoinPosition	pos_outer;
 
-} GJoinJoinState;
+} GJoinState;
 
 
 void
@@ -846,14 +846,14 @@ gjoin_PositionIsInvalid(GJoinPosition *pos)
 static Node *
 gjoin_create_plan_state(CustomJoin *cjoin)
 {
-	GJoinJoinState *state;
+	GJoinState *state;
 	List		   *join_clauses = NIL;
 	ListCell	   *lc;
 	int				idx;
 
 	/* makeNode to set tag etc, repalloc to get the right size */
-	state = (GJoinJoinState *) makeNode(CustomJoinState);
-	state = repalloc(state, sizeof(GJoinJoinState));
+	state = (GJoinState *) makeNode(CustomJoinState);
+	state = repalloc(state, sizeof(GJoinState));
 
 	state->cstate.methods = &gjoin_exec_methods;
 
@@ -958,7 +958,7 @@ gjoin_BeginCustomJoin(CustomJoinState *node,
 					  EState *estate,
 					  int eflags)
 {
-	GJoinJoinState *state = (GJoinJoinState *) node;
+	GJoinState *state = (GJoinState *) node;
 	CustomJoin *cjoin = (CustomJoin *) node->js.ps.plan;
 	Plan *outerplan,
 		 *innerplan;
@@ -1012,7 +1012,7 @@ gjoin_BeginCustomJoin(CustomJoinState *node,
 }
 
 static void
-gjoin_BuildRunsForRelation(GJoinJoinState *node, PlanState *state,
+gjoin_BuildRunsForRelation(GJoinState *node, PlanState *state,
 						   GJoinBuffer *buffer, GJoinRuns *runs,
 						   GJoinClauseInfo *clauses, bool inner)
 {
@@ -1261,7 +1261,7 @@ tuple_buffer_init(TupleDesc tdesc, int nattnums)
  * Loads one batch (~8KB) of tuples for each run generated for the relation.
  */
 static dlist_head *
-gjoin_InitRunsInner(GJoinJoinState *state, TupleDesc tdesc)
+gjoin_InitRunsInner(GJoinState *state, TupleDesc tdesc)
 {
 	GJoinRuns *runs = &state->runs.inner;
 
@@ -1338,7 +1338,7 @@ gjoin_InitRunsInner(GJoinJoinState *state, TupleDesc tdesc)
  * slots in the batch.
  */
 static dlist_head *
-gjoin_InitRunsOuter(GJoinJoinState *state, TupleDesc tdesc)
+gjoin_InitRunsOuter(GJoinState *state, TupleDesc tdesc)
 {
 	GJoinRuns *runs = &state->runs.outer;
 
@@ -1409,7 +1409,7 @@ gjoin_InitRunsOuter(GJoinJoinState *state, TupleDesc tdesc)
 
 /* S */
 static bool
-gjoin_load_outer_buffer(GJoinJoinState *state, int run, TupleBuffer *buffer)
+gjoin_load_outer_buffer(GJoinState *state, int run, TupleBuffer *buffer)
 {
 	/* reset, the buffer might be reused */
 	buffer->nslots = 0;
@@ -1456,7 +1456,7 @@ gjoin_load_outer_buffer(GJoinJoinState *state, int run, TupleBuffer *buffer)
 
 /* R */
 static bool
-gjoin_load_inner_buffer(GJoinJoinState *state, int run, TupleBuffer *buffer)
+gjoin_load_inner_buffer(GJoinState *state, int run, TupleBuffer *buffer)
 {
 	/* reset, the buffer might be reused */
 	buffer->nslots = 0;
@@ -1508,7 +1508,7 @@ gjoin_load_inner_buffer(GJoinJoinState *state, int run, TupleBuffer *buffer)
  * a list of tuple buffers).
  */
 static void
-gjoin_run_join_range(GJoinJoinState *state, dlist_head *run,
+gjoin_run_join_range(GJoinState *state, dlist_head *run,
 					 Datum **minvalues, Datum **maxvalues)
 {
 	TupleBuffer *buffer;
@@ -1538,7 +1538,7 @@ gjoin_run_join_range(GJoinJoinState *state, dlist_head *run,
  * comparing the Datum values, it's bogus.
  */
 static int
-compare_values(GJoinJoinState *state, Datum *a, Datum *b)
+compare_values(GJoinState *state, Datum *a, Datum *b)
 {
 	//elog(WARNING, "state->clauses.nattnums = %d", state->clauses.nattnums);
 	for (int i = 0; i < state->clauses.nattnums; i++)
@@ -1556,7 +1556,7 @@ compare_values(GJoinJoinState *state, Datum *a, Datum *b)
 
 /* Calculate the join range for all runs. */
 static void
-gjoin_CalculateJoinRange(GJoinJoinState *state)
+gjoin_CalculateJoinRange(GJoinState *state)
 {
 	Datum  *min_values,
 		   *max_values,
@@ -1617,7 +1617,7 @@ gjoin_CalculateJoinRange(GJoinJoinState *state)
 }
 
 static bool
-check_join_clause(GJoinJoinState *state,
+check_join_clause(GJoinState *state,
 				 TupleTableSlot *outer, TupleTableSlot *inner)
 {
 	for (int i = 0; i < state->clauses.nattnums; i++)
@@ -1639,7 +1639,7 @@ check_join_clause(GJoinJoinState *state,
 static TupleTableSlot *
 gjoin_ExecCustomJoin(CustomJoinState *node)
 {
-	GJoinJoinState *state = (GJoinJoinState *) node;
+	GJoinState *state = (GJoinState *) node;
 	ExprContext *econtext;
 	TupleTableSlot *slot;
 
@@ -2186,7 +2186,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 static void
 gjoin_EndCustomJoin(CustomJoinState *node)
 {
-	GJoinJoinState *state = (GJoinJoinState *) node;
+	GJoinState *state = (GJoinState *) node;
 
 	/* FIXME cleanup */
 	gjoin_runs_close(&state->runs.inner);
@@ -2202,7 +2202,7 @@ gjoin_EndCustomJoin(CustomJoinState *node)
 static void
 gjoin_ReScanCustomJoin(CustomJoinState *node)
 {
-	// GJoinJoinState *state = (GJoinJoinState *) node;
+	// GJoinState *state = (GJoinState *) node;
 
 	/* FIXME rescan */
 	elog(ERROR, "gjoin_ReScanCustomScan not implemented");
@@ -2240,7 +2240,7 @@ gjoin_ExplainCustomJoin(CustomJoinState *node,
 						List *ancestors,
 						ExplainState *es)
 {
-	GJoinJoinState *state = (GJoinJoinState *) node;
+	GJoinState *state = (GJoinState *) node;
 	CustomJoin *cjoin = (CustomJoin *) node->js.ps.plan;
 	List *join_clauses = list_nth(cjoin->custom_exprs, 0);
 
@@ -2264,7 +2264,7 @@ priorityqueues_min_cmp(const pairingheap_node *a, const pairingheap_node *b,
 {
 	QueueEntry *qea = (QueueEntry *) a;
 	QueueEntry *qeb = (QueueEntry *) b;
-	GJoinJoinState *state = (GJoinJoinState *) arg;
+	GJoinState *state = (GJoinState *) arg;
 
 	int r = compare_values(state, qea->values, qeb->values);
 

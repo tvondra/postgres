@@ -144,13 +144,13 @@ typedef struct GJoinBuffer
  * and then shuffle everything into tuplesort), so maybe do that half-way
  * through?
  */
-typedef struct GJoinRuns
+typedef struct TupleRuns
 {
 	int					maxruns;
 	int					nruns;
 	int				   *ntuples;
 	Tuplesortstate	  **runs;
-} GJoinRuns;
+} TupleRuns;
 
 /* XXX should be based on memory usage instead */
 #define	MAX_SLOTS_PER_BUFFER 128
@@ -280,8 +280,8 @@ typedef struct GJoinState
 	 * data afterwards?
 	 */
 	struct {
-		GJoinRuns	inner;
-		GJoinRuns	outer;
+		TupleRuns	inner;
+		TupleRuns	outer;
 	} runs;
 
 	/*
@@ -764,7 +764,7 @@ gjoin_buffer_init(GJoinBuffer *buffer)
  * We only reset fields to "empty", we don't allocate any buffer yet.
  */
 static void
-gjoin_runs_init(GJoinRuns *runs)
+gjoin_runs_init(TupleRuns *runs)
 {
 	runs->maxruns = 0;
 	runs->nruns = 0;
@@ -774,7 +774,7 @@ gjoin_runs_init(GJoinRuns *runs)
 
 /* close the runs - release the tuplesorts, etc. */
 static void
-gjoin_runs_close(GJoinRuns *runs)
+gjoin_runs_close(TupleRuns *runs)
 {
 	/*
 	 * now also end the tuplesort, to prevent warnings about resources
@@ -1013,7 +1013,7 @@ gjoin_BeginCustomJoin(CustomJoinState *node,
 
 static void
 gjoin_BuildRunsForRelation(GJoinState *node, PlanState *state,
-						   GJoinBuffer *buffer, GJoinRuns *runs,
+						   GJoinBuffer *buffer, TupleRuns *runs,
 						   GJoinClauseInfo *clauses, bool inner)
 {
 	TupleTableSlot *slot;
@@ -1263,7 +1263,7 @@ tuple_buffer_init(TupleDesc tdesc, int nattnums)
 static dlist_head *
 gjoin_InitRunsInner(GJoinState *state, TupleDesc tdesc)
 {
-	GJoinRuns *runs = &state->runs.inner;
+	TupleRuns *runs = &state->runs.inner;
 
 	/* allocate the array of buffer lists (list per run) */
 	dlist_head *buffers = palloc_array(dlist_head, runs->nruns);
@@ -1340,7 +1340,7 @@ gjoin_InitRunsInner(GJoinState *state, TupleDesc tdesc)
 static dlist_head *
 gjoin_InitRunsOuter(GJoinState *state, TupleDesc tdesc)
 {
-	GJoinRuns *runs = &state->runs.outer;
+	TupleRuns *runs = &state->runs.outer;
 
 	/* allocate the array of buffer lists (list per run) */
 	dlist_head *buffers = palloc_array(dlist_head, runs->nruns);
@@ -2243,6 +2243,9 @@ gjoin_ExplainCustomJoin(CustomJoinState *node,
 	GJoinState *state = (GJoinState *) node;
 	CustomJoin *cjoin = (CustomJoin *) node->js.ps.plan;
 	List *join_clauses = list_nth(cjoin->custom_exprs, 0);
+	StringInfoData	str;
+
+	initStringInfo(&str);
 
 	/*
 	 * FIXME Show additional run-time information about the plan (number of
@@ -2250,6 +2253,14 @@ gjoin_ExplainCustomJoin(CustomJoinState *node,
 	 */
 	show_expression((Node *) join_clauses, "Join Cond",
 					(PlanState *) state, ancestors, es);
+
+	resetStringInfo(&str);
+	appendStringInfo(&str, "inner=%d outer=%d",
+					 state->runs.inner.nruns,
+					 state->runs.outer.nruns);
+	ExplainPropertyText("Runs", str.data, es);
+
+	ExplainPropertyText("Memory", str.data, es);
 }
 
 /*

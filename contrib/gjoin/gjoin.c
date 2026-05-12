@@ -177,6 +177,10 @@ typedef struct TupleBuffer
 	Datum		   *max_values;
 	bool		   *max_isnull;
 
+	/* is this the last tuple in the run */
+	bool			is_first;
+	bool			is_last;
+
 	int				maxslots;
 	int				nslots;
 	TupleTableSlot **slots;
@@ -335,8 +339,8 @@ typedef struct GJoinState
 	struct {
 		Datum  *min_values;
 		Datum  *max_values;
-		bool   *min_value_set;
-		bool   *max_value_set;
+		bool	min_unbounded;
+		bool	max_unbounded;
 	} join_range;
 
 	/*
@@ -1284,6 +1288,15 @@ init_inner_runs(GJoinState *state, TupleDesc tdesc)
 		/* FIXME handle the case with nslots == 0, which can happen */
 		Assert(buffer->nslots > 0);
 
+		Assert(runs->ntuples[i] >= buffer->nslots);
+		runs->ntuples[i] -= buffer->nslots;
+
+		buffer->is_first = true;
+		buffer->is_last = (runs->ntuples[i] == 0);
+
+		elog(DEBUG1, "run %d tuples %d buffer->is_last = %d",
+			 i, runs->ntuples[i], buffer->is_last);
+
 		/* get the min/max values for the loaded chunks */
 		if (buffer->nslots > 0)
 		{
@@ -1470,10 +1483,20 @@ load_inner_buffer(GJoinState *state, int run, TupleBuffer *buffer)
 
 	/* no more tuples in this run */
 	if (buffer->nslots == 0)
+	{
+		Assert(state->runs.inner.ntuples[run] == 0);
 		return false;
+	}
+
+	Assert(state->runs.inner.ntuples[run] >= buffer->nslots);
+	state->runs.inner.ntuples[run] -= buffer->nslots;
 
 	/* the minimum values are no longer empty */
 	buffer->min_empty = false;
+	buffer->is_first = false;
+	buffer->is_last = (state->runs.inner.ntuples[run] == 0);
+
+	elog(DEBUG1, "run %d tuples %d buffer->is_last = %d", run, state->runs.inner.ntuples[run], buffer->is_last);
 
 	/* calculate the buffer range (we know it's sorted) */
 	for (int i = 0; i < state->clauses.nattnums; i++)
@@ -1503,7 +1526,8 @@ load_inner_buffer(GJoinState *state, int run, TupleBuffer *buffer)
  */
 static void
 join_range_for_run(GJoinState *state, dlist_head *run,
-				   Datum **minvalues, Datum **maxvalues)
+				   Datum **min_values, Datum **max_values,
+				   bool *min_unbounded, bool *max_unbounded)
 {
 	TupleBuffer *buffer;
 	dlist_iter	iter;
@@ -1515,12 +1539,14 @@ join_range_for_run(GJoinState *state, dlist_head *run,
 	}
 
 	buffer = dlist_head_element(TupleBuffer, node, run);
-	*minvalues = buffer->min_values;
+	*min_values = buffer->min_values;
+	*min_unbounded = buffer->is_first;
 
 	elog(DEBUG1, "head %p", buffer);
 
 	buffer = dlist_tail_element(TupleBuffer, node, run);
-	*maxvalues = buffer->max_values;
+	*max_values = buffer->max_values;
+	*max_unbounded = buffer->is_last;
 
 	elog(DEBUG1, "tail %p", buffer);
 }
@@ -1556,6 +1582,11 @@ update_join_range(GJoinState *state)
 		   *max_values,
 		   *run_min_values,
 		   *run_max_values;
+	bool	run_min_unbounded,
+			run_max_unbounded;
+
+	bool	all_min_unbounded = true,
+			all_max_unbounded = true;
 
 	bool	set = false;
 
@@ -1572,7 +1603,11 @@ update_join_range(GJoinState *state)
 			continue;
 
 		join_range_for_run(state, &state->buffers_inner[i],
-						   &run_min_values, &run_max_values);
+						   &run_min_values, &run_max_values,
+						   &run_min_unbounded, &run_max_unbounded);
+
+		all_min_unbounded &= run_min_unbounded;
+		all_max_unbounded &= run_max_unbounded;
 
 		/*
 		 * If this is the first run with data, use the min/max values,
@@ -1605,6 +1640,9 @@ update_join_range(GJoinState *state)
 	state->join_range.min_values = min_values;
 	state->join_range.max_values = max_values;
 
+	state->join_range.min_unbounded = all_min_unbounded;
+	state->join_range.max_unbounded = all_max_unbounded;
+
 //	elog(DEBUG1, "join range = [%ld, %ld]",
 //		 state->join_range.min_value,
 //		 state->join_range.max_value);
@@ -1628,6 +1666,17 @@ check_join_clause(GJoinState *state,
 	}
 
 	return true;
+}
+
+static bool
+buffer_in_join_range(GJoinState *state, TupleBuffer *buffer)
+{
+	/* if we only have "last" buffers in each run, all buffers match */
+	if (state->join_range.max_unbounded)
+		return true;
+
+	/* otherwise compare the upper boundary (non-inclusively) */
+	return (compare_values(state, state->join_range.max_values, buffer->max_values) > 0);
 }
 
 static TupleTableSlot *
@@ -1829,7 +1878,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					 * join range. But we still can't release the inner buffers,
 					 * because the next outer buffer could need those.
 					 */
-					if (compare_values(state, state->join_range.max_values, buffer->max_values) < 0)
+					if (!buffer_in_join_range(state, buffer))
 					{
 						state->phase = GJOIN_LOAD_INNER;
 						continue;

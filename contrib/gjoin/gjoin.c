@@ -1012,9 +1012,9 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 
 				/*
 				 * Build runs for the inner relation. We assume the inner
-				 * relation (called "R" in the paper) is smaller, so we
-				 * start with it (we might try loading it into memory and
-				 * doing a hashjoin-like in-memory join).
+				 * relation (called "R" in the paper) is smaller, so we start
+				 * with it (we might try loading it into memory and doing a
+				 * hashjoin-like in-memory join).
 				 *
 				 * XXX We should stop building the runs once it hits work_mem,
 				 * try building runs on the outer relation, and then
@@ -1793,8 +1793,8 @@ position_is_invalid(JoinPosition * pos)
  * The run is selected in a round-robin manner.
  */
 static void
-buffer_flush_to_run(TupleBuffer *buffer, BatchRuns *runs, int run,
-					JoinClauses *clauses, AttrNumber *attnums,
+buffer_flush_to_run(TupleBuffer * buffer, BatchRuns * runs, int run,
+					JoinClauses * clauses, AttrNumber *attnums,
 					TupleDesc tdesc)
 {
 	Tuplesortstate *tuplesortstate;
@@ -1806,8 +1806,8 @@ buffer_flush_to_run(TupleBuffer *buffer, BatchRuns *runs, int run,
 	/* initialize the array of runs, if needed */
 	if (runs->runs == NULL)
 	{
-		runs->maxruns = 32; /* FIXME arbitrary number, needs to be set
-							 * based on work_mem */
+		runs->maxruns = 32;		/* FIXME arbitrary number, needs to be set
+								 * based on work_mem */
 		runs->runs = palloc0_array(BatchRun, runs->maxruns);
 	}
 
@@ -1867,7 +1867,7 @@ build_runs(GJoinState * node, PlanState *state,
 	HeapTuple	tuple;
 	TupleDesc	tdesc = ExecGetResultType(state);
 	int			nextrun = 0;
-	JoinClauses	*clauses = &node->clauses;
+	JoinClauses *clauses = &node->clauses;
 
 	/*
 	 * Get all tuples from the node below the Hash node and insert into the
@@ -1907,9 +1907,8 @@ build_runs(GJoinState * node, PlanState *state,
 		}
 
 		/*
-		 * Add the tuple to the 
-		 * Make sure there's space for adding a tuple to the buffer. Just
-		 * double the array size if needed, as usual.
+		 * Add the tuple to the Make sure there's space for adding a tuple to
+		 * the buffer. Just double the array size if needed, as usual.
 		 */
 		if (buffer->ntuples == buffer->maxtuples)
 		{
@@ -1928,8 +1927,8 @@ build_runs(GJoinState * node, PlanState *state,
 
 		/*
 		 * ExecFetchSlotHeapTuple may return "physical tuple", in which case
-		 * we need to copy it here, to prevent seeing garbage later (after
-		 * it gets freed for whatever reason).
+		 * we need to copy it here, to prevent seeing garbage later (after it
+		 * gets freed for whatever reason).
 		 */
 		if (!shouldFree)
 			tuple = heap_copytuple(tuple);
@@ -1947,9 +1946,9 @@ build_runs(GJoinState * node, PlanState *state,
 	 */
 	if (buffer->ntuples > 0)
 	{
-			/* flush buffer to a selected run */
-			buffer_flush_to_run(buffer, runs, nextrun,
-								clauses, attnums, tdesc);
+		/* flush buffer to a selected run */
+		buffer_flush_to_run(buffer, runs, nextrun,
+							clauses, attnums, tdesc);
 	}
 
 	/*
@@ -2028,7 +2027,7 @@ static void
 init_inner_runs(GJoinState * state)
 {
 	BatchRuns  *runs = &state->runs.inner;
-	TupleDesc tdesc = ExecGetResultType(state->innerstate);
+	TupleDesc	tdesc = ExecGetResultType(state->innerstate);
 
 	/* queues for R */
 	state->queues.inner_grow = pairingheap_allocate(priorityqueues_min_cmp, state);
@@ -2038,9 +2037,9 @@ init_inner_runs(GJoinState * state)
 	 * Initialize batches of slots for all the runs, and load tuples from the
 	 * tuplesorts into them.
 	 *
-	 * XXX We size the batches by number of slots, but it should be driven
-	 * by amount of memory used by the slots. But how do you calculate the
-	 * slot size in an efficient way?
+	 * XXX We size the batches by number of slots, but it should be driven by
+	 * amount of memory used by the slots. But how do you calculate the slot
+	 * size in an efficient way?
 	 */
 	for (int i = 0; i < runs->nruns; i++)
 	{
@@ -2120,7 +2119,7 @@ static void
 init_outer_runs(GJoinState * state)
 {
 	BatchRuns  *runs = &state->runs.outer;
-	TupleDesc tdesc = ExecGetResultType(state->outerstate);
+	TupleDesc	tdesc = ExecGetResultType(state->outerstate);
 
 	/* queue for S (for the simplified variant with a single queue) */
 	state->queues.outer = pairingheap_allocate(priorityqueues_min_cmp, state);

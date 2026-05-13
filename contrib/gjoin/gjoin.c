@@ -243,7 +243,7 @@ typedef struct Batch
 typedef struct JoinPosition
 {
 	int			run;
-	Batch	   *buffer;
+	Batch	   *batch;
 	int			slot;
 }			JoinPosition;
 
@@ -1238,8 +1238,8 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					 */
 					for (;;)
 					{
-						Batch	   *buffer_inner;
-						Batch	   *buffer_outer;
+						Batch	   *batch_inner;
+						Batch	   *batch_outer;
 
 						/* Have we ran out of runs? We're done. */
 						if (state->pos_inner.run >= state->runs.inner.nruns)
@@ -1250,10 +1250,10 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 							state->pos_inner.run = 0;
 
 						/*
-						 * If there's no buffer yet, try to get the first
+						 * If there's no batch yet, try to get the first
 						 * buffer from the selected run.
 						 */
-						if (state->pos_inner.buffer == NULL)
+						if (state->pos_inner.batch == NULL)
 						{
 							/*
 							 * skip runs with no buffers (must have been
@@ -1269,14 +1269,14 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 							 * FIXME don't look at the head only, need to walk
 							 * all the buffers
 							 */
-							buffer_inner = dlist_head_element(Batch, node,
-															  &state->runs.inner.runs[state->pos_inner.run].batches);
+							batch_inner = dlist_head_element(Batch, node,
+															 &state->runs.inner.runs[state->pos_inner.run].batches);
 
-							state->pos_inner.buffer = buffer_inner;
+							state->pos_inner.batch = batch_inner;
 						}
 
 						/* get the current inner buffer */
-						buffer_inner = state->pos_inner.buffer;
+						batch_inner = state->pos_inner.batch;
 
 						/*
 						 * OK, time to join this R buffer. Advance to the next
@@ -1288,37 +1288,37 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 						 * Have we ran out of slots? Move to the next buffer
 						 * (or run).
 						 */
-						if (state->pos_inner.slot >= buffer_inner->nslots)
+						if (state->pos_inner.slot >= batch_inner->nslots)
 						{
 							/*
 							 * if there's another buffer in this run, advance
 							 * to it
 							 */
 							if (dlist_has_next(&state->runs.inner.runs[state->pos_inner.run].batches,
-											   &buffer_inner->node))
+											   &batch_inner->node))
 							{
 								dlist_node *next_node;
 
 								next_node = dlist_next_node(&state->runs.inner.runs[state->pos_inner.run].batches,
-															&buffer_inner->node);
-								buffer_inner = dlist_container(Batch, node, next_node);
-								state->pos_inner.buffer = buffer_inner;
+															&batch_inner->node);
+								batch_inner = dlist_container(Batch, node, next_node);
+								state->pos_inner.batch = batch_inner;
 							}
 							else
 							{
 								/*
-								 * no buffer in this run, advance to the next
+								 * no batch in this run, advance to the next
 								 * run
 								 */
-								state->pos_inner.buffer = NULL;
+								state->pos_inner.batch = NULL;
 								state->pos_inner.run++;
 							}
 							state->pos_inner.slot = -1;
 							continue;
 						}
 
-						buffer_outer = dlist_head_element(Batch, node,
-														  &state->runs.outer.runs[state->pos_outer.run].batches);
+						batch_outer = dlist_head_element(Batch, node,
+														 &state->runs.outer.runs[state->pos_outer.run].batches);
 
 						/*
 						 * FIXME check that the two buffers overlap (not just
@@ -1328,8 +1328,8 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 
 						/* time to actually compare the two inner/outer tuples */
 						{
-							TupleTableSlot *outer = buffer_outer->slots[state->pos_outer.slot];
-							TupleTableSlot *inner = buffer_inner->slots[state->pos_inner.slot];
+							TupleTableSlot *outer = batch_outer->slots[state->pos_outer.slot];
+							TupleTableSlot *inner = batch_inner->slots[state->pos_inner.slot];
 
 							/* if the two tuples do not match, continue */
 							if (!check_join_clause(state, outer, inner))
@@ -1771,7 +1771,7 @@ position_reset(JoinPosition * pos)
 {
 	pos->run = -1;
 	pos->slot = -1;
-	pos->buffer = NULL;
+	pos->batch = NULL;
 }
 
 /*
@@ -1783,9 +1783,80 @@ position_is_invalid(JoinPosition * pos)
 {
 	return (pos->run == -1) &&
 		(pos->slot == -1) &&
-		(pos->buffer == NULL);
+		(pos->batch == NULL);
 }
 
+/*
+ * buffer_flush_to_run
+ *		dump tuples from a buffer into one of the runs
+ *
+ * The run is selected in a round-robin manner.
+ */
+static void
+buffer_flush_to_run(TupleBuffer *buffer, BatchRuns *runs, int run,
+					JoinClauses *clauses, AttrNumber *attnums,
+					TupleDesc tdesc)
+{
+	Tuplesortstate *tuplesortstate;
+	int			tuplesortopts = TUPLESORT_NONE;
+
+	/* XXX we should keep the slot in the node state */
+	TupleTableSlot *tmpslot;
+
+	/* initialize the array of runs, if needed */
+	if (runs->runs == NULL)
+	{
+		runs->maxruns = 32; /* FIXME arbitrary number, needs to be set
+							 * based on work_mem */
+		runs->runs = palloc0_array(BatchRun, runs->maxruns);
+	}
+
+	/* initialize the run, if needed */
+	if ((tuplesortstate = runs->runs[run].tuplesort) == NULL)
+	{
+		/* we allocate all runs in sequence during the first cycle */
+		Assert(runs->nruns == run);
+
+		tuplesortstate = tuplesort_begin_heap(tdesc,
+											  clauses->nattnums,
+											  attnums,
+											  clauses->inequality,
+											  clauses->collations,
+											  clauses->nulls_first,
+											  work_mem,
+											  NULL,
+											  tuplesortopts);
+
+		batch_run_init(&runs->runs[run], tuplesortstate);
+		runs->nruns++;
+	}
+
+	/* offload the tuples */
+	tmpslot = MakeSingleTupleTableSlot(tdesc, &TTSOpsHeapTuple);
+	for (int i = 0; i < buffer->ntuples; i++)
+	{
+		ExecClearTuple(tmpslot);
+		ExecStoreHeapTuple(buffer->tuples[i], tmpslot, true);
+		tuplesort_puttupleslot(tuplesortstate, tmpslot);
+	}
+	ExecDropSingleTupleTableSlot(tmpslot);
+
+	runs->runs[run].ntuples += buffer->ntuples;
+
+	buffer->space = 0;
+	buffer->ntuples = 0;
+}
+
+/*
+ * Build runs from a given input (inner or outer).
+ *
+ * XXX Right now this hard-codes the number of runs as 32, and always spills
+ * the buffers into the tuplesort (even if it would fit into memory).
+ *
+ * XXX We should try loading up to work_mem tuples, stop, and try loading
+ * the other relation (in case it happens to be smaller). And only if both
+ * are too large, switch to the sorted mode.
+ */
 static void
 build_runs(GJoinState * node, PlanState *state,
 		   TupleBuffer * buffer, BatchRuns * runs,
@@ -1808,7 +1879,7 @@ build_runs(GJoinState * node, PlanState *state,
 		if (TupIsNull(slot))
 			break;
 
-		/* XXX Do we need to materialize here? */
+		/* XXX Do we need to materialize the tuple here? */
 		tuple = ExecFetchSlotHeapTuple(slot, true, &shouldFree);
 
 		/*
@@ -1827,61 +1898,16 @@ build_runs(GJoinState * node, PlanState *state,
 		 */
 		if (buffer->space + tuple->t_len > work_mem * 1024L)
 		{
-			Tuplesortstate *tuplesortstate;
-			int			tuplesortopts = TUPLESORT_NONE;
-
-			/* XXX we should keep the slot in the node state */
-			TupleTableSlot *tmpslot;
-
-			/* initialize the array of runs, if needed */
-			if (runs->runs == NULL)
-			{
-				runs->maxruns = 32; /* FIXME arbitrary number, needs to be set
-									 * based on work_mem */
-				runs->runs = palloc0_array(BatchRun, runs->maxruns);
-			}
-
-			/* initialize the run, if needed */
-			if ((tuplesortstate = runs->runs[nextrun].tuplesort) == NULL)
-			{
-				Assert(runs->nruns == nextrun);
-
-				tuplesortstate = tuplesort_begin_heap(tdesc,
-													  clauses->nattnums,
-													  attnums,
-													  clauses->inequality,
-													  clauses->collations,
-													  clauses->nulls_first,
-													  work_mem,
-													  NULL,
-													  tuplesortopts);
-
-				batch_run_init(&runs->runs[nextrun], tuplesortstate);
-				runs->nruns++;
-			}
-
-			/* offload the tuples */
-			tmpslot = MakeSingleTupleTableSlot(tdesc, &TTSOpsHeapTuple);
-			for (int i = 0; i < buffer->ntuples; i++)
-			{
-				ExecStoreHeapTuple(buffer->tuples[i], tmpslot, true);
-				tuplesort_puttupleslot(tuplesortstate, tmpslot);
-			}
-			ExecDropSingleTupleTableSlot(tmpslot);
-
-			elog(DEBUG1, "gjoin_LoadInnerRelation %d space %lu",
-				 buffer->ntuples, buffer->space);
-
-			runs->runs[nextrun].ntuples += buffer->ntuples;
-
-			buffer->space = 0;
-			buffer->ntuples = 0;
+			/* flush buffer to a selected run */
+			buffer_flush_to_run(buffer, runs, nextrun,
+								clauses, attnums, tdesc);
 
 			/* advance to the next run, round-robin way */
 			nextrun = (nextrun + 1) % runs->maxruns;
 		}
 
 		/*
+		 * Add the tuple to the 
 		 * Make sure there's space for adding a tuple to the buffer. Just
 		 * double the array size if needed, as usual.
 		 */
@@ -1902,12 +1928,11 @@ build_runs(GJoinState * node, PlanState *state,
 
 		/*
 		 * ExecFetchSlotHeapTuple may return "physical tuple", in which case
-		 * we need to copy it here, to prevent seeing garbage later
-		 *
-		 * FIXME why is this commented out?
+		 * we need to copy it here, to prevent seeing garbage later (after
+		 * it gets freed for whatever reason).
 		 */
-		/* if (!shouldFree) */
-		tuple = heap_copytuple(tuple);
+		if (!shouldFree)
+			tuple = heap_copytuple(tuple);
 
 		buffer->tuples[buffer->ntuples++] = tuple;
 		buffer->space += tuple->t_len;
@@ -1922,57 +1947,10 @@ build_runs(GJoinState * node, PlanState *state,
 	 */
 	if (buffer->ntuples > 0)
 	{
-		Tuplesortstate *tuplesortstate;
-		int			tuplesortopts = TUPLESORT_NONE;
-
-		/* XXX we should keep the slot in the node state */
-		TupleTableSlot *tmpslot;
-
-		/* initialize the array of runs, if needed */
-		if (runs->runs == NULL)
-		{
-			runs->maxruns = 32; /* FIXME arbitrary number, needs to be set
-								 * based on work_mem */
-			runs->runs = palloc0_array(BatchRun, runs->maxruns);
-		}
-
-		/* initialize the run, if needed */
-		if ((tuplesortstate = runs->runs[nextrun].tuplesort) == NULL)
-		{
-			Assert(nextrun == runs->nruns);
-
-			tuplesortstate = tuplesort_begin_heap(tdesc,
-												  clauses->nattnums,
-												  attnums,
-												  clauses->inequality,
-												  clauses->collations,
-												  clauses->nulls_first,
-												  work_mem,
-												  NULL,
-												  tuplesortopts);
-			batch_run_init(&runs->runs[nextrun], tuplesortstate);
-			runs->nruns++;
-		}
-
-		/* offload the tuples */
-		tmpslot = MakeSingleTupleTableSlot(tdesc, &TTSOpsHeapTuple);
-		for (int i = 0; i < buffer->ntuples; i++)
-		{
-			ExecStoreHeapTuple(buffer->tuples[i], tmpslot, true);
-			tuplesort_puttupleslot(tuplesortstate, tmpslot);
-		}
-		ExecDropSingleTupleTableSlot(tmpslot);
-
-		runs->runs[nextrun].ntuples += buffer->ntuples;
-
-		elog(DEBUG1, "gjoin_LoadInnerRelation %d space %lu",
-			 buffer->ntuples, buffer->space);
-
-		buffer->space = 0;
-		buffer->ntuples = 0;
+			/* flush buffer to a selected run */
+			buffer_flush_to_run(buffer, runs, nextrun,
+								clauses, attnums, tdesc);
 	}
-
-	elog(DEBUG1, "build_runs %p SORT", state);
 
 	/*
 	 * Sort all the runs, one by one.
@@ -1983,12 +1961,8 @@ build_runs(GJoinState * node, PlanState *state,
 		if (runs->runs[i].tuplesort == NULL)
 			break;
 
-		elog(DEBUG1, "run %d tuples %d", i, runs->runs[i].ntuples);
-
 		tuplesort_performsort(runs->runs[i].tuplesort);
 	}
-
-	elog(DEBUG1, "build_runs %p DONE", state);
 }
 
 static void
@@ -2042,7 +2016,11 @@ batch_init(TupleDesc tdesc, int nattnums)
 }
 
 /*
- * Initialize lists of batches for runs on the inner relation (S).
+ * Initialize the inner runs, i.e. load the first batch of tuples for each
+ * run of the inner relation (S).
+ *
+ * Also initializes the priority queues driving the growth/eviction of the
+ * inner runs.
  *
  * Loads one batch (~8KB) of tuples for each run generated for the relation.
  */
@@ -2059,41 +2037,48 @@ init_inner_runs(GJoinState * state)
 	/*
 	 * Initialize batches of slots for all the runs, and load tuples from the
 	 * tuplesorts into them.
+	 *
+	 * XXX We size the batches by number of slots, but it should be driven
+	 * by amount of memory used by the slots. But how do you calculate the
+	 * slot size in an efficient way?
 	 */
 	for (int i = 0; i < runs->nruns; i++)
 	{
-		Batch	   *buffer = batch_init(tdesc, state->clauses.nattnums);
+		Batch	   *batch = batch_init(tdesc, state->clauses.nattnums);
 
 		while (tuplesort_gettupleslot(runs->runs[i].tuplesort, true, true,
-									  buffer->slots[buffer->nslots],
+									  batch->slots[batch->nslots],
 									  NULL))
 		{
-			buffer->nslots++;
+			batch->nslots++;
 
 			/* stop after filling the last slot in the buffer */
-			if (buffer->nslots == buffer->maxslots)
+			if (batch->nslots == batch->maxslots)
 				break;
 		}
 
-		/* FIXME handle the case with nslots == 0, which can happen */
-		Assert(buffer->nslots > 0);
+		/*
+		 * We should never see a run with no tuples, because then we don't
+		 * create the run at all.
+		 */
+		Assert(batch->nslots > 0);
 
-		Assert(runs->runs[i].ntuples >= buffer->nslots);
-		runs->runs[i].ntuples -= buffer->nslots;
+		Assert(runs->runs[i].ntuples >= batch->nslots);
 
-		buffer->is_first = true;
-		buffer->is_last = (runs->runs[i].ntuples == 0);
+		/* update the number of tuples remaining in the run */
+		runs->runs[i].ntuples -= batch->nslots;
 
-		elog(DEBUG1, "run %d tuples %d buffer->is_last = %d",
-			 i, runs->runs[i].ntuples, buffer->is_last);
+		/* is this the first/last batch in the run? */
+		batch->is_first = true;
+		batch->is_last = (runs->runs[i].ntuples == 0);
 
 		/* get the min/max values for the loaded chunks */
-		if (buffer->nslots > 0)
+		if (batch->nslots > 0)
 		{
 			/*
 			 * initial buffers span from "negative infinity" (lowest value)
 			 */
-			buffer->min_unbounded = true;
+			batch->min_unbounded = true;
 
 			for (int j = 0; j < state->clauses.nattnums; j++)
 			{
@@ -2101,15 +2086,10 @@ init_inner_runs(GJoinState * state)
 				 * Use the value from the last tuple (because the data is
 				 * sorted by this key).
 				 */
-				buffer->max_values[j]
-					= slot_getattr(buffer->slots[buffer->nslots - 1],
+				batch->max_values[j]
+					= slot_getattr(batch->slots[batch->nslots - 1],
 								   state->clauses.attnums_inner[j],
-								   &buffer->max_isnull[j]);
-
-				/*
-				 * elog(WARNING, "buffer->max_values[%d] = %ld", j,
-				 * buffer->max_values[j]);
-				 */
+								   &batch->max_isnull[j]);
 			}
 
 			/*
@@ -2120,13 +2100,13 @@ init_inner_runs(GJoinState * state)
 			 * and newest loaded buffer. So add it to both queues with the
 			 * same uppper limit.
 			 */
-			priorityqueues_push(state->queues.inner_grow, i, buffer->max_values);
-			priorityqueues_push(state->queues.inner_shrink, i, buffer->max_values);
+			priorityqueues_push(state->queues.inner_grow, i, batch->max_values);
+			priorityqueues_push(state->queues.inner_shrink, i, batch->max_values);
 		}
 
 		/* initialize the list of tuple batches for a run, add the batch */
 		dlist_init(&runs->runs[i].batches);
-		dlist_push_tail(&runs->runs[i].batches, &buffer->node);
+		dlist_push_tail(&runs->runs[i].batches, &batch->node);
 	}
 }
 

@@ -122,6 +122,7 @@ static CustomPathMethods		gjoin_path_methods;
 static CustomJoinMethods		gjoin_plan_methods;
 static CustomJoinExecMethods	gjoin_exec_methods;
 
+
 /*
  * An input buffer of tuples, loaded from a relation.
  *
@@ -181,8 +182,13 @@ typedef struct BatchRuns
 	BatchRun   *runs;		/* array of runs */
 } BatchRuns;
 
-/* XXX should be based on memory usage instead */
-#define	MAX_SLOTS_PER_BUFFER 128
+/*
+ * Maximum number of tuples/slots per batch during the join.
+ *
+ * XXX Batches should be sized based on memory usage (as in the paper), not
+ * on the number of tuples.
+ */
+#define	MAX_BATCH_SIZE 128
 
 /*
  * A small "batch" of tuples loaded from one sorted run. The batches form
@@ -202,7 +208,7 @@ typedef struct BatchRuns
  * those tuples won't match anything. So we can probably just discard
  * those and not add them to the buffer/tuplesort at all?
  */
-typedef struct TupleBatch
+typedef struct Batch
 {
 	/* doubly-linked list of batches in each run */
 	dlist_node		node;
@@ -228,16 +234,16 @@ typedef struct TupleBatch
 	int				maxslots;
 	int				nslots;
 	TupleTableSlot **slots;
-} TupleBatch;
+} Batch;
 
 /*
- * Position in the currently loaded runs. The indexes determine the run, and
+ * Position in currently loaded runs. The indexes determine the run, and
  * the slot in the current buffer (in the doubly-linked list).
  */
 typedef struct JoinPosition
 {
 	int			run;
-	TupleBatch *buffer;
+	Batch *buffer;
 	int			slot;
 } JoinPosition;
 
@@ -268,7 +274,7 @@ typedef struct JoinClauses
 /*
  * Phases of the gjoin state machine.
  *
- * XXX We should follow the logic that (R < S), and R = inner, S = outer.
+ * We generally follow the logic that (R < S), and R = inner, S = outer.
  */
 typedef enum JoinPhase {
 	GJOIN_INIT,			/* initial state */
@@ -406,6 +412,18 @@ typedef struct QueueEntry
 	Datum  *values;		/* values of join keys */
 } QueueEntry;
 
+
+/* helpers */
+static bool join_clause_is_compatible(Expr *clause);
+static void join_clauses_init(JoinClauses *sort, int numcols);
+
+static void tuple_buffer_init(TupleBuffer *buffer);
+
+static Batch *batch_init(TupleDesc tdesc, int nattnums);
+static void batch_runs_init(BatchRuns *runs);
+static void batch_runs_close(BatchRuns *runs);
+static void batch_run_init(BatchRun *run, Tuplesortstate *sort);
+
 /* comparator used by all the priority queues */
 static int	priorityqueues_min_cmp(const pairingheap_node *a,
 								  const pairingheap_node *b, void *arg);
@@ -416,7 +434,26 @@ static QueueEntry *priorityqueues_pop(pairingheap *heap);
 static QueueEntry *priorityqueues_peek(pairingheap *heap);
 
 
+static void position_reset(JoinPosition *pos);
+static bool position_is_invalid(JoinPosition *pos);
 
+static void build_runs(GJoinState *node, PlanState *state,
+					   TupleBuffer *buffer, BatchRuns *runs,
+					   JoinClauses *clauses, bool inner);
+
+static void init_inner_runs(GJoinState *state, TupleDesc tdesc);
+static void init_outer_runs(GJoinState *state, TupleDesc tdesc);
+static bool load_outer_batch(GJoinState *state, int run, Batch *batch);
+static bool load_inner_batch(GJoinState *state, int run, Batch *batch);
+
+static bool buffer_in_join_range(GJoinState *state, Batch *batch);
+static bool check_join_clause(GJoinState *state,
+							  TupleTableSlot *outer, TupleTableSlot *inner);
+static void update_join_range(GJoinState *state);
+static int compare_values(GJoinState *state, Datum *a, Datum *b);
+static void join_range_for_run(GJoinState *state, dlist_head *run,
+							   Datum **min_values, Datum **max_values,
+							   bool *min_unbounded, bool *max_unbounded);
 
 void
 _PG_init(void)
@@ -485,50 +522,6 @@ gjoin_join_pathlist_hook(PlannerInfo *root, RelOptInfo *joinrel,
 
 	elog(DEBUG1, "consider GJoin path %p", path);
 }
-
-static bool
-clause_is_compatible(Expr *clause)
-{
-	OpExpr *opclause;
-	Var	   *var1,
-		   *var2;
-	TypeCacheEntry *typentry;
-
-	/* we only care about (Var op Var) clauses */
-	if (!IsA(clause, OpExpr))
-		return false;
-
-	opclause = (OpExpr *) clause;
-
-	var1 = linitial(opclause->args);
-	var2 = lsecond(opclause->args);
-
-	if (!IsA(var1, Var) || !IsA(var2, Var))
-		return false;
-
-	/*
-	 * Also require both sides of the clause to use the same data type.
-	 *
-	 * XXX Probably not strictly necessary, but it makes it easier to
-	 * determine if the operator is equality etc.
-	 */
-	if (var1->vartype != var2->vartype)
-		return false;
-
-	/*
-	 * Is the operator is an equality?
-	 *
-	 * XXX What's the right / generic way to do this? An operator may
-	 * be in multiple opclasses, etc. For now just lookup the default
-	 * btree opclass, and rely on that.
-	 */
-	typentry = lookup_type_cache(var1->vartype, TYPECACHE_EQ_OPR);
-	if (opclause->opno != typentry->eq_opr)
-		return false;
-
-	return true;
-}
-
 
 /*
  * create_gjoin_path
@@ -638,7 +631,7 @@ create_gjoin_path(PlannerInfo *root, RelOptInfo *joinrel,
 		/* paranoia */
 		Assert(IsA(rinfo, RestrictInfo));
 
-		if (!clause_is_compatible(rinfo->clause))
+		if (!join_clause_is_compatible(rinfo->clause))
 			continue;
 
 		/* found a join clause usable for gjoin */
@@ -681,7 +674,12 @@ create_gjoin_path(PlannerInfo *root, RelOptInfo *joinrel,
 	 */
 	cpath->custom_restrictinfo = restrict_clauses;
 
-	/* XXX fake costing, to make gjoin look like the best join path */
+	/*
+	 * XXX fake costing, to make gjoin look like the best join path
+	 *
+	 * XXX Instead, the set_join_pathlist_hook hook should discard the
+	 * join paths this gjoin replaces.
+	 */
 	cpath->path.rows = joinrel->rows;
 	cpath->path.startup_cost	= 0.0;
 	cpath->path.total_cost		= 1.0;
@@ -776,7 +774,7 @@ create_gjoin_plan(PlannerInfo *root,
 		 * If it's a compatible clause (Var op Var), treat it as a join
 		 * clause for the gjoin. Those are stored in custom_exprs.
 		 */
-		if (clause_is_compatible(rinfo->clause))
+		if (join_clause_is_compatible(rinfo->clause))
 		{
 			join_clauses = lappend(join_clauses, rinfo->clause);
 			cjoin->custom_exprs = lappend(cjoin->custom_exprs,
@@ -797,103 +795,6 @@ create_gjoin_plan(PlannerInfo *root,
 	/* XXX Should we add qpqual too? Probably not. */
 
 	return (Plan *) cjoin;
-}
-
-/*
- * init_buffer
- *		initialize a buffer for tuples
- *
- * We only reset fields to "empty", we don't allocate any buffer yet.
- */
-static void
-init_buffer(TupleBuffer *buffer)
-{
-	buffer->tuples = NULL;
-	buffer->ntuples = 0;
-	buffer->maxtuples = 0;
-	buffer->space = 0;
-}
-
-/*
- * batch_runs_init
- *		initialize runs of buffers
- *
- * We only reset fields to "empty", we don't allocate any buffer yet.
- */
-static void
-batch_runs_init(BatchRuns *runs)
-{
-	runs->maxruns = 0;
-	runs->nruns = 0;
-	runs->runs = NULL;
-}
-
-static void
-batch_run_init(BatchRun *run, Tuplesortstate *sort)
-{
-	run->ntuples = 0;
-	run->tuplesort = sort;
-}
-
-/* close the runs - release the tuplesorts, etc. */
-static void
-batch_runs_close(BatchRuns *runs)
-{
-	/*
-	 * now also end the tuplesort, to prevent warnings about resources
-	 *
-	 * XXX this should happen much later, after the join
-	 */
-	for (int i = 0; i < runs->nruns; i++)
-	{
-		/* stop on the first non-initialized run */
-		if (runs->runs[i].tuplesort == NULL)
-			break;
-
-		tuplesort_end(runs->runs[i].tuplesort);
-	}
-}
-
-/*
- * init_clauses
- *		initialize the equality / sort information
- *
- * This only allocates the space, does not set any of the values.
- */
-static void
-init_clauses(JoinClauses *sort, int numcols)
-{
-	sort->nattnums = numcols;
-	sort->attnums_inner = palloc_array(AttrNumber, numcols);
-	sort->attnums_outer = palloc_array(AttrNumber, numcols);
-	sort->equality = palloc_array(Oid, numcols);
-	sort->inequality = palloc_array(Oid, numcols);
-	sort->collations = palloc_array(Oid, numcols);
-	sort->nulls_first = palloc_array(bool, numcols);
-}
-
-/*
- * position_reset
- *		reset gjoin position (as if before starting to process runs)
- */
-static void
-position_reset(JoinPosition *pos)
-{
-	pos->run = -1;
-	pos->slot = -1;
-	pos->buffer = NULL;
-}
-
-/*
- * position_is_invalid
- *		returns true if the position is unset
- */
-static bool
-position_is_invalid(JoinPosition *pos)
-{
-	return (pos->run == -1) &&
-		   (pos->slot == -1) &&
-		   (pos->buffer == NULL);
 }
 
 /*
@@ -931,8 +832,8 @@ gjoin_CreatePlanState(CustomJoin *cjoin)
 	Assert(join_clauses != NIL);
 
 	/* initialize the tuple buffers */
-	init_buffer(&state->buffer.inner);
-	init_buffer(&state->buffer.outer);
+	tuple_buffer_init(&state->buffer.inner);
+	tuple_buffer_init(&state->buffer.outer);
 
 	/* initialize the runs */
 	batch_runs_init(&state->runs.inner);
@@ -942,7 +843,7 @@ gjoin_CreatePlanState(CustomJoin *cjoin)
 	state->phase = GJOIN_INIT;
 
 	/* one sort / equality key per join clause */
-	init_clauses(&state->clauses, list_length(join_clauses));
+	join_clauses_init(&state->clauses, list_length(join_clauses));
 
 	/*
 	 * Transform the join clause(s) into info we need for sorting and
@@ -1072,6 +973,775 @@ gjoin_BeginCustomJoin(CustomJoinState *node,
 	/*
 	 * FIXME rest of init, if needed.
 	 */
+}
+
+static TupleTableSlot *
+gjoin_ExecCustomJoin(CustomJoinState *node)
+{
+	GJoinState *state = (GJoinState *) node;
+	ExprContext *econtext;
+	TupleTableSlot *slot;
+
+	slot = state->cstate.js.ps.ps_ResultTupleSlot;
+
+	econtext = node->js.ps.ps_ExprContext;
+
+	/*
+	 * Perform the join - step through the state machine, etc.
+	 */
+	for (;;)
+	{
+		switch (state->phase)
+		{
+			case GJOIN_INIT:
+
+				elog(DEBUG1, "GJOIN_INIT");
+
+				/* First time through. Start by building runs for inner side. */
+				state->phase = GJOIN_BUILD_INNER;
+				break;
+
+			case GJOIN_BUILD_INNER:
+
+				elog(DEBUG1, "GJOIN_BUILD_INNER");
+
+				/*
+				 * Build runs for the inner relation. We assume the inner relation
+				 * is smaller (it's what the paper calls R), so we start with it.
+				 *
+				 * XXX We should stop building the runs once it hits work_mem, try
+				 * building runs on the outer relation, and then reconsider. Maybe
+				 * the estimates were off and the outer relation is smaller, in
+				 * which case it'd be better to flip the inner/outer relations for
+				 * the sake of the algorithm. But we keep it simple for now.
+				 */
+				build_runs(state,
+						   state->innerstate,
+						   &state->buffer.inner,
+						   &state->runs.inner,
+						   &state->clauses, true);
+
+				/* build runs for the outer relation next */
+				state->phase = GJOIN_BUILD_OUTER;
+				break;
+
+			case GJOIN_BUILD_OUTER:
+
+				elog(DEBUG1, "GJOIN_BUILD_OUTER");
+
+				/* Now build runs for the outer relation. */
+				build_runs(state,
+						   state->outerstate,
+						   &state->buffer.outer,
+						   &state->runs.outer,
+						   &state->clauses, false);
+
+				/* prepare for reading tuples from the inner runs */
+				state->phase = GJOIN_INIT_INNER;
+				break;
+
+			case GJOIN_INIT_INNER:
+
+				elog(DEBUG1, "GJOIN_INIT_INNER");
+
+				/* load a bufffer of tuples for each run of the inner relation */
+				init_inner_runs(state, ExecGetResultType(state->innerstate));
+
+				position_reset(&state->pos_inner);
+
+				/*
+				 * Calculate the current join range, defined as
+				 *
+				 * [Min(minvalue), Min(maxvalue)]
+				 *
+				 * over all buffers loaded from the runs of the inner relation.
+				 * No buffers can be skipped when calculating this range.
+				 */
+				update_join_range(state);
+
+				/* next load buffers for the outer relation */
+				state->phase = GJOIN_INIT_OUTER;
+				break;
+
+			case GJOIN_INIT_OUTER:
+
+				elog(DEBUG1, "GJOIN_INIT_OUTER");
+
+				/* load a bufffer of tuples for each run of the outer relation */
+				init_outer_runs(state, ExecGetResultType(state->outerstate));
+
+				position_reset(&state->pos_outer);
+
+				/* start by reading a tuple from the outer relation */
+				state->phase = GJOIN_NEXT_OUTER;
+				break;
+
+			case GJOIN_NEXT_OUTER:
+
+				elog(DEBUG1, "GJOIN_NEXT_OUTER");
+
+				/*
+				 * Advances to the next tuple in the outer relation (and possibly
+				 * also loads the next buffer).
+				 *
+				 * FIXME should split the two things - one state for loading the
+				 * next buffer, another for advancing to the next tuple slot
+				 */
+
+				{
+					/*
+					 * Are there are any outer buffers (S) that could be joined with
+					 * the already loaded inner buffers? The whole outer buffer needs
+					 * to be completely covered by "immediate join range" of R, which
+					 * is the intersection of ranges for all runs.
+					 *
+					 * We only look at the first buffer in the run identified by the
+					 * priority queue "C".
+					 */
+					Batch *batch;
+
+					/*
+					 * If we don't have a buffer from S, get the next one from the
+					 * queue "C" (determines in what order to load buffers for runs
+					 * of the outer relation).
+					 */
+					if (position_is_invalid(&state->pos_outer))
+					{
+						QueueEntry *entry;
+
+						/* empty queue C means no more buffers in S, so terminate */
+						if (pairingheap_is_empty(state->queues.outer))
+							return NULL;
+
+						/* don't remove the entry yet, GJOIN_LOAD_OUTER does that */
+						entry = priorityqueues_peek(state->queues.outer);
+
+						/* if we got an entry from queue, there must be a list */
+						Assert(!dlist_is_empty(&state->runs.outer.runs[entry->run].batches));
+						Assert(entry->run < state->runs.outer.nruns);
+
+						/* init the outer position */
+						state->pos_outer.run = entry->run;
+						state->pos_outer.slot = -1;
+					}
+
+					/*
+					 * XXX Maybe we could stash the buffer somewhere, so that
+					 * we don't need to call dlist_head_element over and over
+					 * (although it's likely cheap)? Can wait.
+					 */
+					batch = dlist_head_element(Batch, node,
+												&state->runs.outer.runs[state->pos_outer.run].batches);
+
+					/*
+					 * Is the whole buffer within the immediate join range?
+					 * If not, we need to load some more pages for R (inner).
+					 *
+					 * FIXME Needs to use proper type comparators. Might be quite
+					 * expensive, so we don't want to do that for every outer slot
+					 * again, just once per buffer (and not for every tuple like
+					 * happens now).
+					 */
+/*
+ XXX We don't need to check the lower boundary, because if we get to
+ load more buffers for inner relation, that only ever moves the upper
+ boundary.
+					if (!buffer->min_empty &&
+						compare_values(state, state->join_range.min_values, buffer->min_values) > 0)
+					{
+						state->phase = GJOIN_LOAD_INNER;
+						continue;
+					}
+*/
+
+					/*
+					 * FIXME this is not sufficient, because the join_range may be
+					 * "incomplete", i.e. there may be more tuples with the same
+					 * join key in the next buffer. So we need to either allow
+					 * processing the outer buffer repeatedly, or make sure all the
+					 * inner buffers are loaded at once (but then that needs more
+					 * memory, and we may exceed work_mem). Or maybe we could peek
+					 * at the next buffer in each run, and consider that when
+					 * calculating the join range?
+					 *
+					 * In fact, we could calculate the join range knowing whether
+					 * the upper boundary is inclusive or exclusive, and then we
+					 * could process just the outer tuples that fall into that
+					 * join range. But we still can't release the inner buffers,
+					 * because the next outer buffer could need those.
+					 */
+					if (!buffer_in_join_range(state, batch))
+					{
+						state->phase = GJOIN_LOAD_INNER;
+						continue;
+					}
+
+					/* We can join this buffer, so advance to the next slot. */
+					state->pos_outer.slot++;
+
+					/*
+					 * If we ran out of slots in this buffer, reset the position
+					 * and request next buffer from the outer relation.
+					 */
+					if (state->pos_outer.slot >= batch->nslots)
+					{
+						position_reset(&state->pos_outer);
+						state->phase = GJOIN_LOAD_OUTER;
+						continue;
+					}
+
+					/*
+					 * Got a valid outer tuple to join, so find all tuples on the
+					 * inner side.
+					 */
+					position_reset(&state->pos_inner);
+					state->phase = GJOIN_NEXT_INNER;
+
+					continue;
+				}
+
+			case GJOIN_NEXT_INNER:
+
+				elog(DEBUG1, "GJOIN_NEXT_INNER");
+
+				/*
+				 * Advances to the next tuple in the inner relation (and possibly
+				 * also loads the next buffer).
+				 *
+				 * FIXME should split the two things - one state for loading the
+				 * next buffer, another for advancing to the next tuple slot
+				 */
+
+				{
+
+					/*
+					 * We have a slot from S (outer relation) to join, so walk loaded
+					 * buffers from R (inner) and join them to the S tuple.
+					 *
+					 * XXX It should be possible to optimize this by first comparing
+					 * the buffer range to the S range, and eliminate many of the
+					 * buffers based on that.
+					 */
+					for (;;)
+					{
+						Batch	   *buffer_inner;
+						Batch	   *buffer_outer;
+
+						/* Have we ran out of runs? We're done. */
+						if (state->pos_inner.run >= state->runs.inner.nruns)
+							break;
+
+						/* we've just start, so advance to first run */
+						if (state->pos_inner.run == -1)
+							state->pos_inner.run = 0;
+
+						/*
+						 * If there's no buffer yet, try to get the first buffer 
+						 * from the selected run.
+						 */
+						if (state->pos_inner.buffer == NULL)
+						{
+							/* skip runs with no buffers (must have been finished) */
+							if (dlist_is_empty(&state->runs.inner.runs[state->pos_inner.run].batches))
+							{
+								state->pos_inner.run++;
+								continue;
+							}
+
+							/* FIXME don't look at the head only, need to walk all the buffers */
+							buffer_inner = dlist_head_element(Batch, node,
+															  &state->runs.inner.runs[state->pos_inner.run].batches);
+
+							state->pos_inner.buffer = buffer_inner;
+						}
+
+						/* get the current inner buffer */
+						buffer_inner = state->pos_inner.buffer;
+
+						/* OK, time to join this R buffer. Advance to the next slot. */
+						state->pos_inner.slot++;
+
+						/* Have we ran out of slots? Move to the next buffer (or run). */
+						if (state->pos_inner.slot >= buffer_inner->nslots)
+						{
+							/* if there's another buffer in this run, advance to it */
+							if (dlist_has_next(&state->runs.inner.runs[state->pos_inner.run].batches,
+											   &buffer_inner->node))
+							{
+								dlist_node *next_node;
+								next_node = dlist_next_node(&state->runs.inner.runs[state->pos_inner.run].batches,
+															&buffer_inner->node);
+								buffer_inner = dlist_container(Batch, node, next_node);
+								state->pos_inner.buffer = buffer_inner;
+							}
+							else
+							{
+								/* no buffer in this run, advance to the next run */
+								state->pos_inner.buffer = NULL;
+								state->pos_inner.run++;
+							}
+							state->pos_inner.slot = -1;
+							continue;
+						}
+
+						buffer_outer = dlist_head_element(Batch, node,
+														  &state->runs.outer.runs[state->pos_outer.run].batches);
+
+						/*
+						 * FIXME check that the two buffers overlap (not just the
+						 * immediate join range, but the two smaller ranges)
+						 */
+
+						/* time to actually compare the two inner/outer tuples */
+						{
+							TupleTableSlot *outer = buffer_outer->slots[state->pos_outer.slot];
+							TupleTableSlot *inner = buffer_inner->slots[state->pos_inner.slot];
+
+							/* if the two tuples do not match, continue */
+							if (!check_join_clause(state, outer, inner))
+								continue;
+
+							econtext->ecxt_innertuple = inner;
+							econtext->ecxt_outertuple = outer;
+
+							/*
+							 * The rows seem to match the equality join clause (per
+							 * the gjoin algoirthm itself), so check the additional
+							 * join filters, if any.
+							 */
+							if (!ExecQual(state->cstate.js.ps.qual, econtext))
+								continue;
+
+							return ExecProject(node->js.ps.ps_ProjInfo);
+						}
+					}
+
+					/* try to advance to the next outer tuple */
+					state->phase = GJOIN_NEXT_OUTER;
+
+					break;
+				}
+
+			case GJOIN_LOAD_INNER:
+
+				elog(DEBUG1, "GJOIN_LOAD_INNER");
+
+				{
+					QueueEntry *entry;
+					Batch	   *batch;
+					bool		loaded;
+
+					/* FIXME we shouldn't bail out right away, there still
+					 * may be some data to join (similarly to the beginning,
+					 * we should use infinity for the highkey) */
+					if (pairingheap_is_empty(state->queues.inner_grow))
+						return NULL;
+
+					/* get the next entry, remove it */
+					entry = priorityqueues_pop(state->queues.inner_grow);
+
+					batch = batch_init(ExecGetResultType(state->innerstate),
+									   state->clauses.nattnums);
+
+					/* load the next buffer from the run */
+					loaded = load_inner_batch(state, entry->run, batch);
+
+//					if (loaded)
+//						elog(DEBUG1, "loaded inner buffer %p %d [%ld, %ld]",
+//							 buffer, entry->run, buffer->min_value, buffer->max_value);
+
+					/* FIXME handle loaded=false */
+
+					position_reset(&state->pos_inner);
+					update_join_range(state);
+
+					/* retry the join */
+					state->phase =  GJOIN_NEXT_OUTER;
+					break;
+				}
+
+			case GJOIN_LOAD_OUTER:
+
+				elog(DEBUG1, "GJOIN_LOAD_OUTER");
+
+				{
+					/*
+					 * FIXME This may free the buffer prematurely. We should
+					 * only free it if it just got joined. And only then we
+					 * should load the next one.
+					 */
+
+					QueueEntry *entry;
+					Batch	   *batch;
+					bool		loaded;
+
+					Assert(!pairingheap_is_empty(state->queues.outer));
+
+					/* still don't remove the entry, we'll need it t */
+					entry = priorityqueues_peek(state->queues.outer);
+
+					batch = dlist_head_element(Batch, node,
+											   &state->runs.outer.runs[entry->run].batches);
+
+					/* unlink the buffer from the list */
+					// dlist_delete(&(buffer->node));
+
+					batch = batch_init(ExecGetResultType(state->outerstate),
+									   state->clauses.nattnums);
+
+					loaded = load_outer_batch(state, entry->run, batch);
+
+//					if (loaded)
+//						elog(DEBUG1, "loaded outer buffer %p %d [%ld, %ld]",
+//							 buffer, entry->run, buffer->min_value, buffer->max_value);
+
+					/* FIXME handle loaded=false */
+
+					/*
+					 * FIXME we shouldn't be resetting the position all the
+					 * way back, we know that the next key (at least in the
+					 * same run in S) will be higher, so it can't start before
+					 * the start of the current key. But it's more complex
+					 * due to having multiple runs, so we'll need to remember
+					 * the position per run.
+					 */
+					position_reset(&state->pos_outer);
+
+					/* retry the join */
+					state->phase =  GJOIN_EVICT_INNER;
+					break;
+				}
+
+			case GJOIN_EVICT_INNER:
+
+				elog(DEBUG1, "GJOIN_EVICT_INNER");
+
+				{
+					/*
+					 * FIXME This may free the outer buffer prematurely. We
+					 * should only free it if it just got joined. And only
+					 * then we should load the next one.
+					 *
+					 * But then we shouldn't get here at all, I guess. We
+					 * should loading inner, and retry the buffer join. But
+					 * now we always do load_inner -> load_outer.
+					 */
+					QueueEntry *entry;
+					Batch	   *batch;
+
+					Assert(!pairingheap_is_empty(state->queues.outer));
+
+					/* time to finally remove the entry, won't need it */
+					entry = priorityqueues_pop(state->queues.outer);
+
+					batch = dlist_head_element(Batch, node,
+											   &state->runs.outer.runs[entry->run].batches);
+
+					Assert(compare_values(state, entry->values, batch->max_values) == 0);
+
+					/* unlink the buffer from the list */
+					dlist_delete(&(batch->node));
+
+					/*
+					 * XXX no need to do anything about the outer queue,
+					 * it's fed by loading new pages from S.
+					 */
+
+//					elog(DEBUG1, "evicting outer buffer %p %d [%ld, %ld] %ld",
+//						 buffer, entry->run, buffer->min_value, buffer->max_value, entry->value);
+
+					/*
+					 * Try to evict buffers for inner relation, using the
+					 * 'shrink' queue. The buffer has to be the head for
+					 * each run (the queue only has run index), and we can
+					 * evict it if the max_value is before the outer buffer.
+					 */
+					for (;;)
+					{
+						Batch *batch_inner, *tail;
+						QueueEntry *entry_inner;
+
+						entry_inner = priorityqueues_peek(state->queues.inner_shrink);
+
+						batch_inner = dlist_head_element(Batch, node,
+														  &state->runs.inner.runs[entry->run].batches);
+						tail = dlist_tail_element(Batch, node,
+												  &state->runs.inner.runs[entry->run].batches);
+
+						/* can't evict, still may be needed to join */
+						if (compare_values(state, entry_inner->values, entry->values) >= 0)
+							break;
+
+						/* also can't evict if it's the only buffer for 
+						 * the run */
+						if (batch_inner == tail)
+							break;
+
+						/* ok, remove */
+						priorityqueues_pop(state->queues.inner_shrink);
+
+						/* FIXME if there are more buffers, for this run, have to
+						 * add the next one (the oldest page remaining) to the
+						 * shrink queue */
+
+						if (dlist_has_next(&state->runs.inner.runs[entry_inner->run].batches,
+										   &batch_inner->node))
+						{
+							Batch *tmp;
+							dlist_node *next_node;
+							next_node = dlist_next_node(&state->runs.inner.runs[entry_inner->run].batches,
+														&batch_inner->node);
+							tmp = dlist_container(Batch, node, next_node);
+							priorityqueues_push(state->queues.inner_shrink, entry_inner->run, tmp->max_values);
+						}
+
+						/* unlink the buffer from the list */
+						dlist_delete(&(batch_inner->node));
+
+//						elog(DEBUG1, "evicting inner buffer %p %d [%ld, %ld]",
+//							 buffer_inner, entry_inner->run,
+//							 buffer_inner->min_values, buffer_inner->max_values);
+					}
+
+					/* FIXME free the buffer tuples / memory */
+
+					state->phase =  GJOIN_NEXT_OUTER;
+					break;
+				}
+
+			default:
+				elog(ERROR, "unrecognized gjoin state: %d",
+					 (int) state->phase);
+		}
+	}
+
+	return NULL;
+}
+
+static void
+gjoin_EndCustomJoin(CustomJoinState *node)
+{
+	GJoinState *state = (GJoinState *) node;
+
+	/* FIXME cleanup */
+	batch_runs_close(&state->runs.inner);
+	batch_runs_close(&state->runs.outer);
+
+	/*
+	 * clean up subtrees
+	 */
+	ExecEndNode(state->outerstate);
+	ExecEndNode(state->innerstate);
+}
+
+static void
+gjoin_ReScanCustomJoin(CustomJoinState *node)
+{
+	/* FIXME rescan */
+	elog(ERROR, "gjoin_ReScanCustomScan not implemented");
+}
+
+/*
+ * Show a generic expression
+ */
+static void
+show_expression(Node *node, const char *qlabel,
+				PlanState *planstate, List *ancestors,
+				ExplainState *es)
+{
+	List	   *context;
+	char	   *exprstr;
+	bool		useprefix = (es->rtable_size > 1 || es->verbose);
+
+	/* Set up deparsing context */
+	context = set_deparse_context_plan(es->deparse_cxt,
+									   planstate->plan,
+									   ancestors);
+
+	/* Deparse the expression */
+	exprstr = deparse_expression(node, context, useprefix, false);
+
+	/* And add to es->str */
+	ExplainPropertyText(qlabel, exprstr, es);
+}
+
+/*
+ * Show additional information in EXPLAIN.
+ */
+static void
+gjoin_ExplainCustomJoin(CustomJoinState *node,
+						List *ancestors,
+						ExplainState *es)
+{
+	GJoinState *state = (GJoinState *) node;
+	CustomJoin *cjoin = (CustomJoin *) node->js.ps.plan;
+	List *join_clauses = list_nth(cjoin->custom_exprs, 0);
+	StringInfoData	str;
+
+	initStringInfo(&str);
+
+	/*
+	 * FIXME Show additional run-time information about the plan (number of
+	 * runs on each side, peak amount of memory used, ...)
+	 */
+	show_expression((Node *) join_clauses, "Join Cond",
+					(PlanState *) state, ancestors, es);
+
+	resetStringInfo(&str);
+	appendStringInfo(&str, "inner=%d outer=%d",
+					 state->runs.inner.nruns,
+					 state->runs.outer.nruns);
+	ExplainPropertyText("Runs", str.data, es);
+
+	ExplainPropertyText("Memory", str.data, es);
+}
+
+/*
+ * join_clause_is_compatible
+ *		determine if a join clause can be processed by gjoin
+ *
+ * For now we only allow (Var op Var) clauses, where "op" is an equality,
+ * and both Var nodes have the same data type.
+ */
+static bool
+join_clause_is_compatible(Expr *clause)
+{
+	OpExpr *opclause;
+	Var	   *var1,
+		   *var2;
+	TypeCacheEntry *typentry;
+
+	/* we only care about (Var op Var) clauses */
+	if (!IsA(clause, OpExpr))
+		return false;
+
+	opclause = (OpExpr *) clause;
+
+	var1 = linitial(opclause->args);
+	var2 = lsecond(opclause->args);
+
+	if (!IsA(var1, Var) || !IsA(var2, Var))
+		return false;
+
+	/*
+	 * Also require both sides of the clause to use the same data type.
+	 *
+	 * XXX Probably not strictly necessary, but it makes it easier to
+	 * determine if the operator is equality etc.
+	 */
+	if (var1->vartype != var2->vartype)
+		return false;
+
+	/*
+	 * Is the operator is an equality?
+	 *
+	 * XXX What's the right / generic way to do this? An operator may
+	 * be in multiple opclasses, etc. For now just lookup the default
+	 * btree opclass, and rely on that.
+	 */
+	typentry = lookup_type_cache(var1->vartype, TYPECACHE_EQ_OPR);
+	if (opclause->opno != typentry->eq_opr)
+		return false;
+
+	return true;
+}
+
+/*
+ * join_clauses_init
+ *		initialize the equality / sort information
+ *
+ * This only allocates the space, does not set any of the values.
+ */
+static void
+join_clauses_init(JoinClauses *sort, int numcols)
+{
+	sort->nattnums = numcols;
+	sort->attnums_inner = palloc_array(AttrNumber, numcols);
+	sort->attnums_outer = palloc_array(AttrNumber, numcols);
+	sort->equality = palloc_array(Oid, numcols);
+	sort->inequality = palloc_array(Oid, numcols);
+	sort->collations = palloc_array(Oid, numcols);
+	sort->nulls_first = palloc_array(bool, numcols);
+}
+
+/*
+ * tuple_buffer_init
+ *		initialize a buffer for tuples
+ *
+ * We only reset fields to "empty", we don't allocate any buffer yet.
+ */
+static void
+tuple_buffer_init(TupleBuffer *buffer)
+{
+	buffer->tuples = NULL;
+	buffer->ntuples = 0;
+	buffer->maxtuples = 0;
+	buffer->space = 0;
+}
+
+/*
+ * batch_runs_init
+ *		initialize runs of buffers
+ *
+ * We only reset fields to "empty", we don't allocate any buffer yet.
+ */
+static void
+batch_runs_init(BatchRuns *runs)
+{
+	runs->maxruns = 0;
+	runs->nruns = 0;
+	runs->runs = NULL;
+}
+
+static void
+batch_run_init(BatchRun *run, Tuplesortstate *sort)
+{
+	run->ntuples = 0;
+	run->tuplesort = sort;
+}
+
+/* close the runs - release the tuplesorts, etc. */
+static void
+batch_runs_close(BatchRuns *runs)
+{
+	/*
+	 * now also end the tuplesort, to prevent warnings about resources
+	 *
+	 * XXX this should happen much later, after the join
+	 */
+	for (int i = 0; i < runs->nruns; i++)
+	{
+		/* stop on the first non-initialized run */
+		if (runs->runs[i].tuplesort == NULL)
+			break;
+
+		tuplesort_end(runs->runs[i].tuplesort);
+	}
+}
+
+
+/*
+ * position_reset
+ *		reset gjoin position (as if before starting to process runs)
+ */
+static void
+position_reset(JoinPosition *pos)
+{
+	pos->run = -1;
+	pos->slot = -1;
+	pos->buffer = NULL;
+}
+
+/*
+ * position_is_invalid
+ *		returns true if the position is unset
+ */
+static bool
+position_is_invalid(JoinPosition *pos)
+{
+	return (pos->run == -1) &&
+		   (pos->slot == -1) &&
+		   (pos->buffer == NULL);
 }
 
 static void
@@ -1292,14 +1962,14 @@ build_runs(GJoinState *node, PlanState *state,
  *
  * XXX We use MinimalTuples, because that what tuplesort_gettupleslot uses
  */
-static TupleBatch *
-tuple_buffer_init(TupleDesc tdesc, int nattnums)
+static Batch *
+batch_init(TupleDesc tdesc, int nattnums)
 {
-	TupleBatch *buffer;
+	Batch *buffer;
 
-	buffer = palloc0(sizeof(TupleBatch));
+	buffer = palloc0(sizeof(Batch));
 
-	buffer->maxslots = MAX_SLOTS_PER_BUFFER;
+	buffer->maxslots = MAX_BATCH_SIZE;
 	buffer->nslots = 0;
 	buffer->slots = palloc_array(TupleTableSlot *, buffer->maxslots);
 
@@ -1333,7 +2003,7 @@ init_inner_runs(GJoinState *state, TupleDesc tdesc)
 	 */
 	for (int i = 0; i < runs->nruns; i++)
 	{
-		TupleBatch	   *buffer = tuple_buffer_init(tdesc, state->clauses.nattnums);
+		Batch	   *buffer = batch_init(tdesc, state->clauses.nattnums);
 
 		while (tuplesort_gettupleslot(runs->runs[i].tuplesort, true, true,
 									  buffer->slots[buffer->nslots],
@@ -1415,26 +2085,26 @@ init_outer_runs(GJoinState *state, TupleDesc tdesc)
 	 */
 	for (int i = 0; i < runs->nruns; i++)
 	{
-		TupleBatch	   *buffer = tuple_buffer_init(tdesc, state->clauses.nattnums);
+		Batch	   *batch = batch_init(tdesc, state->clauses.nattnums);
 
 		while (tuplesort_gettupleslot(runs->runs[i].tuplesort, true, true,
-									  buffer->slots[buffer->nslots],
+									  batch->slots[batch->nslots],
 									  NULL))
 		{
-			buffer->nslots++;
+			batch->nslots++;
 
 			/* stop after filling the last slot */
-			if (buffer->nslots == buffer->maxslots)
+			if (batch->nslots == batch->maxslots)
 				break;
 		}
 
 		/* get the min/max for the loaded chunks */
-		if (buffer->nslots > 0)
+		if (batch->nslots > 0)
 		{
 			/*
 			 * initial buffers span from "negative infinity" (lowest value)
 			 */
-			buffer->min_unbounded = true;
+			batch->min_unbounded = true;
 
 			for (int j = 0; j < state->clauses.nattnums; j ++)
 			{
@@ -1442,10 +2112,10 @@ init_outer_runs(GJoinState *state, TupleDesc tdesc)
 				 * Use the value from the last tuple (because the data is sorted
 				 * by this key).
 				 */
-				buffer->max_values[j]
-					= slot_getattr(buffer->slots[buffer->nslots - 1],
+				batch->max_values[j]
+					= slot_getattr(batch->slots[batch->nslots - 1],
 								   state->clauses.attnums_outer[j],
-								   &buffer->max_isnull[j]);
+								   &batch->max_isnull[j]);
 			}
 
 			/*
@@ -1458,18 +2128,18 @@ init_outer_runs(GJoinState *state, TupleDesc tdesc)
 			 * XXX Maybe we should have both, to make it more memory-efficient?
 			 * But for now simplicity matters more.
 			 */
-			priorityqueues_push(state->queues.outer, i, buffer->max_values);
+			priorityqueues_push(state->queues.outer, i, batch->max_values);
 		}
 
 		/* initialize the list of tuple batches for a run, add the batch */
 		dlist_init(&runs->runs[i].batches);
-		dlist_push_tail(&runs->runs[i].batches, &buffer->node);
+		dlist_push_tail(&runs->runs[i].batches, &batch->node);
 	}
 }
 
 /* S */
 static bool
-load_outer_buffer(GJoinState *state, int run, TupleBatch *buffer)
+load_outer_batch(GJoinState *state, int run, Batch *buffer)
 {
 	/* reset, the buffer might be reused */
 	buffer->nslots = 0;
@@ -1516,7 +2186,7 @@ load_outer_buffer(GJoinState *state, int run, TupleBatch *buffer)
 
 /* R */
 static bool
-load_inner_buffer(GJoinState *state, int run, TupleBatch *buffer)
+load_inner_batch(GJoinState *state, int run, Batch *buffer)
 {
 	/* reset, the buffer might be reused */
 	buffer->nslots = 0;
@@ -1582,22 +2252,22 @@ join_range_for_run(GJoinState *state, dlist_head *run,
 				   Datum **min_values, Datum **max_values,
 				   bool *min_unbounded, bool *max_unbounded)
 {
-	TupleBatch *buffer;
+	Batch *buffer;
 	dlist_iter	iter;
 
 	dlist_foreach(iter, run)
 	{
-		buffer = dlist_container(TupleBatch, node, iter.cur);
+		buffer = dlist_container(Batch, node, iter.cur);
 		// elog(DEBUG1, " > run %ld %ld", buffer->min_value, buffer->max_value);
 	}
 
-	buffer = dlist_head_element(TupleBatch, node, run);
+	buffer = dlist_head_element(Batch, node, run);
 	*min_values = buffer->min_values;
 	*min_unbounded = buffer->is_first;
 
 	elog(DEBUG1, "head %p", buffer);
 
-	buffer = dlist_tail_element(TupleBatch, node, run);
+	buffer = dlist_tail_element(Batch, node, run);
 	*max_values = buffer->max_values;
 	*max_unbounded = buffer->is_last;
 
@@ -1722,7 +2392,7 @@ check_join_clause(GJoinState *state,
 }
 
 static bool
-buffer_in_join_range(GJoinState *state, TupleBatch *buffer)
+buffer_in_join_range(GJoinState *state, Batch *buffer)
 {
 	/* if we only have "last" buffers in each run, all buffers match */
 	if (state->join_range.max_unbounded)
@@ -1730,627 +2400,6 @@ buffer_in_join_range(GJoinState *state, TupleBatch *buffer)
 
 	/* otherwise compare the upper boundary (non-inclusively) */
 	return (compare_values(state, state->join_range.max_values, buffer->max_values) > 0);
-}
-
-static TupleTableSlot *
-gjoin_ExecCustomJoin(CustomJoinState *node)
-{
-	GJoinState *state = (GJoinState *) node;
-	ExprContext *econtext;
-	TupleTableSlot *slot;
-
-	slot = state->cstate.js.ps.ps_ResultTupleSlot;
-
-	econtext = node->js.ps.ps_ExprContext;
-
-	/*
-	 * Perform the join - step through the state machine, etc.
-	 */
-	for (;;)
-	{
-		switch (state->phase)
-		{
-			case GJOIN_INIT:
-
-				elog(DEBUG1, "GJOIN_INIT");
-
-				/* First time through. Start by building runs for inner side. */
-				state->phase = GJOIN_BUILD_INNER;
-				break;
-
-			case GJOIN_BUILD_INNER:
-
-				elog(DEBUG1, "GJOIN_BUILD_INNER");
-
-				/*
-				 * Build runs for the inner relation. We assume the inner relation
-				 * is smaller (it's what the paper calls R), so we start with it.
-				 *
-				 * XXX We should stop building the runs once it hits work_mem, try
-				 * building runs on the outer relation, and then reconsider. Maybe
-				 * the estimates were off and the outer relation is smaller, in
-				 * which case it'd be better to flip the inner/outer relations for
-				 * the sake of the algorithm. But we keep it simple for now.
-				 */
-				build_runs(state,
-						   state->innerstate,
-						   &state->buffer.inner,
-						   &state->runs.inner,
-						   &state->clauses, true);
-
-				/* build runs for the outer relation next */
-				state->phase = GJOIN_BUILD_OUTER;
-				break;
-
-			case GJOIN_BUILD_OUTER:
-
-				elog(DEBUG1, "GJOIN_BUILD_OUTER");
-
-				/* Now build runs for the outer relation. */
-				build_runs(state,
-						   state->outerstate,
-						   &state->buffer.outer,
-						   &state->runs.outer,
-						   &state->clauses, false);
-
-				/* prepare for reading tuples from the inner runs */
-				state->phase = GJOIN_INIT_INNER;
-				break;
-
-			case GJOIN_INIT_INNER:
-
-				elog(DEBUG1, "GJOIN_INIT_INNER");
-
-				/* load a bufffer of tuples for each run of the inner relation */
-				init_inner_runs(state, ExecGetResultType(state->innerstate));
-
-				position_reset(&state->pos_inner);
-
-				/*
-				 * Calculate the current join range, defined as
-				 *
-				 * [Min(minvalue), Min(maxvalue)]
-				 *
-				 * over all buffers loaded from the runs of the inner relation.
-				 * No buffers can be skipped when calculating this range.
-				 */
-				update_join_range(state);
-
-				/* next load buffers for the outer relation */
-				state->phase = GJOIN_INIT_OUTER;
-				break;
-
-			case GJOIN_INIT_OUTER:
-
-				elog(DEBUG1, "GJOIN_INIT_OUTER");
-
-				/* load a bufffer of tuples for each run of the outer relation */
-				init_outer_runs(state, ExecGetResultType(state->outerstate));
-
-				position_reset(&state->pos_outer);
-
-				/* start by reading a tuple from the outer relation */
-				state->phase = GJOIN_NEXT_OUTER;
-				break;
-
-			case GJOIN_NEXT_OUTER:
-
-				elog(DEBUG1, "GJOIN_NEXT_OUTER");
-
-				/*
-				 * Advances to the next tuple in the outer relation (and possibly
-				 * also loads the next buffer).
-				 *
-				 * FIXME should split the two things - one state for loading the
-				 * next buffer, another for advancing to the next tuple slot
-				 */
-
-				{
-					/*
-					 * Are there are any outer buffers (S) that could be joined with
-					 * the already loaded inner buffers? The whole outer buffer needs
-					 * to be completely covered by "immediate join range" of R, which
-					 * is the intersection of ranges for all runs.
-					 *
-					 * We only look at the first buffer in the run identified by the
-					 * priority queue "C".
-					 */
-					TupleBatch *buffer;
-
-					/*
-					 * If we don't have a buffer from S, get the next one from the
-					 * queue "C" (determines in what order to load buffers for runs
-					 * of the outer relation).
-					 */
-					if (position_is_invalid(&state->pos_outer))
-					{
-						QueueEntry *entry;
-
-						/* empty queue C means no more buffers in S, so terminate */
-						if (pairingheap_is_empty(state->queues.outer))
-							return NULL;
-
-						/* don't remove the entry yet, GJOIN_LOAD_OUTER does that */
-						entry = priorityqueues_peek(state->queues.outer);
-
-						/* if we got an entry from queue, there must be a list */
-						Assert(!dlist_is_empty(&state->runs.outer.runs[entry->run].batches));
-						Assert(entry->run < state->runs.outer.nruns);
-
-						/* init the outer position */
-						state->pos_outer.run = entry->run;
-						state->pos_outer.slot = -1;
-					}
-
-					/*
-					 * XXX Maybe we could stash the buffer somewhere, so that
-					 * we don't need to call dlist_head_element over and over
-					 * (although it's likely cheap)? Can wait.
-					 */
-					buffer = dlist_head_element(TupleBatch, node,
-												&state->runs.outer.runs[state->pos_outer.run].batches);
-
-					/*
-					 * Is the whole buffer within the immediate join range?
-					 * If not, we need to load some more pages for R (inner).
-					 *
-					 * FIXME Needs to use proper type comparators. Might be quite
-					 * expensive, so we don't want to do that for every outer slot
-					 * again, just once per buffer (and not for every tuple like
-					 * happens now).
-					 */
-/*
- XXX We don't need to check the lower boundary, because if we get to
- load more buffers for inner relation, that only ever moves the upper
- boundary.
-					if (!buffer->min_empty &&
-						compare_values(state, state->join_range.min_values, buffer->min_values) > 0)
-					{
-						state->phase = GJOIN_LOAD_INNER;
-						continue;
-					}
-*/
-
-					/*
-					 * FIXME this is not sufficient, because the join_range may be
-					 * "incomplete", i.e. there may be more tuples with the same
-					 * join key in the next buffer. So we need to either allow
-					 * processing the outer buffer repeatedly, or make sure all the
-					 * inner buffers are loaded at once (but then that needs more
-					 * memory, and we may exceed work_mem). Or maybe we could peek
-					 * at the next buffer in each run, and consider that when
-					 * calculating the join range?
-					 *
-					 * In fact, we could calculate the join range knowing whether
-					 * the upper boundary is inclusive or exclusive, and then we
-					 * could process just the outer tuples that fall into that
-					 * join range. But we still can't release the inner buffers,
-					 * because the next outer buffer could need those.
-					 */
-					if (!buffer_in_join_range(state, buffer))
-					{
-						state->phase = GJOIN_LOAD_INNER;
-						continue;
-					}
-
-					/* We can join this buffer, so advance to the next slot. */
-					state->pos_outer.slot++;
-
-					/*
-					 * If we ran out of slots in this buffer, reset the position
-					 * and request next buffer from the outer relation.
-					 */
-					if (state->pos_outer.slot >= buffer->nslots)
-					{
-						position_reset(&state->pos_outer);
-						state->phase = GJOIN_LOAD_OUTER;
-						continue;
-					}
-
-					/*
-					 * Got a valid outer tuple to join, so find all tuples on the
-					 * inner side.
-					 */
-					position_reset(&state->pos_inner);
-					state->phase = GJOIN_NEXT_INNER;
-
-					continue;
-				}
-
-			case GJOIN_NEXT_INNER:
-
-				elog(DEBUG1, "GJOIN_NEXT_INNER");
-
-				/*
-				 * Advances to the next tuple in the inner relation (and possibly
-				 * also loads the next buffer).
-				 *
-				 * FIXME should split the two things - one state for loading the
-				 * next buffer, another for advancing to the next tuple slot
-				 */
-
-				{
-
-					/*
-					 * We have a slot from S (outer relation) to join, so walk loaded
-					 * buffers from R (inner) and join them to the S tuple.
-					 *
-					 * XXX It should be possible to optimize this by first comparing
-					 * the buffer range to the S range, and eliminate many of the
-					 * buffers based on that.
-					 */
-					for (;;)
-					{
-						TupleBatch	   *buffer_inner;
-						TupleBatch	   *buffer_outer;
-
-						/* Have we ran out of runs? We're done. */
-						if (state->pos_inner.run >= state->runs.inner.nruns)
-							break;
-
-						/* we've just start, so advance to first run */
-						if (state->pos_inner.run == -1)
-							state->pos_inner.run = 0;
-
-						/*
-						 * If there's no buffer yet, try to get the first buffer 
-						 * from the selected run.
-						 */
-						if (state->pos_inner.buffer == NULL)
-						{
-							/* skip runs with no buffers (must have been finished) */
-							if (dlist_is_empty(&state->runs.inner.runs[state->pos_inner.run].batches))
-							{
-								state->pos_inner.run++;
-								continue;
-							}
-
-							/* FIXME don't look at the head only, need to walk all the buffers */
-							buffer_inner = dlist_head_element(TupleBatch, node,
-															  &state->runs.inner.runs[state->pos_inner.run].batches);
-
-							state->pos_inner.buffer = buffer_inner;
-						}
-
-						/* get the current inner buffer */
-						buffer_inner = state->pos_inner.buffer;
-
-						/* OK, time to join this R buffer. Advance to the next slot. */
-						state->pos_inner.slot++;
-
-						/* Have we ran out of slots? Move to the next buffer (or run). */
-						if (state->pos_inner.slot >= buffer_inner->nslots)
-						{
-							/* if there's another buffer in this run, advance to it */
-							if (dlist_has_next(&state->runs.inner.runs[state->pos_inner.run].batches,
-											   &buffer_inner->node))
-							{
-								dlist_node *next_node;
-								next_node = dlist_next_node(&state->runs.inner.runs[state->pos_inner.run].batches,
-															&buffer_inner->node);
-								buffer_inner = dlist_container(TupleBatch, node, next_node);
-								state->pos_inner.buffer = buffer_inner;
-							}
-							else
-							{
-								/* no buffer in this run, advance to the next run */
-								state->pos_inner.buffer = NULL;
-								state->pos_inner.run++;
-							}
-							state->pos_inner.slot = -1;
-							continue;
-						}
-
-						buffer_outer = dlist_head_element(TupleBatch, node,
-														  &state->runs.outer.runs[state->pos_outer.run].batches);
-
-						/*
-						 * FIXME check that the two buffers overlap (not just the
-						 * immediate join range, but the two smaller ranges)
-						 */
-
-						/* time to actually compare the two inner/outer tuples */
-						{
-							TupleTableSlot *outer = buffer_outer->slots[state->pos_outer.slot];
-							TupleTableSlot *inner = buffer_inner->slots[state->pos_inner.slot];
-
-							/* if the two tuples do not match, continue */
-							if (!check_join_clause(state, outer, inner))
-								continue;
-
-							econtext->ecxt_innertuple = inner;
-							econtext->ecxt_outertuple = outer;
-
-							/*
-							 * The rows seem to match the equality join clause (per
-							 * the gjoin algoirthm itself), so check the additional
-							 * join filters, if any.
-							 */
-							if (!ExecQual(state->cstate.js.ps.qual, econtext))
-								continue;
-
-							return ExecProject(node->js.ps.ps_ProjInfo);
-						}
-					}
-
-					/* try to advance to the next outer tuple */
-					state->phase = GJOIN_NEXT_OUTER;
-
-					break;
-				}
-
-			case GJOIN_LOAD_INNER:
-
-				elog(DEBUG1, "GJOIN_LOAD_INNER");
-
-				{
-					QueueEntry	   *entry;
-					TupleBatch	   *buffer;
-					bool			loaded;
-
-					/* FIXME we shouldn't bail out right away, there still
-					 * may be some data to join (similarly to the beginning,
-					 * we should use infinity for the highkey) */
-					if (pairingheap_is_empty(state->queues.inner_grow))
-						return NULL;
-
-					/* get the next entry, remove it */
-					entry = priorityqueues_pop(state->queues.inner_grow);
-
-					buffer = tuple_buffer_init(ExecGetResultType(state->innerstate),
-											   state->clauses.nattnums);
-
-					/* load the next buffer from the run */
-					loaded = load_inner_buffer(state, entry->run, buffer);
-
-//					if (loaded)
-//						elog(DEBUG1, "loaded inner buffer %p %d [%ld, %ld]",
-//							 buffer, entry->run, buffer->min_value, buffer->max_value);
-
-					/* FIXME handle loaded=false */
-
-					position_reset(&state->pos_inner);
-					update_join_range(state);
-
-					/* retry the join */
-					state->phase =  GJOIN_NEXT_OUTER;
-					break;
-				}
-
-			case GJOIN_LOAD_OUTER:
-
-				elog(DEBUG1, "GJOIN_LOAD_OUTER");
-
-				{
-					/*
-					 * FIXME This may free the buffer prematurely. We should
-					 * only free it if it just got joined. And only then we
-					 * should load the next one.
-					 */
-
-					QueueEntry	   *entry;
-					TupleBatch	   *buffer;
-					bool			loaded;
-
-					Assert(!pairingheap_is_empty(state->queues.outer));
-
-					/* still don't remove the entry, we'll need it t */
-					entry = priorityqueues_peek(state->queues.outer);
-
-					buffer = dlist_head_element(TupleBatch, node,
-												&state->runs.outer.runs[entry->run].batches);
-
-					/* unlink the buffer from the list */
-					// dlist_delete(&(buffer->node));
-
-					buffer = tuple_buffer_init(ExecGetResultType(state->outerstate),
-											   state->clauses.nattnums);
-
-					loaded = load_outer_buffer(state, entry->run, buffer);
-
-//					if (loaded)
-//						elog(DEBUG1, "loaded outer buffer %p %d [%ld, %ld]",
-//							 buffer, entry->run, buffer->min_value, buffer->max_value);
-
-					/* FIXME handle loaded=false */
-
-					/*
-					 * FIXME we shouldn't be resetting the position all the
-					 * way back, we know that the next key (at least in the
-					 * same run in S) will be higher, so it can't start before
-					 * the start of the current key. But it's more complex
-					 * due to having multiple runs, so we'll need to remember
-					 * the position per run.
-					 */
-					position_reset(&state->pos_outer);
-
-					/* retry the join */
-					state->phase =  GJOIN_EVICT_INNER;
-					break;
-				}
-
-			case GJOIN_EVICT_INNER:
-
-				elog(DEBUG1, "GJOIN_EVICT_INNER");
-
-				{
-					/*
-					 * FIXME This may free the outer buffer prematurely. We
-					 * should only free it if it just got joined. And only
-					 * then we should load the next one.
-					 *
-					 * But then we shouldn't get here at all, I guess. We
-					 * should loading inner, and retry the buffer join. But
-					 * now we always do load_inner -> load_outer.
-					 */
-					QueueEntry	   *entry;
-					TupleBatch	   *buffer;
-
-					Assert(!pairingheap_is_empty(state->queues.outer));
-
-					/* time to finally remove the entry, won't need it */
-					entry = priorityqueues_pop(state->queues.outer);
-
-					buffer = dlist_head_element(TupleBatch, node,
-												&state->runs.outer.runs[entry->run].batches);
-
-					Assert(compare_values(state, entry->values, buffer->max_values) == 0);
-
-					/* unlink the buffer from the list */
-					dlist_delete(&(buffer->node));
-
-					/*
-					 * XXX no need to do anything about the outer queue,
-					 * it's fed by loading new pages from S.
-					 */
-
-//					elog(DEBUG1, "evicting outer buffer %p %d [%ld, %ld] %ld",
-//						 buffer, entry->run, buffer->min_value, buffer->max_value, entry->value);
-
-					/*
-					 * Try to evict buffers for inner relation, using the
-					 * 'shrink' queue. The buffer has to be the head for
-					 * each run (the queue only has run index), and we can
-					 * evict it if the max_value is before the outer buffer.
-					 */
-					for (;;)
-					{
-						TupleBatch *buffer_inner, *tail;
-						QueueEntry *entry_inner;
-
-						entry_inner = priorityqueues_peek(state->queues.inner_shrink);
-
-						buffer_inner = dlist_head_element(TupleBatch, node,
-														  &state->runs.inner.runs[entry->run].batches);
-						tail = dlist_tail_element(TupleBatch, node,
-												  &state->runs.inner.runs[entry->run].batches);
-
-						/* can't evict, still may be needed to join */
-						if (compare_values(state, entry_inner->values, entry->values) >= 0)
-							break;
-
-						/* also can't evict if it's the only buffer for 
-						 * the run */
-						if (buffer_inner == tail)
-							break;
-
-						/* ok, remove */
-						priorityqueues_pop(state->queues.inner_shrink);
-
-						/* FIXME if there are more buffers, for this run, have to
-						 * add the next one (the oldest page remaining) to the
-						 * shrink queue */
-
-						if (dlist_has_next(&state->runs.inner.runs[entry_inner->run].batches,
-										   &buffer_inner->node))
-						{
-							TupleBatch *tmp;
-							dlist_node *next_node;
-							next_node = dlist_next_node(&state->runs.inner.runs[entry_inner->run].batches,
-														&buffer_inner->node);
-							tmp = dlist_container(TupleBatch, node, next_node);
-							priorityqueues_push(state->queues.inner_shrink, entry_inner->run, tmp->max_values);
-						}
-
-						/* unlink the buffer from the list */
-						dlist_delete(&(buffer_inner->node));
-
-//						elog(DEBUG1, "evicting inner buffer %p %d [%ld, %ld]",
-//							 buffer_inner, entry_inner->run,
-//							 buffer_inner->min_values, buffer_inner->max_values);
-					}
-
-					/* FIXME free the buffer tuples / memory */
-
-					state->phase =  GJOIN_NEXT_OUTER;
-					break;
-				}
-
-			default:
-				elog(ERROR, "unrecognized gjoin state: %d",
-					 (int) state->phase);
-		}
-	}
-
-	return NULL;
-}
-
-static void
-gjoin_EndCustomJoin(CustomJoinState *node)
-{
-	GJoinState *state = (GJoinState *) node;
-
-	/* FIXME cleanup */
-	batch_runs_close(&state->runs.inner);
-	batch_runs_close(&state->runs.outer);
-
-	/*
-	 * clean up subtrees
-	 */
-	ExecEndNode(state->outerstate);
-	ExecEndNode(state->innerstate);
-}
-
-static void
-gjoin_ReScanCustomJoin(CustomJoinState *node)
-{
-	/* FIXME rescan */
-	elog(ERROR, "gjoin_ReScanCustomScan not implemented");
-}
-
-/*
- * Show a generic expression
- */
-static void
-show_expression(Node *node, const char *qlabel,
-				PlanState *planstate, List *ancestors,
-				ExplainState *es)
-{
-	List	   *context;
-	char	   *exprstr;
-	bool		useprefix = (es->rtable_size > 1 || es->verbose);
-
-	/* Set up deparsing context */
-	context = set_deparse_context_plan(es->deparse_cxt,
-									   planstate->plan,
-									   ancestors);
-
-	/* Deparse the expression */
-	exprstr = deparse_expression(node, context, useprefix, false);
-
-	/* And add to es->str */
-	ExplainPropertyText(qlabel, exprstr, es);
-}
-
-/*
- * Show additional information in EXPLAIN.
- */
-static void
-gjoin_ExplainCustomJoin(CustomJoinState *node,
-						List *ancestors,
-						ExplainState *es)
-{
-	GJoinState *state = (GJoinState *) node;
-	CustomJoin *cjoin = (CustomJoin *) node->js.ps.plan;
-	List *join_clauses = list_nth(cjoin->custom_exprs, 0);
-	StringInfoData	str;
-
-	initStringInfo(&str);
-
-	/*
-	 * FIXME Show additional run-time information about the plan (number of
-	 * runs on each side, peak amount of memory used, ...)
-	 */
-	show_expression((Node *) join_clauses, "Join Cond",
-					(PlanState *) state, ancestors, es);
-
-	resetStringInfo(&str);
-	appendStringInfo(&str, "inner=%d outer=%d",
-					 state->runs.inner.nruns,
-					 state->runs.outer.nruns);
-	ExplainPropertyText("Runs", str.data, es);
-
-	ExplainPropertyText("Memory", str.data, es);
 }
 
 /*

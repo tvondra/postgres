@@ -442,9 +442,8 @@ static QueueEntry * priorityqueues_peek(pairingheap *heap);
 static void position_reset(JoinPosition * pos);
 static bool position_is_invalid(JoinPosition * pos);
 
-static void build_runs(GJoinState * node, PlanState *state,
-					   TupleBuffer * buffer, BatchRuns * runs,
-					   JoinClauses * clauses, bool inner);
+static void build_inner_runs(GJoinState * node);
+static void build_outer_runs(GJoinState * node);
 
 static void init_inner_runs(GJoinState * state);
 static void init_outer_runs(GJoinState * state);
@@ -1013,8 +1012,9 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 
 				/*
 				 * Build runs for the inner relation. We assume the inner
-				 * relation is smaller (it's what the paper calls R), so we
-				 * start with it.
+				 * relation (called "R" in the paper) is smaller, so we
+				 * start with it (we might try loading it into memory and
+				 * doing a hashjoin-like in-memory join).
 				 *
 				 * XXX We should stop building the runs once it hits work_mem,
 				 * try building runs on the outer relation, and then
@@ -1023,11 +1023,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 				 * the inner/outer relations for the sake of the algorithm.
 				 * But we keep it simple for now.
 				 */
-				build_runs(state,
-						   state->innerstate,
-						   &state->buffer.inner,
-						   &state->runs.inner,
-						   &state->clauses, true);
+				build_inner_runs(state);
 
 				/* build runs for the outer relation next */
 				state->phase = GJOIN_BUILD_OUTER;
@@ -1038,11 +1034,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 				elog(DEBUG1, "GJOIN_BUILD_OUTER");
 
 				/* Now build runs for the outer relation. */
-				build_runs(state,
-						   state->outerstate,
-						   &state->buffer.outer,
-						   &state->runs.outer,
-						   &state->clauses, false);
+				build_outer_runs(state);
 
 				/* prepare for reading tuples from the inner runs */
 				state->phase = GJOIN_INIT_INNER;
@@ -1797,13 +1789,14 @@ position_is_invalid(JoinPosition * pos)
 static void
 build_runs(GJoinState * node, PlanState *state,
 		   TupleBuffer * buffer, BatchRuns * runs,
-		   JoinClauses * clauses, bool inner)
+		   AttrNumber *attnums)
 {
 	TupleTableSlot *slot;
 	bool		shouldFree;
 	HeapTuple	tuple;
 	TupleDesc	tdesc = ExecGetResultType(state);
 	int			nextrun = 0;
+	JoinClauses	*clauses = &node->clauses;
 
 	/*
 	 * Get all tuples from the node below the Hash node and insert into the
@@ -1855,7 +1848,7 @@ build_runs(GJoinState * node, PlanState *state,
 
 				tuplesortstate = tuplesort_begin_heap(tdesc,
 													  clauses->nattnums,
-													  (inner) ? clauses->attnums_inner : clauses->attnums_outer,
+													  attnums,
 													  clauses->inequality,
 													  clauses->collations,
 													  clauses->nulls_first,
@@ -1950,7 +1943,7 @@ build_runs(GJoinState * node, PlanState *state,
 
 			tuplesortstate = tuplesort_begin_heap(tdesc,
 												  clauses->nattnums,
-												  (inner) ? clauses->attnums_inner : clauses->attnums_outer,
+												  attnums,
 												  clauses->inequality,
 												  clauses->collations,
 												  clauses->nulls_first,
@@ -1996,6 +1989,26 @@ build_runs(GJoinState * node, PlanState *state,
 	}
 
 	elog(DEBUG1, "build_runs %p DONE", state);
+}
+
+static void
+build_inner_runs(GJoinState * state)
+{
+	build_runs(state,
+			   state->innerstate,
+			   &state->buffer.inner,
+			   &state->runs.inner,
+			   state->clauses.attnums_inner);
+}
+
+static void
+build_outer_runs(GJoinState * state)
+{
+	build_runs(state,
+			   state->outerstate,
+			   &state->buffer.outer,
+			   &state->runs.outer,
+			   state->clauses.attnums_outer);
 }
 
 /*

@@ -233,10 +233,12 @@ ExecInitCustomJoin(CustomJoin *cjoin, EState *estate, int eflags)
 	CustomJoinState *cjs;
 	const TupleTableSlotOps *slotOps;
 	Relation	scan_rel = NULL;
-	// FIXME
+
+	/* FIXME */
 	Index		scanrelid = 0;
-	// Index		scanrelid = cscan->scan.scanrelid;
-	// int			tlistvarno;
+
+	/* Index		scanrelid = cscan->scan.scanrelid; */
+	/* int			tlistvarno; */
 
 	/*
 	 * Allocate the CustomJoinState object.  We let the custom scan provider
@@ -265,8 +267,8 @@ ExecInitCustomJoin(CustomJoin *cjoin, EState *estate, int eflags)
 	if (scanrelid > 0)
 	{
 		scan_rel = ExecOpenScanRelation(estate, scanrelid, eflags);
-		// FIXME
-		// cjs->js.ss_currentRelation = scan_rel;
+		/* FIXME */
+		/* cjs->js.ss_currentRelation = scan_rel; */
 	}
 
 	/*
@@ -284,29 +286,29 @@ ExecInitCustomJoin(CustomJoin *cjoin, EState *estate, int eflags)
 	 */
 	if (cjoin->custom_join_tlist != NIL || scan_rel == NULL)
 	{
-		// TupleDesc	scan_tupdesc;
+		/* TupleDesc	scan_tupdesc; */
 
-		// FIXME
-		// scan_tupdesc = ExecTypeFromTL(cjoin->custom_scan_tlist);
-		// ExecInitScanTupleSlot(estate, &cjs->js, scan_tupdesc, slotOps);
+		/* FIXME */
+		/* scan_tupdesc = ExecTypeFromTL(cjoin->custom_scan_tlist); */
+		/* ExecInitScanTupleSlot(estate, &cjs->js, scan_tupdesc, slotOps); */
 		/* Node's targetlist will contain Vars with varno = INDEX_VAR */
-		// tlistvarno = INDEX_VAR;
+		/* tlistvarno = INDEX_VAR; */
 	}
 	else
 	{
-		// FIXME
-		// ExecInitScanTupleSlot(estate, &cjs->js, RelationGetDescr(scan_rel),
-		// 					  slotOps);
+		/* FIXME */
+		/* ExecInitScanTupleSlot(estate, &cjs->js, RelationGetDescr(scan_rel), */
+		/* slotOps); */
 		/* Node's targetlist will contain Vars with varno = scanrelid */
-		// tlistvarno = scanrelid;
+		/* tlistvarno = scanrelid; */
 	}
 
 	/*
 	 * Initialize result slot, type and projection.
 	 */
 	ExecInitResultTupleSlotTL(&cjs->js.ps, &TTSOpsVirtual);
-	// FIXME
-	// ExecAssignScanProjectionInfoWithVarno(&cjs->js, tlistvarno);
+	/* FIXME */
+	/* ExecAssignScanProjectionInfoWithVarno(&cjs->js, tlistvarno); */
 
 	/* initialize child expressions */
 	cjs->js.ps.qual =

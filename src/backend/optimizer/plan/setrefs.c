@@ -1833,9 +1833,9 @@ set_customjoin_references(PlannerInfo *root,
 	 */
 
 	/* Adjust custom_exprs in the standard way */
-	// cjoin->custom_exprs =
-	//	fix_scan_list(root, cjoin->custom_exprs,
-	//				  rtoffset, NUM_EXEC_QUAL((Plan *) cjoin));
+	/* cjoin->custom_exprs = */
+	/* fix_scan_list(root, cjoin->custom_exprs, */
+	/* rtoffset, NUM_EXEC_QUAL((Plan *) cjoin)); */
 
 	/*
 	 * First process the joinquals (including merge or hash clauses).  These
@@ -1845,13 +1845,13 @@ set_customjoin_references(PlannerInfo *root,
 	 * subexpressions.
 	 */
 	cjoin->custom_exprs = fix_join_expr(root,
-								   cjoin->custom_exprs,
-								   outer_itlist,
-								   inner_itlist,
-								   (Index) 0,
-								   rtoffset,
-								   NRM_EQUAL,
-								   NUM_EXEC_QUAL((Plan *) cjoin));
+										cjoin->custom_exprs,
+										outer_itlist,
+										inner_itlist,
+										(Index) 0,
+										rtoffset,
+										NRM_EQUAL,
+										NUM_EXEC_QUAL((Plan *) cjoin));
 
 	/* Adjust child plan-nodes recursively, if needed */
 	foreach(lc, cjoin->custom_plans)

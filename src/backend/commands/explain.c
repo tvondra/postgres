@@ -2475,7 +2475,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			break;
 		case T_CustomJoin:
 			ExplainCustomJoinChildren((CustomJoinState *) planstate,
-									   ancestors, es);
+									  ancestors, es);
 			break;
 		default:
 			break;

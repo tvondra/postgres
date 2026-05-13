@@ -446,8 +446,8 @@ static void build_runs(GJoinState * node, PlanState *state,
 					   TupleBuffer * buffer, BatchRuns * runs,
 					   JoinClauses * clauses, bool inner);
 
-static void init_inner_runs(GJoinState * state, TupleDesc tdesc);
-static void init_outer_runs(GJoinState * state, TupleDesc tdesc);
+static void init_inner_runs(GJoinState * state);
+static void init_outer_runs(GJoinState * state);
 static bool load_outer_batch(GJoinState * state, int run, Batch * batch);
 static bool load_inner_batch(GJoinState * state, int run, Batch * batch);
 
@@ -1053,7 +1053,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 				elog(DEBUG1, "GJOIN_INIT_INNER");
 
 				/* load a bufffer of tuples for each run of the inner relation */
-				init_inner_runs(state, ExecGetResultType(state->innerstate));
+				init_inner_runs(state);
 
 				position_reset(&state->pos_inner);
 
@@ -1077,7 +1077,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 				elog(DEBUG1, "GJOIN_INIT_OUTER");
 
 				/* load a bufffer of tuples for each run of the outer relation */
-				init_outer_runs(state, ExecGetResultType(state->outerstate));
+				init_outer_runs(state);
 
 				position_reset(&state->pos_outer);
 
@@ -1805,15 +1805,6 @@ build_runs(GJoinState * node, PlanState *state,
 	TupleDesc	tdesc = ExecGetResultType(state);
 	int			nextrun = 0;
 
-	/* initialize the priority queues, described in the paper */
-
-	/* queues for R */
-	node->queues.inner_grow = pairingheap_allocate(priorityqueues_min_cmp, node);
-	node->queues.inner_shrink = pairingheap_allocate(priorityqueues_min_cmp, node);
-
-	/* queue for S (for the simplified variant with a single queue) */
-	node->queues.outer = pairingheap_allocate(priorityqueues_min_cmp, node);
-
 	/*
 	 * Get all tuples from the node below the Hash node and insert into the
 	 * hash table (or temp files).
@@ -2043,9 +2034,14 @@ batch_init(TupleDesc tdesc, int nattnums)
  * Loads one batch (~8KB) of tuples for each run generated for the relation.
  */
 static void
-init_inner_runs(GJoinState * state, TupleDesc tdesc)
+init_inner_runs(GJoinState * state)
 {
 	BatchRuns  *runs = &state->runs.inner;
+	TupleDesc tdesc = ExecGetResultType(state->innerstate);
+
+	/* queues for R */
+	state->queues.inner_grow = pairingheap_allocate(priorityqueues_min_cmp, state);
+	state->queues.inner_shrink = pairingheap_allocate(priorityqueues_min_cmp, state);
 
 	/*
 	 * Initialize batches of slots for all the runs, and load tuples from the
@@ -2128,9 +2124,13 @@ init_inner_runs(GJoinState * state, TupleDesc tdesc)
  * slots in the batch.
  */
 static void
-init_outer_runs(GJoinState * state, TupleDesc tdesc)
+init_outer_runs(GJoinState * state)
 {
 	BatchRuns  *runs = &state->runs.outer;
+	TupleDesc tdesc = ExecGetResultType(state->outerstate);
+
+	/* queue for S (for the simplified variant with a single queue) */
+	state->queues.outer = pairingheap_allocate(priorityqueues_min_cmp, state);
 
 	/*
 	 * Initialize batches of slots for all the runs, and load tuples from the

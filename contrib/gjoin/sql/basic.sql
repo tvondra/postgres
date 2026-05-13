@@ -1,8 +1,8 @@
 CREATE TABLE t1 (a INT, b INT);
 CREATE TABLE t2 (c INT, d INT);
 
-INSERT INTO t1 SELECT i, 1000 * random() FROM generate_series(1,10000) s(i);
-INSERT INTO t2 SELECT i, 1000 * random() FROM generate_series(1,10000) s(i);
+INSERT INTO t1 SELECT i, mod(i * 7121, 1000) FROM generate_series(1,10000) s(i);
+INSERT INTO t2 SELECT i, mod(i * 5443, 1000) FROM generate_series(1,10000) s(i);
 
 VACUUM ANALYZE t1;
 VACUUM ANALYZE t2;

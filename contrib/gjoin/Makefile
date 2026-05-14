@@ -10,7 +10,7 @@ DATA = gjoin--1.0.0.sql
 
 PGFILEDESC = "gjoin - custom join node"
 
-REGRESS = basic compare
+REGRESS = basic compare basic_text compare_text
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config

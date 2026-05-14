@@ -268,6 +268,8 @@ typedef struct JoinClauses
 	Oid		   *equality;		/* = operators (OIDs) */
 	Oid		   *inequality;		/* < operators (OIDs)  */
 	Oid		   *collations;		/* OIDs of collations */
+	FmgrInfo   *cmp_info;		/* comparators */
+	FmgrInfo   *hash_info;		/* hash functions */
 	bool	   *nulls_first;	/* XXX unnecessary? */
 }			JoinClauses;
 
@@ -897,7 +899,10 @@ gjoin_CreatePlanState(CustomJoin *cjoin)
 
 		/* determine the operators */
 		typentry = lookup_type_cache(var1->vartype,
-									 TYPECACHE_EQ_OPR | TYPECACHE_LT_OPR);
+									 TYPECACHE_EQ_OPR |
+									 TYPECACHE_LT_OPR |
+									 TYPECACHE_CMP_PROC_FINFO |
+									 TYPECACHE_HASH_PROC_FINFO);
 
 		Assert(opclause->opno == typentry->eq_opr);
 		Assert(idx < state->clauses.nattnums);
@@ -907,7 +912,9 @@ gjoin_CreatePlanState(CustomJoin *cjoin)
 		state->clauses.attnums_outer[idx] = attnum_outer;
 		state->clauses.equality[idx] = typentry->eq_opr;
 		state->clauses.inequality[idx] = typentry->lt_opr;
-		state->clauses.collations[idx] = opclause->opcollid;
+		state->clauses.cmp_info[idx] = typentry->cmp_proc_finfo;
+		state->clauses.hash_info[idx] = typentry->hash_proc_finfo;
+		state->clauses.collations[idx] = opclause->inputcollid;
 		state->clauses.nulls_first[idx] = true;
 
 		idx++;
@@ -1756,6 +1763,10 @@ join_clauses_init(JoinClauses * sort, int numcols)
 	sort->inequality = palloc_array(Oid, numcols);
 	sort->collations = palloc_array(Oid, numcols);
 	sort->nulls_first = palloc_array(bool, numcols);
+
+	/* type-specific functions */
+	sort->cmp_info = palloc_array(FmgrInfo, numcols);
+	sort->hash_info = palloc_array(FmgrInfo, numcols);
 }
 
 /*
@@ -2410,12 +2421,15 @@ compare_values(GJoinState * state, Datum *a, Datum *b)
 	/* elog(WARNING, "state->clauses.nattnums = %d", state->clauses.nattnums); */
 	for (int i = 0; i < state->clauses.nattnums; i++)
 	{
-		/* elog(WARNING, "a[%d] = %ld", i, a[i]); */
-		/* elog(WARNING, "b[%d] = %ld", i, b[i]); */
-		if (a[i] > b[i])
-			return 1;
-		else if (a[i] < b[i])
-			return -1;
+		int r = DatumGetInt32(FunctionCall2Coll(&state->clauses.cmp_info[i],
+												state->clauses.collations[i],
+												a[i], b[i]));
+
+		/* equal valus, try the next value */
+		if (r == 0)
+			continue;
+
+		return r;
 	}
 
 	return 0;
@@ -2504,11 +2518,16 @@ check_join_clause(GJoinState * state,
 		Datum		a,
 					b;
 		bool		isnull;
+		int			r;
 
 		a = slot_getattr(outer, state->clauses.attnums_inner[i], &isnull);
 		b = slot_getattr(inner, state->clauses.attnums_outer[i], &isnull);
 
-		if (a != b)
+		r = DatumGetInt32(FunctionCall2Coll(&state->clauses.cmp_info[i],
+											state->clauses.collations[i],
+											a, b));
+
+		if (r != 0)
 			return false;
 	}
 

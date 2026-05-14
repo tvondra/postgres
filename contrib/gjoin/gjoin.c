@@ -2068,6 +2068,10 @@ batch_init(TupleDesc tdesc, int nattnums)
 
 /*
  * release memory / slots associated with a batch
+ *
+ * XXX Maybe we could reuse the batches, so that we don't reinitialize the
+ * batch over and over again (particularly creating the slots might be quite
+ * expensive, I guess).
  */
 static void
 batch_free(Batch *batch)

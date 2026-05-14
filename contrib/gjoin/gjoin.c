@@ -450,7 +450,7 @@ static void init_outer_runs(GJoinState * state);
 static bool load_outer_batch(GJoinState * state, int run, Batch * batch);
 static bool load_inner_batch(GJoinState * state, int run, Batch * batch);
 
-static bool buffer_in_join_range(GJoinState * state, Batch * batch);
+static bool batch_in_join_range(GJoinState * state, Batch * batch);
 static bool check_join_clause(GJoinState * state,
 							  TupleTableSlot *outer, TupleTableSlot *inner);
 static void update_join_range(GJoinState * state);
@@ -808,9 +808,6 @@ create_gjoin_plan(PlannerInfo *root,
  *
  * This does not need to be copied by the executor, so we don't need to
  * stash fields into lists etc.
- *
- * FIXME Most of the information is hard-coded and fake, working for a
- * singe fixed example. Needs to be derived from the actual join info.
  */
 static Node *
 gjoin_CreatePlanState(CustomJoin *cjoin)
@@ -976,7 +973,7 @@ gjoin_BeginCustomJoin(CustomJoinState *node,
 		return;
 
 	/*
-	 * FIXME rest of init, if needed.
+	 * rest of init, if needed.
 	 */
 }
 
@@ -1082,51 +1079,75 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 				elog(DEBUG1, "GJOIN_NEXT_OUTER");
 
 				/*
-				 * Advances to the next tuple in the outer relation (and
-				 * possibly also loads the next buffer).
+				 * Advances to the next tuple in the outer relation. If there
+				 * are no more tuples in the current batch, initiate loading
+				 * of the next batch.
 				 *
-				 * FIXME should split the two things - one state for loading
-				 * the next buffer, another for advancing to the next tuple
-				 * slot
+				 * XXX This expects to already have the outer batch loaded
+				 * (unless there are no more outer batches).
 				 */
 
 				{
 					/*
-					 * Are there are any outer buffers (S) that could be
-					 * joined with the already loaded inner buffers? The whole
-					 * outer buffer needs to be completely covered by
-					 * "immediate join range" of R, which is the intersection
-					 * of ranges for all runs.
+					 * Are there are any outer batches (S) that could be
+					 * joined with the already loaded inner batches?
 					 *
-					 * We only look at the first buffer in the run identified
-					 * by the priority queue "C".
+					 * The whole outer batch needs to be covered by the
+					 * "immediate join range" of R, which is th
+					 * intersections of ranges for all valid runs.
+					 *
+					 * We only look at the first batch in the outer run
+					 * identified by the priority queue "C" (per paper).
 					 */
+					BatchRun   *run;
 					Batch	   *batch;
 
 					/*
-					 * If we don't have a buffer from S, get the next one from
-					 * the queue "C" (determines in what order to load buffers
-					 * for runs of the outer relation).
+					 * If we are not already processing a batch from S,
+					 * get the next one from the queue "C" (determines in
+					 * what order to load buffers for runs of the outer
+					 * relation).
+					 *
+					 * This only tells us which run/batch to look at, the
+					 * batch should have been already loaded from earlier
+					 * (it happens after evicting the preceding batch).
+					 * If there are no more batches, the queue is empty.
 					 */
 					if (position_is_invalid(&state->pos_outer))
 					{
 						QueueEntry *entry;
 
 						/*
-						 * empty queue C means no more buffers in S, so
-						 * terminate
+						 * empty queue C means no more batches in S, so
+						 * terminate - we can't return any more tuples.
 						 */
 						if (pairingheap_is_empty(state->queues.outer))
+						{
+#ifdef USE_ASSERT_CHECKING
+							/* no more batches for outer runs */
+							for (int i = 0; i < state->runs.outer.nruns; i++)
+							{
+								Assert(dlist_is_empty(&state->runs.outer.runs[i].batches));
+							}
+#endif
 							return NULL;
+						}
 
 						/*
-						 * don't remove the entry yet, GJOIN_LOAD_OUTER does
-						 * that
+						 * Only peek at the entry, don't remove it from the
+						 * queue yet. GJOIN_LOAD_OUTER does that when loading
+						 * the next batch for this run.
+						 *
+						 * XXX The entry is for the *next* batch to load,
+						 * after we evict the current one. not the one we
+						 * are processing right now. That's how the algorithm
+						 * works - we only keep a single outer batch for
+						 * each run, I think. At least with the simpler
+						 * variant of the algorithm, with three queues.
 						 */
 						entry = priorityqueues_peek(state->queues.outer);
 
-						/* if we got an entry from queue, there must be a list */
-						Assert(!dlist_is_empty(&state->runs.outer.runs[entry->run].batches));
+						/* The entry should be for a valid run. */
 						Assert(entry->run < state->runs.outer.nruns);
 
 						/* init the outer position */
@@ -1134,66 +1155,61 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 						state->pos_outer.slot = -1;
 					}
 
+					Assert((state->pos_outer.run >= 0) &&
+						   (state->pos_outer.run < state->runs.outer.nruns));
+
+					run = &state->runs.outer.runs[state->pos_outer.run];
+
+					/* The current outer run must have some batches. */
+					Assert(!dlist_is_empty(&run->batches));
+
 					/*
 					 * XXX Maybe we could stash the buffer somewhere, so that
 					 * we don't need to call dlist_head_element over and over
 					 * (although it's likely cheap)? Can wait.
+					 *
+					 * XXX Actually, we already stash it into the position.
 					 */
-					batch = dlist_head_element(Batch, node,
-											   &state->runs.outer.runs[state->pos_outer.run].batches);
+					batch = dlist_head_element(Batch, node, &run->batches);
 
 					/*
-					 * Is the whole buffer within the immediate join range? If
-					 * not, we need to load some more pages for R (inner).
+					 * Is the whole batch covered by the inner join range?
+					 * If not, we need to load some more pages for R (inner).
 					 *
-					 * FIXME Needs to use proper type comparators. Might be
-					 * quite expensive, so we don't want to do that for every
-					 * outer slot again, just once per buffer (and not for
-					 * every tuple like happens now).
-					 */
-/*
- XXX We don't need to check the lower boundary, because if we get to
- load more buffers for inner relation, that only ever moves the upper
- boundary.
-					if (!buffer->min_empty &&
-						compare_values(state, state->join_range.min_values, buffer->min_values) > 0)
-					{
-						state->phase = GJOIN_LOAD_INNER;
-						continue;
-					}
-*/
-
-					/*
-					 * FIXME this is not sufficient, because the join_range
-					 * may be "incomplete", i.e. there may be more tuples with
-					 * the same join key in the next buffer. So we need to
-					 * either allow processing the outer buffer repeatedly, or
-					 * make sure all the inner buffers are loaded at once (but
-					 * then that needs more memory, and we may exceed
-					 * work_mem). Or maybe we could peek at the next buffer in
-					 * each run, and consider that when calculating the join
-					 * range?
+					 * XXX We don't need to check the lower boundary. We
+					 * never evict inner batches needed by current outer
+					 * batches (and therefore no future batches either).
+					 * So the lower boundary of the join range is fine.
 					 *
-					 * In fact, we could calculate the join range knowing
-					 * whether the upper boundary is inclusive or exclusive,
-					 * and then we could process just the outer tuples that
-					 * fall into that join range. But we still can't release
-					 * the inner buffers, because the next outer buffer could
-					 * need those.
+					 * XXX But maybe we should still check even the lower
+					 * boundary, at least in assert builds. Just to make
+					 * sure we're not evicting buffers too early.
+					 *
+					 * For the upper boundary, we need to be careful about
+					 * whether to include/exclude the boundary values. If
+					 * there are duplicates, the following inner batch (not
+					 * yet loaded) has the same join keys. We could peek
+					 * at the next loaded tuple, but for now we just treat
+					 * the boundaries as exclusive. This way we may load
+					 * an extra batch, but good enough.
+					 *
+					 * For the last batch in each run we treat the boundary
+					 * as "unbounded", i.e. covering any values.
 					 */
-					if (!buffer_in_join_range(state, batch))
+					if (!batch_in_join_range(state, batch))
 					{
+						/* need to load more inner batches */
 						state->phase = GJOIN_LOAD_INNER;
 						continue;
 					}
 
-					/* We can join this buffer, so advance to the next slot. */
+					/* We can join this batch, advance to the next slot. */
 					state->pos_outer.slot++;
 
 					/*
-					 * If we ran out of slots in this buffer, reset the
-					 * position and request next buffer from the outer
-					 * relation.
+					 * If we ran out of slots in this batch, we need to
+					 * load the next outer batch. Reset the position and
+					 * request next batch from the outer relation.
 					 */
 					if (state->pos_outer.slot >= batch->nslots)
 					{
@@ -1203,12 +1219,12 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					}
 
 					/*
-					 * Got a valid outer tuple to join, so find all tuples on
-					 * the inner side.
+					 * Got a valid outer tuple to join. And we also have
+					 * all the inner batches with possible join pairs. So
+					 * match them.
 					 */
 					position_reset(&state->pos_inner);
 					state->phase = GJOIN_NEXT_INNER;
-
 					continue;
 				}
 
@@ -1217,99 +1233,91 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 				elog(DEBUG1, "GJOIN_NEXT_INNER");
 
 				/*
-				 * Advances to the next tuple in the inner relation (and
-				 * possibly also loads the next buffer).
+				 * Find the next inner tuple matching the current outer one.
 				 *
-				 * FIXME should split the two things - one state for loading
-				 * the next buffer, another for advancing to the next tuple
-				 * slot
+				 * XXX This expects to already have all needed internal
+				 * batches loaded (unless there are no more batches).
 				 */
-
 				{
 
 					/*
-					 * We have a slot from S (outer relation) to join, so walk
-					 * loaded buffers from R (inner) and join them to the S
-					 * tuple.
+					 * We have a slot from S (outer relation) to join in
+					 * pos_outer. Walk all batches loaded from R (inner)
+					 * runs and join them to the S tuple.
 					 *
 					 * XXX It should be possible to optimize this by first
-					 * comparing the buffer range to the S range, and
-					 * eliminate many of the buffers based on that.
+					 * comparing the inner batch range to the S range, and
+					 * eliminate some of the batches based on that. Although,
+					 * we probably should evict those.
+					 *
+					 * FIXME But maybe we could remember the first matching
+					 * inner slot for the outer tuple, and start from there
+					 * for the next outer tuple. Because none of the earlier
+					 * tuples can match (thanks to sorting).
 					 */
 					for (;;)
 					{
 						Batch	   *batch_inner;
 						Batch	   *batch_outer;
+						BatchRun   *run;
 
 						/* Have we ran out of runs? We're done. */
 						if (state->pos_inner.run >= state->runs.inner.nruns)
 							break;
 
-						/* we've just start, so advance to first run */
+						/* We've just started, so try the first inner run. */
 						if (state->pos_inner.run == -1)
 							state->pos_inner.run = 0;
 
-						/*
-						 * If there's no batch yet, try to get the first
-						 * buffer from the selected run.
-						 */
-						if (state->pos_inner.batch == NULL)
-						{
-							/*
-							 * skip runs with no buffers (must have been
-							 * finished)
-							 */
-							if (dlist_is_empty(&state->runs.inner.runs[state->pos_inner.run].batches))
-							{
-								state->pos_inner.run++;
-								continue;
-							}
-
-							/*
-							 * FIXME don't look at the head only, need to walk
-							 * all the buffers
-							 */
-							batch_inner = dlist_head_element(Batch, node,
-															 &state->runs.inner.runs[state->pos_inner.run].batches);
-
-							state->pos_inner.batch = batch_inner;
-						}
+						/* current batch run */
+						run = &state->runs.inner.runs[state->pos_inner.run];
 
 						/* get the current inner buffer */
 						batch_inner = state->pos_inner.batch;
 
 						/*
-						 * OK, time to join this R buffer. Advance to the next
-						 * slot.
+						 * If there's no current batch yet, get the first one for
+						 * the selected run (if there's one).
 						 */
+						if (batch_inner == NULL)
+						{
+							/* skip runs with no more batches */
+							if (dlist_is_empty(&run->batches))
+							{
+								state->pos_inner.run++;
+								continue;
+							}
+
+							/* get first batch from the run */
+							batch_inner = dlist_head_element(Batch, node,
+															 &run->batches);
+							state->pos_inner.batch = batch_inner;
+
+							Assert(state->pos_inner.slot == -1);
+						}
+
+						/* Advance to the next slot in the current batch. */
 						state->pos_inner.slot++;
 
 						/*
-						 * Have we ran out of slots? Move to the next buffer
-						 * (or run).
+						 * If we processed all slots, move to the next batch
+						 * in this run (or the next run).
 						 */
 						if (state->pos_inner.slot >= batch_inner->nslots)
 						{
-							/*
-							 * if there's another buffer in this run, advance
-							 * to it
-							 */
-							if (dlist_has_next(&state->runs.inner.runs[state->pos_inner.run].batches,
-											   &batch_inner->node))
+							/* advance to the next batch for this run */
+							if (dlist_has_next(&run->batches, &batch_inner->node))
 							{
 								dlist_node *next_node;
 
-								next_node = dlist_next_node(&state->runs.inner.runs[state->pos_inner.run].batches,
+								next_node = dlist_next_node(&run->batches,
 															&batch_inner->node);
 								batch_inner = dlist_container(Batch, node, next_node);
 								state->pos_inner.batch = batch_inner;
 							}
 							else
 							{
-								/*
-								 * no batch in this run, advance to the next
-								 * run
-								 */
+								/* no more batches, try the next run */
 								state->pos_inner.batch = NULL;
 								state->pos_inner.run++;
 							}
@@ -1317,16 +1325,26 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 							continue;
 						}
 
+						/*
+						 * get the current outer batch
+						 *
+						 * We're always processing only the head batch from
+						 * the current run.
+						 */
 						batch_outer = dlist_head_element(Batch, node,
 														 &state->runs.outer.runs[state->pos_outer.run].batches);
 
 						/*
-						 * FIXME check that the two buffers overlap (not just
-						 * the immediate join range, but the two smaller
-						 * ranges)
+						 * FIXME Maybe we could check that the two batches
+						 * overlap - if we could skip a futile loop over all
+						 * concurrent combinations of tuples, that would be
+						 * a huge speedup.
 						 */
 
-						/* time to actually compare the two inner/outer tuples */
+						/*
+						 * Actually try to join inner/outer tuples from the
+						 * current inner/outer batches.
+						 */
 						{
 							TupleTableSlot *outer = batch_outer->slots[state->pos_outer.slot];
 							TupleTableSlot *inner = batch_inner->slots[state->pos_inner.slot];
@@ -1382,16 +1400,23 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					/* load the next buffer from the run */
 					loaded = load_inner_batch(state, entry->run, batch);
 
-/* 					if (loaded) */
-/* 						elog(DEBUG1, "loaded inner buffer %p %d [%ld, %ld]", */
-/* 							 buffer, entry->run, buffer->min_value, buffer->max_value); */
-
-					/* FIXME handle loaded=false */
+					/*
+					 * FIXME handle loaded=false
+					 *
+					 * Do we need to do something? It just means there are
+					 * no more inner batches in a given run, no? But can
+					 * that even happen? We checked the queue is not empty,
+					 * so there should be a batch, no?
+					 */
+					Assert(loaded);	/* not sure if correct ... */
 
 					position_reset(&state->pos_inner);
 					update_join_range(state);
 
-					/* retry the join */
+					/*
+					 * Retry the join (if we need more inner batches to
+					 * cover the join range, we'll get here again soon.
+					 */
 					state->phase = GJOIN_NEXT_OUTER;
 					break;
 				}
@@ -1402,36 +1427,41 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 
 				{
 					/*
-					 * FIXME This may free the buffer prematurely. We should
-					 * only free it if it just got joined. And only then we
-					 * should load the next one.
+					 * FIXME Can't this free the batches prematurely? We
+					 * should only free batches that just got joined. And
+					 * only then we should load the next one. I think it's
+					 * fine, we only get here from GJOIN_NEXT_OUTER, after
+					 * processing the last slot.
 					 */
 
 					QueueEntry *entry;
 					Batch	   *batch;
+					// BatchRun   *run;
 					bool		loaded;
 
 					Assert(!pairingheap_is_empty(state->queues.outer));
 
-					/* still don't remove the entry, we'll need it t */
+					/* don't remove the entry yet, we'll need it t */
 					entry = priorityqueues_peek(state->queues.outer);
 
-					batch = dlist_head_element(Batch, node,
-											   &state->runs.outer.runs[entry->run].batches);
-
+					/*
+					 * XXX it's a bit strange, but we can't free the batch
+					 * here, because it's used in GJOIN_EVICT_INNER.
+					 */
 					/* unlink the buffer from the list */
-					/* dlist_delete(&(buffer->node)); */
+					// run = &state->runs.outer.runs[entry->run];
+					// batch = dlist_head_element(Batch, node, &run->batches);
+					// dlist_delete(&(batch->node));
 
 					batch = batch_init(ExecGetResultType(state->outerstate),
 									   state->clauses.nattnums);
 
 					loaded = load_outer_batch(state, entry->run, batch);
 
-/* 					if (loaded) */
-/* 						elog(DEBUG1, "loaded outer buffer %p %d [%ld, %ld]", */
-/* 							 buffer, entry->run, buffer->min_value, buffer->max_value); */
-
-					/* FIXME handle loaded=false */
+					/*
+					 * FIXME Do we need to do anything when loaded=false?
+					 * It means there are no more batches in the outer run.
+					 */
 
 					/*
 					 * FIXME we shouldn't be resetting the position all the
@@ -1462,87 +1492,105 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					 * should loading inner, and retry the buffer join. But
 					 * now we always do load_inner -> load_outer.
 					 */
-					QueueEntry *entry;
-					Batch	   *batch;
+					QueueEntry *entry_outer;
+					Batch	   *batch_outer;
+					BatchRun   *run_outer;
 
 					Assert(!pairingheap_is_empty(state->queues.outer));
 
-					/* time to finally remove the entry, won't need it */
-					entry = priorityqueues_pop(state->queues.outer);
+					/*
+					 * Time to finally remove the processed outer batch, we
+					 * won't need it anymore. We just remove it from the
+					 * queue, but don't free it yet - we still need the
+					 * max values to decide which inner batches are safe
+					 * to evict.
+					 */
+					entry_outer = priorityqueues_pop(state->queues.outer);
 
-					batch = dlist_head_element(Batch, node,
-											   &state->runs.outer.runs[entry->run].batches);
-
-					Assert(compare_values(state, entry->values, batch->max_values) == 0);
-
-					/* unlink the buffer from the list */
-					dlist_delete(&(batch->node));
+					/* unlink the batch from the run */
+					run_outer = &state->runs.outer.runs[entry_outer->run];
+					batch_outer = dlist_head_element(Batch, node, &run_outer->batches);
+					dlist_delete(&(batch_outer->node));
 
 					/*
-					 * XXX no need to do anything about the outer queue, it's
-					 * fed by loading new pages from S.
+					 * paranoia: make sure the batch and queue entry match
+					 *
+					 * XXX Does this need to consider the batch may have
+					 * unbounded range?
+					 */
+					Assert(compare_values(state, entry_outer->values,
+												 batch_outer->max_values) == 0);
+
+					/*
+					 * XXX no need to do anything about the outer queue,
+					 * e.g. by loading the next batch. That happens in
+					 * GJOIN_LOAD_OUTER. It's just the eviction that's
+					 * done here.
 					 */
 
-/* 					elog(DEBUG1, "evicting outer buffer %p %d [%ld, %ld] %ld", */
-/* 						 buffer, entry->run, buffer->min_value, buffer->max_value, entry->value); */
-
 					/*
-					 * Try to evict buffers for inner relation, using the
-					 * 'shrink' queue. The buffer has to be the head for each
-					 * run (the queue only has run index), and we can evict it
-					 * if the max_value is before the outer buffer.
+					 * Walk the inner batches from the 'shrink' queue, and
+					 * try to evict them. The buffer has to be the head for
+					 * a run (the queue only has the run index, but we can't
+					 * evict batches from the middle of a run). We can evict
+					 * the batch, if it's before the outer batch.
 					 */
 					for (;;)
 					{
 						Batch	   *batch_inner,
 								   *tail;
+						BatchRun   *run_inner;
 						QueueEntry *entry_inner;
 
+						/* peek - we don't know if we can evict it yet */
 						entry_inner = priorityqueues_peek(state->queues.inner_shrink);
 
+						run_inner = &state->runs.inner.runs[entry_inner->run];
 						batch_inner = dlist_head_element(Batch, node,
-														 &state->runs.inner.runs[entry->run].batches);
+														 &run_inner->batches);
 						tail = dlist_tail_element(Batch, node,
-												  &state->runs.inner.runs[entry->run].batches);
+												  &run_inner->batches);
 
-						/* can't evict, still may be needed to join */
-						if (compare_values(state, entry_inner->values, entry->values) >= 0)
+						/* can't evict, some outer batch may need it */
+						if (compare_values(state, entry_inner->values, entry_outer->values) >= 0)
 							break;
 
 						/*
-						 * also can't evict if it's the only buffer for the
-						 * run
+						 * can't evict if the only batch for the run
+						 *
+						 * XXX Not sure why ... need to check the paper.
 						 */
 						if (batch_inner == tail)
 							break;
 
-						/* ok, remove */
+						/* can remove the batch, so pop from the queue */
 						priorityqueues_pop(state->queues.inner_shrink);
 
 						/*
-						 * FIXME if there are more buffers, for this run, have
-						 * to add the next one (the oldest page remaining) to
-						 * the shrink queue
+						 * If there are more inner batches for this run, add the
+						 * next one (the oldest one remaining) to the queue.
+						 *
+						 * XXX Per the check a couple lines back, we don't allow
+						 * eviction of the last batch in a run, so this should
+						 * always be the case.
 						 */
 
-						if (dlist_has_next(&state->runs.inner.runs[entry_inner->run].batches,
+						if (dlist_has_next(&run_inner->batches,
 										   &batch_inner->node))
 						{
-							Batch	   *tmp;
+							Batch	   *next_batch;
 							dlist_node *next_node;
 
-							next_node = dlist_next_node(&state->runs.inner.runs[entry_inner->run].batches,
+							next_node = dlist_next_node(&run_inner->batches,
 														&batch_inner->node);
-							tmp = dlist_container(Batch, node, next_node);
-							priorityqueues_push(state->queues.inner_shrink, entry_inner->run, tmp->max_values);
+							next_batch = dlist_container(Batch, node, next_node);
+
+							priorityqueues_push(state->queues.inner_shrink,
+												entry_inner->run, next_batch->max_values);
 						}
 
 						/* unlink the buffer from the list */
 						dlist_delete(&(batch_inner->node));
-
-/* 						elog(DEBUG1, "evicting inner buffer %p %d [%ld, %ld]", */
-/* 							 buffer_inner, entry_inner->run, */
-/* 							 buffer_inner->min_values, buffer_inner->max_values); */
 					}
 
 					/* FIXME free the buffer tuples / memory */
@@ -2441,7 +2489,7 @@ check_join_clause(GJoinState * state,
 }
 
 static bool
-buffer_in_join_range(GJoinState * state, Batch * buffer)
+batch_in_join_range(GJoinState * state, Batch * buffer)
 {
 	/* if we only have "last" buffers in each run, all buffers match */
 	if (state->join_range.max_unbounded)

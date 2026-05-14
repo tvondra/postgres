@@ -12,13 +12,11 @@ EXPLAIN (VERBOSE, COSTS OFF, BUFFERS OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2
  Custom Join (GJoin) Join
    Output: t1.a, t1.b, t2.c, t2.d
    Join Cond: (t1.a = t2.c)
-   Runs: inner=0 outer=0
-   Memory: inner=0 outer=0
    ->  Seq Scan on public.t1
          Output: t1.a, t1.b
    ->  Seq Scan on public.t2
          Output: t2.c, t2.d
-(9 rows)
+(7 rows)
 
 EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) LIMIT 100;
                             QUERY PLAN                            
@@ -29,12 +27,13 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Output: t1.a, t1.b, t2.c, t2.d
          Join Cond: (t1.a = t2.c)
          Runs: inner=1 outer=1
-         Memory: inner=1 outer=1
+         Tuples: inner=256 outer=128 cross=12772
+         Batches: inner=2 outer=1 cross=199
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a, t1.b
          ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
                Output: t2.c, t2.d
-(11 rows)
+(12 rows)
 
 EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) LIMIT 200;
                             QUERY PLAN                            
@@ -45,12 +44,13 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Output: t1.a, t1.b, t2.c, t2.d
          Join Cond: (t1.a = t2.c)
          Runs: inner=1 outer=1
-         Memory: inner=1 outer=1
+         Tuples: inner=384 outer=256 cross=25544
+         Batches: inner=3 outer=2 cross=471
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a, t1.b
          ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
                Output: t2.c, t2.d
-(11 rows)
+(12 rows)
 
 EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) LIMIT 500;
                             QUERY PLAN                            
@@ -61,12 +61,13 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Output: t1.a, t1.b, t2.c, t2.d
          Join Cond: (t1.a = t2.c)
          Runs: inner=1 outer=1
-         Memory: inner=1 outer=1
+         Tuples: inner=640 outer=512 cross=63988
+         Batches: inner=5 outer=4 cross=1371
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a, t1.b
          ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
                Output: t2.c, t2.d
-(11 rows)
+(12 rows)
 
 EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) LIMIT 1000;
                             QUERY PLAN                            
@@ -77,12 +78,13 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Output: t1.a, t1.b, t2.c, t2.d
          Join Cond: (t1.a = t2.c)
          Runs: inner=1 outer=1
-         Memory: inner=1 outer=1
+         Tuples: inner=1152 outer=1024 cross=127976
+         Batches: inner=9 outer=8 cross=2871
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a, t1.b
          ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
                Output: t2.c, t2.d
-(11 rows)
+(12 rows)
 
 EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) LIMIT 5000;
                             QUERY PLAN                            
@@ -93,12 +95,13 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Output: t1.a, t1.b, t2.c, t2.d
          Join Cond: (t1.a = t2.c)
          Runs: inner=1 outer=1
-         Memory: inner=1 outer=1
+         Tuples: inner=5248 outer=5120 cross=639880
+         Batches: inner=41 outer=40 cross=14871
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a, t1.b
          ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
                Output: t2.c, t2.d
-(11 rows)
+(12 rows)
 
 EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) LIMIT 10000;
                             QUERY PLAN                            
@@ -109,12 +112,13 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Output: t1.a, t1.b, t2.c, t2.d
          Join Cond: (t1.a = t2.c)
          Runs: inner=1 outer=1
-         Memory: inner=1 outer=1
+         Tuples: inner=10000 outer=10000 cross=1278208
+         Batches: inner=79 outer=79 cross=29856
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a, t1.b
          ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
                Output: t2.c, t2.d
-(11 rows)
+(12 rows)
 
 EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c);
                          QUERY PLAN                         
@@ -123,12 +127,13 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
    Output: t1.a, t1.b, t2.c, t2.d
    Join Cond: (t1.a = t2.c)
    Runs: inner=1 outer=1
-   Memory: inner=1 outer=1
+   Tuples: inner=10000 outer=10000 cross=1278208
+   Batches: inner=79 outer=80 cross=29856
    ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
          Output: t1.a, t1.b
    ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
          Output: t2.c, t2.d
-(9 rows)
+(10 rows)
 
 EXPLAIN (VERBOSE, COSTS OFF, BUFFERS OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c AND t1.b < t2.d);
             QUERY PLAN            
@@ -137,13 +142,11 @@ EXPLAIN (VERBOSE, COSTS OFF, BUFFERS OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2
    Output: t1.a, t1.b, t2.c, t2.d
    Filter: (t1.b < t2.d)
    Join Cond: (t1.a = t2.c)
-   Runs: inner=0 outer=0
-   Memory: inner=0 outer=0
    ->  Seq Scan on public.t1
          Output: t1.a, t1.b
    ->  Seq Scan on public.t2
          Output: t2.c, t2.d
-(10 rows)
+(8 rows)
 
 EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c AND t1.b < t2.d) LIMIT 100;
                             QUERY PLAN                            
@@ -155,12 +158,13 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Filter: (t1.b < t2.d)
          Join Cond: (t1.a = t2.c)
          Runs: inner=1 outer=1
-         Memory: inner=1 outer=1
+         Tuples: inner=384 outer=256 cross=24512
+         Batches: inner=3 outer=2 cross=447
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a, t1.b
          ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
                Output: t2.c, t2.d
-(12 rows)
+(13 rows)
 
 EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c AND t1.b < t2.d) LIMIT 200;
                             QUERY PLAN                            
@@ -172,12 +176,13 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Filter: (t1.b < t2.d)
          Join Cond: (t1.a = t2.c)
          Runs: inner=1 outer=1
-         Memory: inner=1 outer=1
+         Tuples: inner=640 outer=512 cross=50185
+         Batches: inner=5 outer=4 cross=1050
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a, t1.b
          ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
                Output: t2.c, t2.d
-(12 rows)
+(13 rows)
 
 EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c AND t1.b < t2.d) LIMIT 500;
                             QUERY PLAN                            
@@ -189,12 +194,13 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Filter: (t1.b < t2.d)
          Join Cond: (t1.a = t2.c)
          Runs: inner=1 outer=1
-         Memory: inner=1 outer=1
+         Tuples: inner=1152 outer=1024 cross=127976
+         Batches: inner=9 outer=8 cross=2871
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a, t1.b
          ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
                Output: t2.c, t2.d
-(12 rows)
+(13 rows)
 
 EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c AND t1.b < t2.d) LIMIT 1000;
                             QUERY PLAN                            
@@ -206,12 +212,13 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Filter: (t1.b < t2.d)
          Join Cond: (t1.a = t2.c)
          Runs: inner=1 outer=1
-         Memory: inner=1 outer=1
+         Tuples: inner=2176 outer=2048 cross=255823
+         Batches: inner=17 outer=16 cross=5868
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a, t1.b
          ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
                Output: t2.c, t2.d
-(12 rows)
+(13 rows)
 
 EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c AND t1.b < t2.d) LIMIT 5000;
                             QUERY PLAN                            
@@ -223,12 +230,13 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Filter: (t1.b < t2.d)
          Join Cond: (t1.a = t2.c)
          Runs: inner=1 outer=1
-         Memory: inner=1 outer=1
+         Tuples: inner=10000 outer=10000 cross=1278208
+         Batches: inner=79 outer=80 cross=29856
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a, t1.b
          ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
                Output: t2.c, t2.d
-(12 rows)
+(13 rows)
 
 EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c AND t1.b < t2.d) LIMIT 10000;
                             QUERY PLAN                            
@@ -240,12 +248,13 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Filter: (t1.b < t2.d)
          Join Cond: (t1.a = t2.c)
          Runs: inner=1 outer=1
-         Memory: inner=1 outer=1
+         Tuples: inner=10000 outer=10000 cross=1278208
+         Batches: inner=79 outer=80 cross=29856
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a, t1.b
          ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
                Output: t2.c, t2.d
-(12 rows)
+(13 rows)
 
 EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c AND t1.b < t2.d);
                          QUERY PLAN                         
@@ -255,12 +264,13 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
    Filter: (t1.b < t2.d)
    Join Cond: (t1.a = t2.c)
    Runs: inner=1 outer=1
-   Memory: inner=1 outer=1
+   Tuples: inner=10000 outer=10000 cross=1278208
+   Batches: inner=79 outer=80 cross=29856
    ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
          Output: t1.a, t1.b
    ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
          Output: t2.c, t2.d
-(10 rows)
+(11 rows)
 
 DROP TABLE t1;
 DROP TABLE t2;

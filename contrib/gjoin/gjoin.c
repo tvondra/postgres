@@ -484,8 +484,13 @@ static void join_range_for_run(GJoinState * state, dlist_head *run,
 							   bool *min_unbounded, bool *max_unbounded);
 static bool batches_may_overlap(GJoinState *state, Batch *a, Batch *b);
 
+#ifdef GJOIN_DEBUG
 static void debug_print_batch(GJoinState *state, char *msg, Batch *batch);
-
+static void debug_print_runs(GJoinState *state);
+#else
+#define debug_print_batch(a, b, c)
+#define debug_print_runs(a)
+#endif
 
 void
 _PG_init(void)
@@ -1246,6 +1251,9 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 						continue;
 					}
 
+					/* dump current inner/outer runs */
+					debug_print_runs(state);
+
 					/* We can join this batch, advance to the next slot. */
 					state->pos_outer.slot++;
 
@@ -1352,11 +1360,14 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 						 * get the current outer batch
 						 *
 						 * We're always processing only the head batch from
-						 * the current run.
+						 * the current outer run.
 						 */
-						Assert(state->pos_outer.batch != NULL);
 						batch_outer = dlist_head_element(Batch, node,
 														 &state->runs.outer.runs[state->pos_outer.run].batches);
+
+						/* XXX We should simply use state->pos_outer.batch */
+						Assert(state->pos_outer.batch != NULL);
+						Assert(state->pos_outer.batch == batch_outer);
 
 						/*
 						 * If we processed all slots, or if the two batches
@@ -1373,9 +1384,13 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 						 * join range / evicts inner batches), maybe just for
 						 * the simplified variant with three queues. Or if
 						 * that's some sort of thinko in this code.
+						 *
+						 * XXX The overlap is checked only on the first slot,
+						 * not every time we get here.
 						 */
 						if ((state->pos_inner.slot >= batch_inner->nslots) ||
-							!batches_may_overlap(state, batch_inner, batch_outer))
+							((state->pos_inner.slot == 0) &&
+							 !batches_may_overlap(state, batch_inner, batch_outer)))
 						{
 							/* advance to the next batch for this run */
 							if (dlist_has_next(&run->batches, &batch_inner->node))
@@ -2252,9 +2267,14 @@ init_inner_runs(GJoinState * state)
 			for (int j = 0; j < state->clauses.nattnums; j++)
 			{
 				/*
-				 * Use the value from the last tuple (because the data is
-				 * sorted by this key).
+				 * Use the values from the first/last tuples (because the
+				 * data is sorted that way).
 				 */
+				batch->min_values[j]
+					= slot_getattr(batch->slots[0],
+								   state->clauses.attnums_inner[j],
+								   &batch->max_isnull[j]);
+
 				batch->max_values[j]
 					= slot_getattr(batch->slots[batch->nslots - 1],
 								   state->clauses.attnums_inner[j],
@@ -2331,9 +2351,14 @@ init_outer_runs(GJoinState * state)
 			for (int j = 0; j < state->clauses.nattnums; j++)
 			{
 				/*
-				 * Use the value from the last tuple (because the data is
-				 * sorted by this key).
+				 * Use the values from the first/last tuples (because the
+				 * data is sorted that way).
 				 */
+				batch->min_values[j]
+					= slot_getattr(batch->slots[0],
+								   state->clauses.attnums_outer[j],
+								   &batch->max_isnull[j]);
+
 				batch->max_values[j]
 					= slot_getattr(batch->slots[batch->nslots - 1],
 								   state->clauses.attnums_outer[j],
@@ -2394,8 +2419,8 @@ load_outer_batch(GJoinState * state, int run, Batch * batch)
 	for (int i = 0; i < state->clauses.nattnums; i++)
 	{
 		batch->min_values[i] = slot_getattr(batch->slots[0],
-											 state->clauses.attnums_outer[i],
-											 &batch->max_isnull[i]);
+											state->clauses.attnums_outer[i],
+											&batch->max_isnull[i]);
 
 		batch->max_values[i] = slot_getattr(batch->slots[batch->nslots - 1],
 											state->clauses.attnums_outer[i],
@@ -2465,7 +2490,7 @@ load_inner_batch(GJoinState * state, int run, Batch * batch)
 											&batch->max_isnull[i]);
 
 		batch->max_values[i] = slot_getattr(batch->slots[batch->nslots - 1],
-											state->clauses.attnums_outer[i],
+											state->clauses.attnums_inner[i],
 											&batch->max_isnull[i]);
 	}
 
@@ -2656,14 +2681,12 @@ batch_in_join_range(GJoinState * state, Batch * buffer)
 static bool
 batches_may_overlap(GJoinState *state, Batch *a, Batch *b)
 {
-	/* [a,b] and [c,d] with b < c */
-	if (!a->max_unbounded && !b->min_unbounded &&
-		compare_values(state, a->max_values, b->min_values) < 0)
+	/* [a,A] < [b,B] */
+	if (compare_values(state, a->max_values, b->min_values) < 0)
 		return false;
 
-	/* [a,b] and [c,d] with d < a */
-	if (!a->min_unbounded && !b->max_unbounded &&
-		compare_values(state, b->max_values, a->min_values) < 0)
+	/* [b,B] < [a,A] */
+	if (compare_values(state, b->max_values, a->min_values) < 0)
 		return false;
 
 	return true;
@@ -2734,6 +2757,8 @@ priorityqueues_peek(pairingheap *heap)
 	return (QueueEntry *) pairingheap_first(heap);
 }
 
+
+#ifdef GJOIN_DEBUG
 static void
 debug_format_values(GJoinState *state, StringInfo str, Datum *values)
 {
@@ -2781,3 +2806,80 @@ debug_print_batch(GJoinState *state, char *msg, Batch *batch)
 
 	pfree(str.data);
 }
+
+static void
+debug_print_runs(GJoinState *state)
+{
+	StringInfoData str;
+
+	initStringInfo(&str);
+
+	/* inner runs */
+	elog(LOG, "inner runs count=%d", state->runs.inner.nruns);
+
+	for (int r = 0; r < state->runs.inner.nruns; r++)
+	{
+		dlist_iter	iter;
+
+		resetStringInfo(&str);
+		appendStringInfo(&str, "  run %d batches", r);
+
+		dlist_foreach(iter, &state->runs.inner.runs[r].batches)
+		{
+			Batch *batch = dlist_container(Batch, node, iter.cur);
+
+			appendStringInfoString(&str, " {");
+
+			if (batch->min_unbounded)
+				appendStringInfoString(&str, "[]");
+			else
+				debug_format_values(state, &str, batch->min_values);
+
+			appendStringInfoString(&str, ", ");
+
+			if (batch->max_unbounded)
+				appendStringInfoString(&str, "[]");
+			else
+				debug_format_values(state, &str, batch->max_values);
+
+			appendStringInfoString(&str, "}");
+		}
+
+		elog(LOG, "%s", str.data);
+	}
+
+	/* outer runs */
+	elog(LOG, "outer runs count=%d", state->runs.outer.nruns);
+
+	for (int r = 0; r < state->runs.outer.nruns; r++)
+	{
+		dlist_iter	iter;
+
+		resetStringInfo(&str);
+		appendStringInfo(&str, "  run %d batches", r);
+
+		dlist_foreach(iter, &state->runs.outer.runs[r].batches)
+		{
+			Batch *batch = dlist_container(Batch, node, iter.cur);
+
+			appendStringInfoString(&str, " {");
+
+			if (batch->min_unbounded)
+				appendStringInfoString(&str, "[]");
+			else
+				debug_format_values(state, &str, batch->min_values);
+
+			appendStringInfoString(&str, ", ");
+
+			if (batch->max_unbounded)
+				appendStringInfoString(&str, "[]");
+			else
+				debug_format_values(state, &str, batch->max_values);
+
+			appendStringInfoString(&str, "}");
+		}
+
+		elog(LOG, "%s", str.data);
+	}
+}
+#endif

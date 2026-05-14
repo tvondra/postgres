@@ -236,6 +236,12 @@ typedef struct Batch
 	bool		is_first;		/* min_unbounded=true */
 	bool		is_last;		/* max_unbounded=true */
 
+	/*
+	 * Cached slot position, used as starting position after advancing to
+	 * the next outer tuple (to skip inner tuples that can't match).
+	 */
+	int			cache_pos;
+
 	/* tuple slots in this batch */
 	int			maxslots;
 	int			nslots;
@@ -475,14 +481,16 @@ static bool load_outer_batch(GJoinState * state, int run, Batch * batch);
 static bool load_inner_batch(GJoinState * state, int run, Batch * batch);
 
 static bool batch_in_join_range(GJoinState * state, Batch * batch);
-static bool check_join_clause(GJoinState * state,
-							  TupleTableSlot *outer, TupleTableSlot *inner);
+static int check_join_clause(GJoinState * state,
+							 TupleTableSlot *outer, TupleTableSlot *inner);
 static void update_join_range(GJoinState * state);
 static int	compare_values(GJoinState * state, Datum *a, Datum *b);
 static void join_range_for_run(GJoinState * state, dlist_head *run,
 							   Datum **min_values, Datum **max_values,
 							   bool *min_unbounded, bool *max_unbounded);
 static bool batches_may_overlap(GJoinState *state, Batch *a, Batch *b);
+
+static void reset_cache_pos(GJoinState *state);
 
 #ifdef GJOIN_DEBUG
 static void debug_print_batch(GJoinState *state, char *msg, Batch *batch);
@@ -1420,6 +1428,8 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 						 * current inner/outer batches.
 						 */
 						{
+							int		r;
+
 							TupleTableSlot *outer = batch_outer->slots[state->pos_outer.slot];
 							TupleTableSlot *inner = batch_inner->slots[state->pos_inner.slot];
 
@@ -1427,9 +1437,41 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 							state->stats.tuples_cross++;
 
 							/* if the two tuples do not match, continue */
-							if (!check_join_clause(state, outer, inner))
-								continue;
+							r = check_join_clause(state, outer, inner);
 
+							if (r > 0)
+							{
+								/*
+								 * remember position for the next outer tuple
+								 *
+								 * XXX It's important to look for *smaller* value
+								 * on the inner side, not a match. Because there
+								 * may not be exact matches for a particular key.
+								 */
+								batch_inner->cache_pos = state->pos_inner.slot;
+								continue;
+							}
+							else if (r < 0)
+							{
+								/*
+								 * More tuples in this inner batch can't possibly
+								 * match, jump to the end (by pretending we got to
+								 * the last slot) and try the next inner batch.
+								 *
+								 * XXX Just terminating the inner walk cuts the
+								 * number of comparisons roughly in half (even
+								 * without the caching of starting position).
+								 */
+								state->pos_inner.slot = (batch_inner->nslots - 1);
+								continue;
+							}
+
+							/* r=0, so the join clauses match */
+
+							/*
+							 * Continue by evaluating the filter (join clauses
+							 * that are not recognized by the gjoin algorithm).
+							 */
 							econtext->ecxt_innertuple = inner;
 							econtext->ecxt_outertuple = outer;
 
@@ -1538,6 +1580,9 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 									   state->clauses.nattnums);
 
 					loaded = load_outer_batch(state, entry->run, batch);
+
+					/* make sure we start from scratch in inner batches */
+					reset_cache_pos(state);
 
 					/* FIXME account for loaded=false */
 					state->stats.batches_outer++;
@@ -2161,6 +2206,8 @@ batch_init(TupleDesc tdesc, int nattnums)
 	batch->nslots = 0;
 	batch->slots = palloc_array(TupleTableSlot *, batch->maxslots);
 
+	batch->cache_pos = -1;
+
 	for (int j = 0; j < batch->maxslots; j++)
 	{
 		batch->slots[j] = MakeSingleTupleTableSlot(tdesc, &TTSOpsMinimalTuple);
@@ -2641,7 +2688,7 @@ update_join_range(GJoinState * state)
 /* 		 state->join_range.max_value); */
 }
 
-static bool
+static int
 check_join_clause(GJoinState * state,
 				  TupleTableSlot *outer, TupleTableSlot *inner)
 {
@@ -2660,10 +2707,10 @@ check_join_clause(GJoinState * state,
 											a, b));
 
 		if (r != 0)
-			return false;
+			return r;
 	}
 
-	return true;
+	return 0;
 }
 
 static bool
@@ -2690,6 +2737,23 @@ batches_may_overlap(GJoinState *state, Batch *a, Batch *b)
 		return false;
 
 	return true;
+}
+
+/* reset the cache_pos in inner batches after advancing to a new outer batch */
+static void
+reset_cache_pos(GJoinState *state)
+{
+	for (int r = 0; r < state->runs.inner.nruns; r++)
+	{
+		dlist_iter	iter;
+		BatchRun *run = &state->runs.inner.runs[r];
+
+		dlist_foreach(iter, &run->batches)
+		{
+			Batch *batch = dlist_container(Batch, node, iter.cur);
+			batch->cache_pos = -1;
+		}
+	}
 }
 
 /*

@@ -1676,7 +1676,7 @@ gjoin_ExplainCustomJoin(CustomJoinState *node,
 {
 	GJoinState *state = (GJoinState *) node;
 	CustomJoin *cjoin = (CustomJoin *) node->js.ps.plan;
-	List	   *join_clauses = list_nth(cjoin->custom_exprs, 0);
+	List	   *join_clauses = cjoin->custom_exprs;
 	StringInfoData str;
 
 	initStringInfo(&str);

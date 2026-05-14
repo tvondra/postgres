@@ -425,6 +425,7 @@ static void join_clauses_init(JoinClauses * sort, int numcols);
 static void tuple_buffer_init(TupleBuffer * buffer);
 
 static Batch * batch_init(TupleDesc tdesc, int nattnums);
+static void batch_free(Batch *batch);
 static void batch_runs_init(BatchRuns * runs);
 static void batch_runs_close(BatchRuns * runs);
 static void batch_run_init(BatchRun * run, Tuplesortstate *sort);
@@ -981,12 +982,7 @@ static TupleTableSlot *
 gjoin_ExecCustomJoin(CustomJoinState *node)
 {
 	GJoinState *state = (GJoinState *) node;
-	ExprContext *econtext;
-	TupleTableSlot *slot;
-
-	slot = state->cstate.js.ps.ps_ResultTupleSlot;
-
-	econtext = node->js.ps.ps_ExprContext;
+	ExprContext *econtext = node->js.ps.ps_ExprContext;
 
 	/*
 	 * Perform the join - step through the state machine, etc.
@@ -1589,11 +1585,19 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 												entry_inner->run, next_batch->max_values);
 						}
 
-						/* unlink the buffer from the list */
+						/*
+						 * unlink the batch from the list, free it
+						 *
+						 * XXX Maybe we could reuse the batches, so that we
+						 * don't need to reinitialize the slots over and
+						 * over again?
+						 */
 						dlist_delete(&(batch_inner->node));
+						batch_free(batch_inner);
 					}
 
-					/* FIXME free the buffer tuples / memory */
+					/* free the outer batch */
+					batch_free(batch_outer);
 
 					state->phase = GJOIN_NEXT_OUTER;
 					break;
@@ -2040,26 +2044,45 @@ build_outer_runs(GJoinState * state)
 static Batch *
 batch_init(TupleDesc tdesc, int nattnums)
 {
-	Batch	   *buffer;
+	Batch	   *batch;
 
-	buffer = palloc0(sizeof(Batch));
+	batch = palloc(sizeof(Batch));
 
-	buffer->maxslots = MAX_BATCH_SIZE;
-	buffer->nslots = 0;
-	buffer->slots = palloc_array(TupleTableSlot *, buffer->maxslots);
+	batch->maxslots = MAX_BATCH_SIZE;
+	batch->nslots = 0;
+	batch->slots = palloc_array(TupleTableSlot *, batch->maxslots);
 
-	for (int j = 0; j < buffer->maxslots; j++)
+	for (int j = 0; j < batch->maxslots; j++)
 	{
-		buffer->slots[j] = MakeSingleTupleTableSlot(tdesc, &TTSOpsMinimalTuple);
+		batch->slots[j] = MakeSingleTupleTableSlot(tdesc, &TTSOpsMinimalTuple);
 	}
 
-	buffer->max_values = palloc_array(Datum, nattnums);
-	buffer->min_values = palloc_array(Datum, nattnums);
+	batch->max_values = palloc_array(Datum, nattnums);
+	batch->min_values = palloc_array(Datum, nattnums);
 
-	buffer->max_isnull = palloc_array(bool, nattnums);
-	buffer->min_isnull = palloc_array(bool, nattnums);
+	batch->max_isnull = palloc_array(bool, nattnums);
+	batch->min_isnull = palloc_array(bool, nattnums);
 
-	return buffer;
+	return batch;
+}
+
+/*
+ * release memory / slots associated with a batch
+ */
+static void
+batch_free(Batch *batch)
+{
+	pfree(batch->max_values);
+	pfree(batch->min_values);
+	pfree(batch->min_isnull);
+	pfree(batch->max_isnull);
+
+	for (int j = 0; j < batch->maxslots; j++)
+	{
+		ExecDropSingleTupleTableSlot(batch->slots[j]);
+	}
+
+	pfree(batch->slots);
 }
 
 /*

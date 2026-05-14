@@ -41,6 +41,13 @@
  * more focused, split pages we're joining instead of requiring the
  * outer buffer to be fully covered, etc.).
  *
+ * XXX Parallel variant - seems complex, but I think it would be possible
+ * to coordinate the workers similarly to parallel hash join, i.e. workers
+ * would build the inner runs, then would advance to the outer runs, and
+ * then do the actual join - e.g. by each processing a different outer
+ * batch. The runs would probably need to be loaded into shared memory,
+ * though.
+ *
  *
  * Copyright (C) Tomas Vondra, 2025
  */
@@ -2175,6 +2182,10 @@ build_runs(GJoinState * node, PlanState *state,
 		if (runs->runs[i].tuplesort == NULL)
 			break;
 
+		/*
+		 * XXX the sorts could be parallelized quite easily, or maybe
+		 * we could do each sort in a different worker?
+		 */
 		tuplesort_performsort(runs->runs[i].tuplesort);
 	}
 }

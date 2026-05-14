@@ -1408,7 +1408,15 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 								next_node = dlist_next_node(&run->batches,
 															&batch_inner->node);
 								batch_inner = dlist_container(Batch, node, next_node);
+
+								/*
+								 * Start at the position cached from matching
+								 * the previous outer tuple (in the same outer
+								 * batch). No earlier tuples can match, because
+								 * the outer tuples are ordered the same way.
+								 */
 								state->pos_inner.batch = batch_inner;
+								state->pos_inner.slot = batch_inner->cache_pos;
 
 								/* new combination of inner/outer batch */
 								state->stats.batches_cross++;
@@ -1418,8 +1426,9 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 								/* no more batches, try the next run */
 								state->pos_inner.batch = NULL;
 								state->pos_inner.run++;
+								state->pos_inner.slot = -1;
 							}
-							state->pos_inner.slot = -1;
+
 							continue;
 						}
 

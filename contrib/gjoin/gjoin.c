@@ -187,6 +187,12 @@ typedef struct BatchRuns
  *
  * XXX Batches should be sized based on memory usage (as in the paper), not
  * on the number of tuples.
+ *
+ * XXX Not sure what's the optimal batch size. Smaller batches allow better
+ * control over memory usage. Larger batches allow efficient elimination
+ * of not-matching batches, but then if batches match we have to check all
+ * possible tuple combinations, which increases the cost. Surely there is
+ * an analytic solution, but experiments would likely give an answer too.
  */
 #define	MAX_BATCH_SIZE 128
 
@@ -268,6 +274,7 @@ typedef struct JoinClauses
 	Oid		   *equality;		/* = operators (OIDs) */
 	Oid		   *inequality;		/* < operators (OIDs)  */
 	Oid		   *collations;		/* OIDs of collations */
+	Oid		   *outfuncs;		/* OIDs of output functions */
 	FmgrInfo   *cmp_info;		/* comparators */
 	FmgrInfo   *hash_info;		/* hash functions */
 	bool	   *nulls_first;	/* XXX unnecessary? */
@@ -291,6 +298,17 @@ typedef enum JoinPhase
 	GJOIN_NEXT_INNER,			/* advance to the next inner tuple */
 	GJOIN_EVICT_INNER			/* evict buffer from the inner side */
 }			JoinPhase;
+
+typedef struct JoinStats
+{
+	int	batches_inner;	/* batches loaded from inner */
+	int	batches_outer;	/* batches loaded from outer */
+	int	batches_cross;	/* inner/outer batch combinations */
+
+	int tuples_inner;	/* tuples fetched from inner */
+	int	tuples_outer;	/* tuples fetched from outer */
+	int	tuples_cross;	/* inner/outer tuple combinations */
+} JoinStats;
 
 
 /* ----------------
@@ -402,6 +420,9 @@ typedef struct GJoinState
 	JoinPosition pos_inner;
 	JoinPosition pos_outer;
 
+	/* stats about the join */
+	JoinStats		stats;
+
 }			GJoinState;
 
 
@@ -461,6 +482,10 @@ static int	compare_values(GJoinState * state, Datum *a, Datum *b);
 static void join_range_for_run(GJoinState * state, dlist_head *run,
 							   Datum **min_values, Datum **max_values,
 							   bool *min_unbounded, bool *max_unbounded);
+static bool batches_may_overlap(GJoinState *state, Batch *a, Batch *b);
+
+static void debug_print_batch(GJoinState *state, char *msg, Batch *batch);
+
 
 void
 _PG_init(void)
@@ -865,6 +890,7 @@ gjoin_CreatePlanState(CustomJoin *cjoin)
 		Var		   *var1,
 				   *var2;
 		TypeCacheEntry *typentry;
+		bool		isvarlena;
 
 		AttrNumber	attnum_inner = InvalidAttrNumber,
 					attnum_outer = InvalidAttrNumber;
@@ -917,11 +943,18 @@ gjoin_CreatePlanState(CustomJoin *cjoin)
 		state->clauses.collations[idx] = opclause->inputcollid;
 		state->clauses.nulls_first[idx] = true;
 
+		getTypeOutputInfo(var1->vartype,
+						  &state->clauses.outfuncs[idx],
+						  &isvarlena);
+
 		idx++;
 	}
 
 	/* did we get the expected number of elements in the two arrays? */
 	Assert(idx == state->clauses.nattnums);
+
+	/* init the join stats */
+	memset(&state->stats, 0, sizeof(JoinStats));
 
 	return (Node *) state;
 }
@@ -1102,7 +1135,6 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					 * We only look at the first batch in the outer run
 					 * identified by the priority queue "C" (per paper).
 					 */
-					BatchRun   *run;
 					Batch	   *batch;
 
 					/*
@@ -1119,6 +1151,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					if (position_is_invalid(&state->pos_outer))
 					{
 						QueueEntry *entry;
+						BatchRun   *run;
 
 						/*
 						 * empty queue C means no more batches in S, so
@@ -1156,15 +1189,22 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 						/* init the outer position */
 						state->pos_outer.run = entry->run;
 						state->pos_outer.slot = -1;
+
+						/* get the batch for the run */
+						run = &state->runs.outer.runs[state->pos_outer.run];
+
+						/* The selected outer run must have some batches. */
+						Assert(!dlist_is_empty(&run->batches));
+
+						state->pos_outer.batch
+							= dlist_head_element(Batch, node, &run->batches);
+
+						// debug_print_batch(state, "processing outer batch",
+						//				  state->pos_outer.batch);
 					}
 
 					Assert((state->pos_outer.run >= 0) &&
 						   (state->pos_outer.run < state->runs.outer.nruns));
-
-					run = &state->runs.outer.runs[state->pos_outer.run];
-
-					/* The current outer run must have some batches. */
-					Assert(!dlist_is_empty(&run->batches));
 
 					/*
 					 * XXX Maybe we could stash the buffer somewhere, so that
@@ -1173,7 +1213,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					 *
 					 * XXX Actually, we already stash it into the position.
 					 */
-					batch = dlist_head_element(Batch, node, &run->batches);
+					batch = state->pos_outer.batch;
 
 					/*
 					 * Is the whole batch covered by the inner join range?
@@ -1251,7 +1291,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					 * XXX It should be possible to optimize this by first
 					 * comparing the inner batch range to the S range, and
 					 * eliminate some of the batches based on that. Although,
-					 * we probably should evict those.
+					 * we probably should have evicted those already?
 					 *
 					 * FIXME But maybe we could remember the first matching
 					 * inner slot for the outer tuple, and start from there
@@ -1296,6 +1336,12 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 															 &run->batches);
 							state->pos_inner.batch = batch_inner;
 
+							// debug_print_batch(state, "processing inner batch",
+							//				  state->pos_inner.batch);
+
+							/* new combination of inner/outer batch */
+							state->stats.batches_cross++;
+
 							Assert(state->pos_inner.slot == -1);
 						}
 
@@ -1303,10 +1349,33 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 						state->pos_inner.slot++;
 
 						/*
-						 * If we processed all slots, move to the next batch
-						 * in this run (or the next run).
+						 * get the current outer batch
+						 *
+						 * We're always processing only the head batch from
+						 * the current run.
 						 */
-						if (state->pos_inner.slot >= batch_inner->nslots)
+						Assert(state->pos_outer.batch != NULL);
+						batch_outer = dlist_head_element(Batch, node,
+														 &state->runs.outer.runs[state->pos_outer.run].batches);
+
+						/*
+						 * If we processed all slots, or if the two batches
+						 * can't possibly overlap, move to the next batch
+						 * in this run (or the next run).
+						 *
+						 * XXX We check that the two batches overlap - if
+						 * we could skip a futile loop over all concurrent
+						 * combinations of tuples, that would likely be a
+						 * huge speedup.
+						 *
+						 * XXX I'm not sure if getting non-overlapping batches
+						 * is inherent to the algorithm (how it calculates the
+						 * join range / evicts inner batches), maybe just for
+						 * the simplified variant with three queues. Or if
+						 * that's some sort of thinko in this code.
+						 */
+						if ((state->pos_inner.slot >= batch_inner->nslots) ||
+							!batches_may_overlap(state, batch_inner, batch_outer))
 						{
 							/* advance to the next batch for this run */
 							if (dlist_has_next(&run->batches, &batch_inner->node))
@@ -1317,6 +1386,9 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 															&batch_inner->node);
 								batch_inner = dlist_container(Batch, node, next_node);
 								state->pos_inner.batch = batch_inner;
+
+								/* new combination of inner/outer batch */
+								state->stats.batches_cross++;
 							}
 							else
 							{
@@ -1329,28 +1401,15 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 						}
 
 						/*
-						 * get the current outer batch
-						 *
-						 * We're always processing only the head batch from
-						 * the current run.
-						 */
-						batch_outer = dlist_head_element(Batch, node,
-														 &state->runs.outer.runs[state->pos_outer.run].batches);
-
-						/*
-						 * FIXME Maybe we could check that the two batches
-						 * overlap - if we could skip a futile loop over all
-						 * concurrent combinations of tuples, that would be
-						 * a huge speedup.
-						 */
-
-						/*
 						 * Actually try to join inner/outer tuples from the
 						 * current inner/outer batches.
 						 */
 						{
 							TupleTableSlot *outer = batch_outer->slots[state->pos_outer.slot];
 							TupleTableSlot *inner = batch_inner->slots[state->pos_inner.slot];
+
+							/* new tuple combination */
+							state->stats.tuples_cross++;
 
 							/* if the two tuples do not match, continue */
 							if (!check_join_clause(state, outer, inner))
@@ -1402,6 +1461,10 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 
 					/* load the next buffer from the run */
 					loaded = load_inner_batch(state, entry->run, batch);
+
+					/* FIXME account for loaded=false */
+					state->stats.batches_inner++;
+					state->stats.tuples_inner += batch->nslots;
 
 					/*
 					 * FIXME handle loaded=false
@@ -1460,6 +1523,10 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 									   state->clauses.nattnums);
 
 					loaded = load_outer_batch(state, entry->run, batch);
+
+					/* FIXME account for loaded=false */
+					state->stats.batches_outer++;
+					state->stats.tuples_outer += batch->nslots;
 
 					/*
 					 * FIXME Do we need to do anything when loaded=false?
@@ -1688,13 +1755,28 @@ gjoin_ExplainCustomJoin(CustomJoinState *node,
 	show_expression((Node *) join_clauses, "Join Cond",
 					(PlanState *) state, ancestors, es);
 
-	resetStringInfo(&str);
-	appendStringInfo(&str, "inner=%d outer=%d",
-					 state->runs.inner.nruns,
-					 state->runs.outer.nruns);
-	ExplainPropertyText("Runs", str.data, es);
+	if (es->verbose && es->analyze)
+	{
+		resetStringInfo(&str);
+		appendStringInfo(&str, "inner=%d outer=%d",
+						 state->runs.inner.nruns,
+						 state->runs.outer.nruns);
+		ExplainPropertyText("Runs", str.data, es);
 
-	ExplainPropertyText("Memory", str.data, es);
+		resetStringInfo(&str);
+		appendStringInfo(&str, "inner=%d outer=%d cross=%d",
+						 state->stats.tuples_inner,
+						 state->stats.tuples_outer,
+						 state->stats.tuples_cross);
+		ExplainPropertyText("Tuples", str.data, es);
+
+		resetStringInfo(&str);
+		appendStringInfo(&str, "inner=%d outer=%d cross=%d",
+						 state->stats.batches_inner,
+						 state->stats.batches_outer,
+						 state->stats.batches_cross);
+		ExplainPropertyText("Batches", str.data, es);
+	}
 }
 
 /*
@@ -1762,6 +1844,7 @@ join_clauses_init(JoinClauses * sort, int numcols)
 	sort->equality = palloc_array(Oid, numcols);
 	sort->inequality = palloc_array(Oid, numcols);
 	sort->collations = palloc_array(Oid, numcols);
+	sort->outfuncs = palloc_array(Oid, numcols);
 	sort->nulls_first = palloc_array(bool, numcols);
 
 	/* type-specific functions */
@@ -2164,6 +2247,7 @@ init_inner_runs(GJoinState * state)
 			 * initial buffers span from "negative infinity" (lowest value)
 			 */
 			batch->min_unbounded = true;
+			batch->max_unbounded = false;	/* FIXME it can be the last batch */
 
 			for (int j = 0; j < state->clauses.nattnums; j++)
 			{
@@ -2192,6 +2276,12 @@ init_inner_runs(GJoinState * state)
 		/* initialize the list of tuple batches for a run, add the batch */
 		dlist_init(&runs->runs[i].batches);
 		dlist_push_tail(&runs->runs[i].batches, &batch->node);
+
+		/* account for the loaded batch */
+		state->stats.batches_inner++;
+		state->stats.tuples_inner += batch->nslots;
+
+		debug_print_batch(state, "loaded inner batch (init)", batch);
 	}
 }
 
@@ -2236,6 +2326,7 @@ init_outer_runs(GJoinState * state)
 			 * initial buffers span from "negative infinity" (lowest value)
 			 */
 			batch->min_unbounded = true;
+			batch->max_unbounded = false;	/* FIXME it can be the last batch */
 
 			for (int j = 0; j < state->clauses.nattnums; j++)
 			{
@@ -2265,111 +2356,127 @@ init_outer_runs(GJoinState * state)
 		/* initialize the list of tuple batches for a run, add the batch */
 		dlist_init(&runs->runs[i].batches);
 		dlist_push_tail(&runs->runs[i].batches, &batch->node);
+
+		/* account for the loaded batch */
+		state->stats.batches_outer++;
+		state->stats.tuples_outer += batch->nslots;
+
+		debug_print_batch(state, "loaded outer batch (init)", batch);
 	}
 }
 
 /* S */
 static bool
-load_outer_batch(GJoinState * state, int run, Batch * buffer)
+load_outer_batch(GJoinState * state, int run, Batch * batch)
 {
 	/* reset, the buffer might be reused */
-	buffer->nslots = 0;
+	batch->nslots = 0;
 
 	while (tuplesort_gettupleslot(state->runs.outer.runs[run].tuplesort, true, true,
-								  buffer->slots[buffer->nslots],
+								  batch->slots[batch->nslots],
 								  NULL))
 	{
-		buffer->nslots++;
+		batch->nslots++;
 
 		/* stop after filling the last slot */
-		if (buffer->nslots == buffer->maxslots)
+		if (batch->nslots == batch->maxslots)
 			break;
 	}
 
 	/* no more tuples in this run */
-	if (buffer->nslots == 0)
+	if (batch->nslots == 0)
 		return false;
 
 	/* the minimum values are no longer empty */
-	buffer->min_unbounded = false;
+	batch->min_unbounded = false;
 
 	/* calculate the buffer range (we know it's sorted) */
 	for (int i = 0; i < state->clauses.nattnums; i++)
 	{
-		buffer->min_values[i] = slot_getattr(buffer->slots[0],
+		batch->min_values[i] = slot_getattr(batch->slots[0],
 											 state->clauses.attnums_outer[i],
-											 &buffer->max_isnull[i]);
+											 &batch->max_isnull[i]);
 
-		buffer->max_values[i] = slot_getattr(buffer->slots[buffer->nslots - 1],
-											 state->clauses.attnums_outer[i],
-											 &buffer->max_isnull[i]);
+		batch->max_values[i] = slot_getattr(batch->slots[batch->nslots - 1],
+											state->clauses.attnums_outer[i],
+											&batch->max_isnull[i]);
 	}
 
 	/* add the buffer to the priority queue for S */
-	priorityqueues_push(state->queues.outer, run, buffer->max_values);
+	priorityqueues_push(state->queues.outer, run, batch->max_values);
 
 	/* also add the buffer to the run */
 	dlist_push_tail(&state->runs.outer.runs[run].batches,
-					&buffer->node);
+					&batch->node);
+
+	debug_print_batch(state, "loaded outer batch", batch);
 
 	return true;
 }
 
 /* R */
 static bool
-load_inner_batch(GJoinState * state, int run, Batch * buffer)
+load_inner_batch(GJoinState * state, int run, Batch * batch)
 {
 	/* reset, the buffer might be reused */
-	buffer->nslots = 0;
+	batch->nslots = 0;
 
 	elog(DEBUG1, "load buffer for run %d", run);
 
 	while (tuplesort_gettupleslot(state->runs.inner.runs[run].tuplesort, true, true,
-								  buffer->slots[buffer->nslots],
+								  batch->slots[batch->nslots],
 								  NULL))
 	{
-		buffer->nslots++;
+		batch->nslots++;
 
 		/* stop after filling the last slot */
-		if (buffer->nslots == buffer->maxslots)
+		if (batch->nslots == batch->maxslots)
 			break;
 	}
 
 	/* no more tuples in this run */
-	if (buffer->nslots == 0)
+	if (batch->nslots == 0)
 	{
 		Assert(state->runs.inner.runs[run].tuplesort == 0);
 		return false;
 	}
 
-	Assert(state->runs.inner.runs[run].ntuples >= buffer->nslots);
-	state->runs.inner.runs[run].ntuples -= buffer->nslots;
+	Assert(state->runs.inner.runs[run].ntuples >= batch->nslots);
+	state->runs.inner.runs[run].ntuples -= batch->nslots;
 
 	/* the minimum values are no longer empty */
-	buffer->min_unbounded = false;
-	buffer->is_first = false;
-	buffer->is_last = (state->runs.inner.runs[run].ntuples == 0);
+	batch->is_first = false;
+	batch->is_last = (state->runs.inner.runs[run].ntuples == 0);
+	batch->min_unbounded = false;
+	batch->max_unbounded = batch->is_last;
 
-	elog(DEBUG1, "run %d tuples %d buffer->is_last = %d", run, state->runs.inner.runs[run].ntuples, buffer->is_last);
+	/*
+	 * XXX I think is_first/is_last and the unbounded flags are quite
+	 * redundant, we only need one of those.
+	 *
+	 * XXX Don't bother calculating max_values for an unbounded range.
+	 */
 
 	/* calculate the buffer range (we know it's sorted) */
 	for (int i = 0; i < state->clauses.nattnums; i++)
 	{
-		buffer->min_values[i] = slot_getattr(buffer->slots[0],
-											 state->clauses.attnums_inner[i],
-											 &buffer->max_isnull[i]);
+		batch->min_values[i] = slot_getattr(batch->slots[0],
+											state->clauses.attnums_inner[i],
+											&batch->max_isnull[i]);
 
-		buffer->max_values[i] = slot_getattr(buffer->slots[buffer->nslots - 1],
-											 state->clauses.attnums_outer[i],
-											 &buffer->max_isnull[i]);
+		batch->max_values[i] = slot_getattr(batch->slots[batch->nslots - 1],
+											state->clauses.attnums_outer[i],
+											&batch->max_isnull[i]);
 	}
 
 	/* add the buffer to the priority queue that manages growing */
-	priorityqueues_push(state->queues.inner_grow, run, buffer->max_values);
+	priorityqueues_push(state->queues.inner_grow, run, batch->max_values);
 
 	/* also add the buffer to the run */
 	dlist_push_tail(&state->runs.inner.runs[run].batches,
-					&buffer->node);
+					&batch->node);
+
+	debug_print_batch(state, "loaded inner batch", batch);
 
 	return true;
 }
@@ -2545,6 +2652,23 @@ batch_in_join_range(GJoinState * state, Batch * buffer)
 	return (compare_values(state, state->join_range.max_values, buffer->max_values) > 0);
 }
 
+/* quick elimination of batches that can't possibly have matching tuples */
+static bool
+batches_may_overlap(GJoinState *state, Batch *a, Batch *b)
+{
+	/* [a,b] and [c,d] with b < c */
+	if (!a->max_unbounded && !b->min_unbounded &&
+		compare_values(state, a->max_values, b->min_values) < 0)
+		return false;
+
+	/* [a,b] and [c,d] with d < a */
+	if (!a->min_unbounded && !b->max_unbounded &&
+		compare_values(state, b->max_values, a->min_values) < 0)
+		return false;
+
+	return true;
+}
+
 /*
  * Pairing heap provides getting topmost (greatest) element while we want to
  * calculate the minimum. That's why we invert the sort order.
@@ -2608,4 +2732,52 @@ static QueueEntry *
 priorityqueues_peek(pairingheap *heap)
 {
 	return (QueueEntry *) pairingheap_first(heap);
+}
+
+static void
+debug_format_values(GJoinState *state, StringInfo str, Datum *values)
+{
+	appendStringInfoString(str, "[");
+
+	for (int i = 0; i < state->clauses.nattnums; i++)
+	{
+		char *tmp;
+
+		tmp = OidOutputFunctionCall(state->clauses.outfuncs[i],
+									values[i]);
+
+		if (i > 0)
+			appendStringInfoString(str, ", ");
+
+		appendStringInfoString(str, tmp);
+		pfree(tmp);
+	}
+
+	appendStringInfoString(str, "]");
+}
+
+static void
+debug_print_batch(GJoinState *state, char *msg, Batch *batch)
+{
+	StringInfoData	str;
+
+	initStringInfo(&str);
+
+	appendStringInfoString(&str, "min ");
+
+	if (batch->min_unbounded)
+		appendStringInfoString(&str, "[]");
+	else
+		debug_format_values(state, &str, batch->min_values);
+
+	appendStringInfoString(&str, " max ");
+
+	if (batch->max_unbounded)
+		appendStringInfoString(&str, "[]");
+	else
+		debug_format_values(state, &str, batch->max_values);
+
+	elog(LOG, "%s (batch %p): %s", msg, batch, str.data);
+
+	pfree(str.data);
 }

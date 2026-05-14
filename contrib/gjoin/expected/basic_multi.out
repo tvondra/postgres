@@ -27,7 +27,7 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Output: t1.a1, t1.a2, t1.a3, t2.b1, t2.b2, t2.b3
          Join Cond: (t1.a1 = t2.b1), (t1.a2 = t2.b2)
          Runs: inner=1 outer=1
-         Tuples: inner=128 outer=128 cross=1934
+         Tuples: inner=128 outer=128 cross=203
          Batches: inner=1 outer=1 cross=16
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a1, t1.a2, t1.a3
@@ -44,7 +44,7 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Output: t1.a1, t1.a2, t1.a3, t2.b1, t2.b2, t2.b3
          Join Cond: (t1.a1 = t2.b1), (t1.a2 = t2.b2)
          Runs: inner=1 outer=1
-         Tuples: inner=128 outer=128 cross=3996
+         Tuples: inner=128 outer=128 cross=667
          Batches: inner=1 outer=1 cross=32
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a1, t1.a2, t1.a3
@@ -61,7 +61,7 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Output: t1.a1, t1.a2, t1.a3, t2.b1, t2.b2, t2.b3
          Join Cond: (t1.a1 = t2.b1), (t1.a2 = t2.b2)
          Runs: inner=1 outer=1
-         Tuples: inner=128 outer=128 cross=9804
+         Tuples: inner=128 outer=128 cross=3272
          Batches: inner=1 outer=1 cross=77
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a1, t1.a2, t1.a3
@@ -78,7 +78,7 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Output: t1.a1, t1.a2, t1.a3, t2.b1, t2.b2, t2.b3
          Join Cond: (t1.a1 = t2.b1), (t1.a2 = t2.b2)
          Runs: inner=1 outer=1
-         Tuples: inner=256 outer=256 cross=22931
+         Tuples: inner=256 outer=256 cross=12012
          Batches: inner=2 outer=2 cross=180
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a1, t1.a2, t1.a3
@@ -95,7 +95,7 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Output: t1.a1, t1.a2, t1.a3, t2.b1, t2.b2, t2.b3
          Join Cond: (t1.a1 = t2.b1), (t1.a2 = t2.b2)
          Runs: inner=1 outer=1
-         Tuples: inner=896 outer=896 cross=199511
+         Tuples: inner=896 outer=896 cross=89957
          Batches: inner=7 outer=7 cross=1559
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a1, t1.a2, t1.a3
@@ -112,7 +112,7 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Output: t1.a1, t1.a2, t1.a3, t2.b1, t2.b2, t2.b3
          Join Cond: (t1.a1 = t2.b1), (t1.a2 = t2.b2)
          Runs: inner=1 outer=1
-         Tuples: inner=1536 outer=1792 cross=392116
+         Tuples: inner=1536 outer=1792 cross=182785
          Batches: inner=12 outer=14 cross=3192
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a1, t1.a2, t1.a3
@@ -127,7 +127,7 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
    Output: t1.a1, t1.a2, t1.a3, t2.b1, t2.b2, t2.b3
    Join Cond: (t1.a1 = t2.b1), (t1.a2 = t2.b2)
    Runs: inner=1 outer=1
-   Tuples: inner=8448 outer=10000 cross=2361344
+   Tuples: inner=8448 outer=10000 cross=1079974
    Batches: inner=66 outer=80 cross=18832
    ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
          Output: t1.a1, t1.a2, t1.a3
@@ -158,7 +158,7 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Filter: (mod((t1.a3 + t2.b3), 10) < 5)
          Join Cond: (t1.a1 = t2.b1), (t1.a2 = t2.b2)
          Runs: inner=1 outer=1
-         Tuples: inner=128 outer=128 cross=3870
+         Tuples: inner=128 outer=128 cross=636
          Batches: inner=1 outer=1 cross=31
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a1, t1.a2, t1.a3
@@ -176,7 +176,7 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Filter: (mod((t1.a3 + t2.b3), 10) < 5)
          Join Cond: (t1.a1 = t2.b1), (t1.a2 = t2.b2)
          Runs: inner=1 outer=1
-         Tuples: inner=128 outer=128 cross=7868
+         Tuples: inner=128 outer=128 cross=2191
          Batches: inner=1 outer=1 cross=62
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a1, t1.a2, t1.a3
@@ -194,7 +194,7 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Filter: (mod((t1.a3 + t2.b3), 10) < 5)
          Join Cond: (t1.a1 = t2.b1), (t1.a2 = t2.b2)
          Runs: inner=1 outer=1
-         Tuples: inner=256 outer=256 cross=22422
+         Tuples: inner=256 outer=256 cross=11743
          Batches: inner=2 outer=2 cross=176
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a1, t1.a2, t1.a3
@@ -212,7 +212,7 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Filter: (mod((t1.a3 + t2.b3), 10) < 5)
          Join Cond: (t1.a1 = t2.b1), (t1.a2 = t2.b2)
          Runs: inner=1 outer=1
-         Tuples: inner=384 outer=384 cross=72103
+         Tuples: inner=384 outer=384 cross=37839
          Batches: inner=3 outer=3 cross=564
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a1, t1.a2, t1.a3
@@ -230,7 +230,7 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Filter: (mod((t1.a3 + t2.b3), 10) < 5)
          Join Cond: (t1.a1 = t2.b1), (t1.a2 = t2.b2)
          Runs: inner=1 outer=1
-         Tuples: inner=1536 outer=1792 cross=392111
+         Tuples: inner=1536 outer=1792 cross=182780
          Batches: inner=12 outer=14 cross=3192
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a1, t1.a2, t1.a3
@@ -248,7 +248,7 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Filter: (mod((t1.a3 + t2.b3), 10) < 5)
          Join Cond: (t1.a1 = t2.b1), (t1.a2 = t2.b2)
          Runs: inner=1 outer=1
-         Tuples: inner=2944 outer=3456 cross=799970
+         Tuples: inner=2944 outer=3456 cross=374619
          Batches: inner=23 outer=27 cross=6378
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a1, t1.a2, t1.a3
@@ -264,7 +264,7 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
    Filter: (mod((t1.a3 + t2.b3), 10) < 5)
    Join Cond: (t1.a1 = t2.b1), (t1.a2 = t2.b2)
    Runs: inner=1 outer=1
-   Tuples: inner=8448 outer=10000 cross=2361344
+   Tuples: inner=8448 outer=10000 cross=1079974
    Batches: inner=66 outer=80 cross=18832
    ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
          Output: t1.a1, t1.a2, t1.a3
@@ -295,7 +295,7 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Filter: (t1.a3 < t2.b3)
          Join Cond: (t1.a1 = t2.b1), (t1.a2 = t2.b2)
          Runs: inner=1 outer=1
-         Tuples: inner=128 outer=128 cross=3488
+         Tuples: inner=128 outer=128 cross=539
          Batches: inner=1 outer=1 cross=28
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a1, t1.a2, t1.a3
@@ -313,7 +313,7 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Filter: (t1.a3 < t2.b3)
          Join Cond: (t1.a1 = t2.b1), (t1.a2 = t2.b2)
          Runs: inner=1 outer=1
-         Tuples: inner=128 outer=128 cross=7350
+         Tuples: inner=128 outer=128 cross=1942
          Batches: inner=1 outer=1 cross=58
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a1, t1.a2, t1.a3
@@ -331,7 +331,7 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Filter: (t1.a3 < t2.b3)
          Join Cond: (t1.a1 = t2.b1), (t1.a2 = t2.b2)
          Runs: inner=1 outer=1
-         Tuples: inner=256 outer=256 cross=23444
+         Tuples: inner=256 outer=256 cross=12285
          Batches: inner=2 outer=2 cross=184
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a1, t1.a2, t1.a3
@@ -349,7 +349,7 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Filter: (t1.a3 < t2.b3)
          Join Cond: (t1.a1 = t2.b1), (t1.a2 = t2.b2)
          Runs: inner=1 outer=1
-         Tuples: inner=384 outer=384 cross=70046
+         Tuples: inner=384 outer=384 cross=36742
          Batches: inner=3 outer=3 cross=548
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a1, t1.a2, t1.a3
@@ -367,7 +367,7 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Filter: (t1.a3 < t2.b3)
          Join Cond: (t1.a1 = t2.b1), (t1.a2 = t2.b2)
          Runs: inner=1 outer=1
-         Tuples: inner=1536 outer=1792 cross=386719
+         Tuples: inner=1536 outer=1792 cross=179916
          Batches: inner=12 outer=14 cross=3150
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a1, t1.a2, t1.a3
@@ -385,7 +385,7 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Filter: (t1.a3 < t2.b3)
          Join Cond: (t1.a1 = t2.b1), (t1.a2 = t2.b2)
          Runs: inner=1 outer=1
-         Tuples: inner=2944 outer=3456 cross=797145
+         Tuples: inner=2944 outer=3456 cross=373123
          Batches: inner=23 outer=27 cross=6356
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a1, t1.a2, t1.a3
@@ -401,7 +401,7 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
    Filter: (t1.a3 < t2.b3)
    Join Cond: (t1.a1 = t2.b1), (t1.a2 = t2.b2)
    Runs: inner=1 outer=1
-   Tuples: inner=8448 outer=10000 cross=2361344
+   Tuples: inner=8448 outer=10000 cross=1079974
    Batches: inner=66 outer=80 cross=18832
    ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
          Output: t1.a1, t1.a2, t1.a3

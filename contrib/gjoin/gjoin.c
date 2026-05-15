@@ -496,7 +496,7 @@ static void join_range_for_run(GJoinState * state, dlist_head *run,
 							   Datum **min_values, Datum **max_values,
 							   bool *min_unbounded, bool *max_unbounded);
 static bool batches_may_overlap(GJoinState *state, Batch *a, Batch *b);
-
+static bool batch_can_evict_inner(GJoinState *state, Batch *batch_inner);
 static void reset_cache_pos(GJoinState *state);
 
 // #define GJOIN_DEBUG
@@ -507,11 +507,13 @@ static void debug_print_runs(GJoinState *state);
 static void debug_print_join_range(GJoinState *state);
 static void debug_print_values(GJoinState *state, char *msg,
 							   bool unbounded, Datum *values);
+#define DEBUG_LOG(...)	elog(LOG, __VA_ARGS__)
 #else
 #define debug_print_batch(a, b, c)
 #define debug_print_runs(a)
 #define debug_print_join_range(a)
 #define debug_print_values(a, b, c)
+#define DEBUG_LOG(...)
 #endif
 
 void
@@ -1226,8 +1228,8 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 						state->pos_outer.batch
 							= dlist_head_element(Batch, node, &run->batches);
 
-						// debug_print_batch(state, "processing outer batch",
-						//				  state->pos_outer.batch);
+						debug_print_batch(state, "processing outer batch",
+										  state->pos_outer.batch);
 					}
 
 					Assert((state->pos_outer.run >= 0) &&
@@ -1368,8 +1370,8 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 															 &run->batches);
 							state->pos_inner.batch = batch_inner;
 
-							// debug_print_batch(state, "processing inner batch",
-							//				  state->pos_inner.batch);
+							debug_print_batch(state, "processing inner batch",
+											  state->pos_inner.batch);
 
 							/* new combination of inner/outer batch */
 							// state->stats.batches_cross++;
@@ -1416,6 +1418,8 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 							((state->pos_inner.slot == 0) &&
 							 !batches_may_overlap(state, batch_inner, batch_outer)))
 						{
+							DEBUG_LOG("inner batch processed, or batches can't overlap");
+
 							/* advance to the next batch for this run */
 							if (dlist_has_next(&run->batches, &batch_inner->node))
 							{
@@ -1723,10 +1727,32 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 
 						debug_print_batch(state, "EVICT consider inner batch", batch_inner);
 
-						/* can't evict, some outer batch may need it */
+						/* can't evict, some outer batch may need it
+						 *
+						 * XXX this does not seem right, it compares maximum value
+						 * of the inner batch against maximum values of the next
+						 * outer batch to load. But AFAICS that does not guarantee
+						 * no outer batches will need it, and may evict the inner
+						 * batch prematurely. Perhaps this is not quite right and
+						 * differs from the paper?
+						 */
 						if (compare_values(state, entry_inner->values, entry_outer->values) >= 0)
 						{
-							elog(LOG, "EVICT can't evict inner batch, not old enough");
+							DEBUG_LOG("EVICT can't evict inner batch, not old enough");
+							break;
+						}
+
+						/*
+						 * thorough check - compare the inner batch to all outer
+						 * runs, and see if any of those still needs it.
+						 *
+						 * XXX This is a workaround for the insufficient check
+						 * above, probably a sign of a bug / difference from
+						 * what the paper does.
+						 */
+						if (!batch_can_evict_inner(state, batch_inner))
+						{
+							DEBUG_LOG("EVICT can't evict inner batch, not old enough (workaround)");
 							break;
 						}
 
@@ -2805,6 +2831,33 @@ batches_may_overlap(GJoinState *state, Batch *a, Batch *b)
 	return true;
 }
 
+static bool
+batch_can_evict_inner(GJoinState *state, Batch *batch_inner)
+{
+	for (int r = 0; r < state->runs.outer.nruns; r++)
+	{
+		Batch *batch;
+		BatchRun *run = &state->runs.outer.runs[r];
+
+		/* run with no batches, can ignore */
+		if (dlist_is_empty(&run->batches))
+			continue;
+
+		batch = dlist_head_element(Batch, node, &run->batches);
+
+		/*
+		 * outer batch overlaps with the inner batch? can't evict
+		 *
+		 * XXX Do we need to check the other direction? I don't think so,
+		 * because we won't consider evicting those batches, right?
+		 */
+		if (compare_values(state, batch->min_values, batch_inner->max_values) <= 0)
+			return false;
+	}
+
+	return true;
+}
+
 /* reset the cache_pos in inner batches after advancing to a new outer batch */
 static void
 reset_cache_pos(GJoinState *state)
@@ -2946,6 +2999,7 @@ debug_print_runs(GJoinState *state)
 	initStringInfo(&str);
 
 	/* inner runs */
+	elog(LOG, "========================================================");
 	elog(LOG, "inner runs count=%d", state->runs.inner.nruns);
 
 	for (int r = 0; r < state->runs.inner.nruns; r++)
@@ -2972,6 +3026,8 @@ debug_print_runs(GJoinState *state)
 
 		elog(LOG, "%s", str.data);
 	}
+
+	elog(LOG, "--------------------------------------------------------");
 
 	/* outer runs */
 	elog(LOG, "outer runs count=%d", state->runs.outer.nruns);
@@ -3000,6 +3056,8 @@ debug_print_runs(GJoinState *state)
 
 		elog(LOG, "%s", str.data);
 	}
+
+	elog(LOG, "========================================================");
 }
 
 static void
@@ -3017,8 +3075,10 @@ debug_print_join_range(GJoinState *state)
 							state->join_range.min_unbounded,
 							state->join_range.min_values);
 
+	appendStringInfoString(&str, ", ");
+
 	if (state->join_range.max_unbounded)
-		appendStringInfoString(&str, ", (NULL)");
+		appendStringInfoString(&str, "(NULL)");
 	else
 		debug_format_values(state, &str,
 							state->join_range.max_unbounded,

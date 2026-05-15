@@ -200,6 +200,12 @@ typedef struct BatchRuns
  * of not-matching batches, but then if batches match we have to check all
  * possible tuple combinations, which increases the cost. Surely there is
  * an analytic solution, but experiments would likely give an answer too.
+ *
+ * XXX Smaller batches also make cache_pos less efficient (or at least I
+ * suspect so).
+ *
+ * XXX Would it make sense to have larger batches, and then build small
+ * hash tables on them, to make finding matches more efficient?
  */
 #define	MAX_BATCH_SIZE 128
 
@@ -1496,7 +1502,15 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 								continue;
 							}
 
-							/* r=0, so the join clauses match */
+							/*
+							 * r=0, so the join clauses match
+							 *
+							 * We can't set the cache_pos here, because there
+							 * might be multiple tuples with the same keys on
+							 * either side of the join, and setting cache_pos
+							 * here would point at the last inner one. So the
+							 * next outer would skip the other matches.
+							 */
 
 							/*
 							 * Continue by evaluating the filter (join clauses
@@ -2077,8 +2091,17 @@ buffer_flush_to_run(TupleBuffer * buffer, BatchRuns * runs, int run,
 	/* initialize the array of runs, if needed */
 	if (runs->runs == NULL)
 	{
-		runs->maxruns = 32;		/* FIXME arbitrary number, needs to be set
-								 * based on work_mem */
+		/*
+		 * FIXME Set to an arbitrary number, needs to be set based on
+		 * work_mem (per the paper).
+		 *
+		 * XXX Also, the optimal number of runs is a trade off. More runs
+		 * on the inner side means more batches to check for each outer
+		 * batch, and I suspect it makes the cache_pos less effective
+		 * (because the outer batches are smaller, and cache_pos gets
+		 * reset more often).
+		 */
+		runs->maxruns = 32;	
 		runs->runs = palloc0_array(BatchRun, runs->maxruns);
 	}
 

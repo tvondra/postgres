@@ -499,12 +499,19 @@ static bool batches_may_overlap(GJoinState *state, Batch *a, Batch *b);
 
 static void reset_cache_pos(GJoinState *state);
 
+// #define GJOIN_DEBUG
+
 #ifdef GJOIN_DEBUG
 static void debug_print_batch(GJoinState *state, char *msg, Batch *batch);
 static void debug_print_runs(GJoinState *state);
+static void debug_print_join_range(GJoinState *state);
+static void debug_print_values(GJoinState *state, char *msg,
+							   bool unbounded, Datum *values);
 #else
 #define debug_print_batch(a, b, c)
 #define debug_print_runs(a)
+#define debug_print_join_range(a)
+#define debug_print_values(a, b, c)
 #endif
 
 void
@@ -1269,6 +1276,8 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					/* dump current inner/outer runs */
 					debug_print_runs(state);
 
+					debug_print_join_range(state);
+
 					/* We can join this batch, advance to the next slot. */
 					state->pos_outer.slot++;
 
@@ -1363,7 +1372,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 							//				  state->pos_inner.batch);
 
 							/* new combination of inner/outer batch */
-							state->stats.batches_cross++;
+							// state->stats.batches_cross++;
 
 							Assert(state->pos_inner.slot == -1);
 						}
@@ -1424,9 +1433,10 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 								 */
 								state->pos_inner.batch = batch_inner;
 								state->pos_inner.slot = batch_inner->cache_pos;
+								// state->pos_inner.slot = -1;
 
 								/* new combination of inner/outer batch */
-								state->stats.batches_cross++;
+								// state->stats.batches_cross++;
 							}
 							else
 							{
@@ -1524,7 +1534,11 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					 * should use infinity for the highkey)
 					 */
 					if (pairingheap_is_empty(state->queues.inner_grow))
-						return NULL;
+					{
+						/* no more inner batches, try joining */
+						state->phase = GJOIN_NEXT_OUTER;
+						break;
+					}
 
 					/* get the next entry, remove it */
 					entry = priorityqueues_pop(state->queues.inner_grow);
@@ -1546,8 +1560,19 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					 * no more inner batches in a given run, no? But can
 					 * that even happen? We checked the queue is not empty,
 					 * so there should be a batch, no?
+					 *
+					 * XXX Actually, it can happen. Having an entry in
+					 * the queue does not mean there are more batches in
+					 * that run, it only says which run to try.
+					 *
+					 * But in that case, try again from another run (as
+					 * long as there are entries in the growth queue).
 					 */
-					Assert(loaded);	/* not sure if correct ... */
+					if (!loaded)
+					{
+						/* try loading from another inner run */
+						continue;
+					}
 
 					position_reset(&state->pos_inner);
 					update_join_range(state);
@@ -1667,6 +1692,8 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					Assert(compare_values(state, entry_outer->values,
 												 batch_outer->max_values) == 0);
 
+					debug_print_batch(state, "EVICT after outer batch", batch_outer);
+
 					/*
 					 * XXX no need to do anything about the outer queue,
 					 * e.g. by loading the next batch. That happens in
@@ -1683,8 +1710,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					 */
 					for (;;)
 					{
-						Batch	   *batch_inner,
-								   *tail;
+						Batch	   *batch_inner;
 						BatchRun   *run_inner;
 						QueueEntry *entry_inner;
 
@@ -1694,20 +1720,17 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 						run_inner = &state->runs.inner.runs[entry_inner->run];
 						batch_inner = dlist_head_element(Batch, node,
 														 &run_inner->batches);
-						tail = dlist_tail_element(Batch, node,
-												  &run_inner->batches);
+
+						debug_print_batch(state, "EVICT consider inner batch", batch_inner);
 
 						/* can't evict, some outer batch may need it */
 						if (compare_values(state, entry_inner->values, entry_outer->values) >= 0)
+						{
+							elog(LOG, "EVICT can't evict inner batch, not old enough");
 							break;
+						}
 
-						/*
-						 * can't evict if the only batch for the run
-						 *
-						 * XXX Not sure why ... need to check the paper.
-						 */
-						if (batch_inner == tail)
-							break;
+						debug_print_batch(state, "EVICT evicting inner batch", batch_inner);
 
 						/* can remove the batch, so pop from the queue */
 						priorityqueues_pop(state->queues.inner_shrink);
@@ -2406,6 +2429,17 @@ init_outer_runs(GJoinState * state)
 				break;
 		}
 
+		/*
+		 * We should never see a run with no tuples, because then we don't
+		 * create the run at all.
+		 */
+		Assert(batch->nslots > 0);
+
+		Assert(runs->runs[i].ntuples >= batch->nslots);
+
+		/* update the number of tuples remaining in the run */
+		runs->runs[i].ntuples -= batch->nslots;
+
 		/* get the min/max for the loaded chunks */
 		if (batch->nslots > 0)
 		{
@@ -2477,7 +2511,13 @@ load_outer_batch(GJoinState * state, int run, Batch * batch)
 
 	/* no more tuples in this run */
 	if (batch->nslots == 0)
+	{
+		Assert(state->runs.outer.runs[run].ntuples == 0);
 		return false;
+	}
+
+	Assert(state->runs.outer.runs[run].ntuples >= batch->nslots);
+	state->runs.outer.runs[run].ntuples -= batch->nslots;
 
 	/* the minimum values are no longer empty */
 	batch->min_unbounded = false;
@@ -2529,7 +2569,7 @@ load_inner_batch(GJoinState * state, int run, Batch * batch)
 	/* no more tuples in this run */
 	if (batch->nslots == 0)
 	{
-		Assert(state->runs.inner.runs[run].tuplesort == 0);
+		Assert(state->runs.inner.runs[run].ntuples == 0);
 		return false;
 	}
 
@@ -2648,7 +2688,8 @@ update_join_range(GJoinState * state)
 	bool		all_min_unbounded = true,
 				all_max_unbounded = true;
 
-	bool		set = false;
+	bool		min_set = false,
+				max_set = false;
 
 	/* allocate once */
 	min_values = palloc_array(Datum, state->clauses.nattnums);
@@ -2670,35 +2711,38 @@ update_join_range(GJoinState * state)
 		all_max_unbounded &= run_max_unbounded;
 
 		/*
-		 * If this is the first run with data, use the min/max values,
-		 * otherwise do the actual comparison, and pick the smaller/larger one
-		 * (lexicographically).
+		 * Pick the larger (for minvalues) and smaller (for maxvalues).
+		 *
+		 * Ignore unbounded values, as if there were no values.
 		 */
-		if (!set)
+		if (!run_min_unbounded)
 		{
-			memcpy(min_values, run_min_values,
-				   sizeof(Datum) * state->clauses.nattnums);
-			memcpy(max_values, run_max_values,
-				   sizeof(Datum) * state->clauses.nattnums);
-			continue;
+			if (!min_set)
+				memcpy(min_values, run_min_values,
+					   sizeof(Datum) * state->clauses.nattnums);
+			else if (compare_values(state, min_values, run_min_values) < 0)
+				memcpy(min_values, run_min_values,
+					   sizeof(Datum) * state->clauses.nattnums);
+
+			min_set = true;
 		}
 
-		/*
-		 * Pick the larger (for minvalues) and smaller (for maxvalues).
-		 */
-		if (compare_values(state, min_values, run_min_values) < 0)
-			memcpy(min_values, run_min_values,
-				   sizeof(Datum) * state->clauses.nattnums);
-
-		if (compare_values(state, min_values, run_min_values) > 0)
-			memcpy(max_values, run_max_values,
-				   sizeof(Datum) * state->clauses.nattnums);
+		if (!run_max_unbounded)
+		{
+			if (!max_set)
+				memcpy(max_values, run_max_values,
+					   sizeof(Datum) * state->clauses.nattnums);
+			else if (compare_values(state, max_values, run_max_values) > 0)
+				memcpy(max_values, run_max_values,
+					   sizeof(Datum) * state->clauses.nattnums);
+			max_set = true;
+		}
 	}
 
 	/* FIXME copy the arrays, free the new allocated ones */
 
-	state->join_range.min_values = min_values;
-	state->join_range.max_values = max_values;
+	state->join_range.min_values = (all_min_unbounded) ? NULL : min_values;
+	state->join_range.max_values = (all_max_unbounded) ? NULL : max_values;
 
 	state->join_range.min_unbounded = all_min_unbounded;
 	state->join_range.max_unbounded = all_max_unbounded;
@@ -2755,6 +2799,8 @@ batches_may_overlap(GJoinState *state, Batch *a, Batch *b)
 	/* [b,B] < [a,A] */
 	if (compare_values(state, b->max_values, a->min_values) < 0)
 		return false;
+
+	state->stats.batches_cross++;
 
 	return true;
 }
@@ -2844,9 +2890,13 @@ priorityqueues_peek(pairingheap *heap)
 
 #ifdef GJOIN_DEBUG
 static void
-debug_format_values(GJoinState *state, StringInfo str, Datum *values)
+debug_format_values(GJoinState *state, StringInfo str,
+					bool unbounded, Datum *values)
 {
-	appendStringInfoString(str, "[");
+	if (unbounded)
+		appendStringInfoString(str, "(");
+	else
+		appendStringInfoString(str, "[");
 
 	for (int i = 0; i < state->clauses.nattnums; i++)
 	{
@@ -2862,7 +2912,10 @@ debug_format_values(GJoinState *state, StringInfo str, Datum *values)
 		pfree(tmp);
 	}
 
-	appendStringInfoString(str, "]");
+	if (unbounded)
+		appendStringInfoString(str, ")");
+	else
+		appendStringInfoString(str, "]");
 }
 
 static void
@@ -2873,18 +2926,12 @@ debug_print_batch(GJoinState *state, char *msg, Batch *batch)
 	initStringInfo(&str);
 
 	appendStringInfoString(&str, "min ");
-
-	if (batch->min_unbounded)
-		appendStringInfoString(&str, "[]");
-	else
-		debug_format_values(state, &str, batch->min_values);
+	debug_format_values(state, &str,
+						batch->min_unbounded, batch->min_values);
 
 	appendStringInfoString(&str, " max ");
-
-	if (batch->max_unbounded)
-		appendStringInfoString(&str, "[]");
-	else
-		debug_format_values(state, &str, batch->max_values);
+	debug_format_values(state, &str,
+						batch->max_unbounded, batch->max_values);
 
 	elog(LOG, "%s (batch %p): %s", msg, batch, str.data);
 
@@ -2906,25 +2953,19 @@ debug_print_runs(GJoinState *state)
 		dlist_iter	iter;
 
 		resetStringInfo(&str);
-		appendStringInfo(&str, "  run %d batches", r);
+		appendStringInfo(&str, "  inner run %d batches", r);
 
 		dlist_foreach(iter, &state->runs.inner.runs[r].batches)
 		{
 			Batch *batch = dlist_container(Batch, node, iter.cur);
 
 			appendStringInfoString(&str, " {");
-
-			if (batch->min_unbounded)
-				appendStringInfoString(&str, "[]");
-			else
-				debug_format_values(state, &str, batch->min_values);
+			debug_format_values(state, &str,
+								batch->min_unbounded, batch->min_values);
 
 			appendStringInfoString(&str, ", ");
-
-			if (batch->max_unbounded)
-				appendStringInfoString(&str, "[]");
-			else
-				debug_format_values(state, &str, batch->max_values);
+			debug_format_values(state, &str,
+								batch->max_unbounded, batch->max_values);
 
 			appendStringInfoString(&str, "}");
 		}
@@ -2940,25 +2981,19 @@ debug_print_runs(GJoinState *state)
 		dlist_iter	iter;
 
 		resetStringInfo(&str);
-		appendStringInfo(&str, "  run %d batches", r);
+		appendStringInfo(&str, "  outer run %d batches", r);
 
 		dlist_foreach(iter, &state->runs.outer.runs[r].batches)
 		{
 			Batch *batch = dlist_container(Batch, node, iter.cur);
 
 			appendStringInfoString(&str, " {");
-
-			if (batch->min_unbounded)
-				appendStringInfoString(&str, "[]");
-			else
-				debug_format_values(state, &str, batch->min_values);
+			debug_format_values(state, &str,
+								batch->min_unbounded, batch->min_values);
 
 			appendStringInfoString(&str, ", ");
-
-			if (batch->max_unbounded)
-				appendStringInfoString(&str, "[]");
-			else
-				debug_format_values(state, &str, batch->max_values);
+			debug_format_values(state, &str,
+								batch->max_unbounded, batch->max_values);
 
 			appendStringInfoString(&str, "}");
 		}
@@ -2966,4 +3001,45 @@ debug_print_runs(GJoinState *state)
 		elog(LOG, "%s", str.data);
 	}
 }
+
+static void
+debug_print_join_range(GJoinState *state)
+{
+	StringInfoData str;
+
+	initStringInfo(&str);
+	appendStringInfo(&str, "  join range {");
+
+	if (state->join_range.min_unbounded)
+		appendStringInfoString(&str, "(NULL)");
+	else
+		debug_format_values(state, &str,
+							state->join_range.min_unbounded,
+							state->join_range.min_values);
+
+	if (state->join_range.max_unbounded)
+		appendStringInfoString(&str, ", (NULL)");
+	else
+		debug_format_values(state, &str,
+							state->join_range.max_unbounded,
+							state->join_range.max_values);
+
+	appendStringInfo(&str, "}");
+
+	elog(LOG, "%s", str.data);
+}
+
+static void
+debug_print_values(GJoinState *state, char *msg, bool unbounded, Datum *values)
+{
+	StringInfoData str;
+
+	initStringInfo(&str);
+	appendStringInfo(&str, "values (%s)", msg);
+
+	debug_format_values(state, &str, unbounded, values);
+
+	elog(LOG, "%s", str.data);
+}
+
 #endif

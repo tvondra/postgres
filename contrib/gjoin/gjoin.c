@@ -258,6 +258,7 @@ typedef struct Batch
 	/* tuple slots in this batch */
 	int			maxslots;
 	int			nslots;
+	uint32	   *hashes;
 	TupleTableSlot **slots;
 }			Batch;
 
@@ -1459,6 +1460,14 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 							continue;
 						}
 
+//						{
+//							uint32 hash_outer = batch_outer->hashes[state->pos_outer.slot];
+//							uint32 hash_inner = batch_inner->hashes[state->pos_inner.slot];
+//	
+//							if (hash_outer != hash_inner)
+//								continue;
+//						}
+
 						/*
 						 * Actually try to join inner/outer tuples from the
 						 * current inner/outer batches.
@@ -1474,6 +1483,9 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 
 							/* if the two tuples do not match, continue */
 							r = check_join_clause(state, outer, inner);
+
+//							if (r != 0)
+//								continue;
 
 							if (r > 0)
 							{
@@ -2297,6 +2309,7 @@ batch_init(TupleDesc tdesc, int nattnums)
 	batch->maxslots = MAX_BATCH_SIZE;
 	batch->nslots = 0;
 	batch->slots = palloc_array(TupleTableSlot *, batch->maxslots);
+	batch->hashes = palloc_array(uint32, batch->maxslots);
 
 	batch->cache_pos = -1;
 
@@ -2335,6 +2348,30 @@ batch_free(Batch *batch)
 	}
 
 	pfree(batch->slots);
+	pfree(batch->hashes);
+}
+
+static void
+batch_calculate_hashes(GJoinState *state, Batch *batch, AttrNumber *attnums)
+{
+	for (int i = 0; i < batch->nslots; i++)
+	{
+		uint32	hashvalue = 0;
+
+		for (int j = 0; j < state->clauses.nattnums; j++)
+		{
+			Datum	value;
+			bool	isnull;
+
+			value = slot_getattr(batch->slots[i], attnums[j], &isnull);
+
+			hashvalue |= DatumGetUInt32(FunctionCall1Coll(&state->clauses.hash_info[j],
+														  state->clauses.collations[j],
+														  value));
+		}
+
+		batch->hashes[i] = hashvalue;
+	}
 }
 
 /*
@@ -2419,6 +2456,8 @@ init_inner_runs(GJoinState * state)
 								   state->clauses.attnums_inner[j],
 								   &batch->max_isnull[j]);
 			}
+
+			batch_calculate_hashes(state, batch, state->clauses.attnums_inner);
 
 			/*
 			 * Add the run to the grow/shrink priority queues (the paper calls
@@ -2515,6 +2554,8 @@ init_outer_runs(GJoinState * state)
 								   &batch->max_isnull[j]);
 			}
 
+			batch_calculate_hashes(state, batch, state->clauses.attnums_outer);
+
 			/*
 			 * Add the buffer to the priority queue "C", used to load new
 			 * buffers for the outer relation.
@@ -2583,6 +2624,8 @@ load_outer_batch(GJoinState * state, int run, Batch * batch)
 											&batch->max_isnull[i]);
 	}
 
+	batch_calculate_hashes(state, batch, state->clauses.attnums_outer);
+
 	/* add the buffer to the priority queue for S */
 	priorityqueues_push(state->queues.outer, run, batch->max_values);
 
@@ -2649,6 +2692,8 @@ load_inner_batch(GJoinState * state, int run, Batch * batch)
 											state->clauses.attnums_inner[i],
 											&batch->max_isnull[i]);
 	}
+
+	batch_calculate_hashes(state, batch, state->clauses.attnums_inner);
 
 	/* add the buffer to the priority queue that manages growing */
 	priorityqueues_push(state->queues.inner_grow, run, batch->max_values);

@@ -4,7 +4,7 @@ SET gjoin.enabled = false;
 DROP TABLE IF EXISTS t1;
 DROP TABLE IF EXISTS t2;
 
-CREATE OR REPLACE FUNCTION query_timing(sql TEXT) RETURNS FLOAT AS $$
+CREATE OR REPLACE FUNCTION query_timing(sql TEXT, runs INT DEFAULT 1) RETURNS INT AS $$
 DECLARE
     v_timing FLOAT;
     v_start_time FLOAT;
@@ -13,16 +13,20 @@ BEGIN
 
     v_start_time := extract(epoch from clock_timestamp());
 
-    EXECUTE 'SELECT COUNT(*) FROM (' || sql || ')' INTO v_rows;
+    FOR r IN 1..runs LOOP
+        EXECUTE 'SELECT COUNT(*) FROM (' || sql || ')' INTO v_rows;
+    END LOOP;
 
     v_timing := extract(epoch from clock_timestamp()) - v_start_time;
 
-    RETURN (v_timing * 1000);
+    RETURN ((v_timing * 1000) / runs)::int;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION joins_timing(sql TEXT, OUT nestloop_timing FLOAT, OUT hashjoin_timing FLOAT, OUT mergejoin_timing FLOAT, OUT gjoin_timing FLOAT) RETURNS record AS $$
+CREATE OR REPLACE FUNCTION joins_timing(work_mem TEXT, sql TEXT, OUT nestloop_timing INT, OUT hashjoin_timing INT, OUT mergejoin_timing INT, OUT gjoin_timing INT) RETURNS record AS $$
 BEGIN
+
+    PERFORM set_config('work_mem', work_mem, false);
 
     -- no parallelism for fair comparison
     PERFORM set_config('max_parallel_workers_per_gather', '0', false);
@@ -52,6 +56,148 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- 10k
+
+CREATE TABLE t1 (a INT, b INT);
+CREATE TABLE t2 (c INT, d INT);
+
+INSERT INTO t1 SELECT i, 100000 * random() FROM generate_series(1,10000) s(i);
+INSERT INTO t2 SELECT i, 100000 * random() FROM generate_series(1,10000) s(i);
+
+CREATE INDEX ON t1 (a);
+CREATE INDEX ON t2 (c);
+
+VACUUM ANALYZE t1;
+VACUUM ANALYZE t2;
+
+SELECT * FROM unnest(ARRAY['64kB', '256kB', '1MB', '4MB', '16MB', '64MB']) AS work_mem, LATERAL joins_timing(work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+
+DROP TABLE t1;
+DROP TABLE t2;
+
+CREATE TABLE t1 (a INT, b INT);
+CREATE TABLE t2 (c INT, d INT);
+
+INSERT INTO t1 SELECT i, 100000 * random() FROM generate_series(1,10000) s(i) ORDER BY random();
+INSERT INTO t2 SELECT i, 100000 * random() FROM generate_series(1,10000) s(i) ORDER BY random();
+
+CREATE INDEX ON t1 (a);
+CREATE INDEX ON t2 (c);
+
+VACUUM ANALYZE t1;
+VACUUM ANALYZE t2;
+
+SELECT * FROM unnest(ARRAY['64kB', '256kB', '1MB', '4MB', '16MB', '64MB']) AS work_mem, LATERAL joins_timing(work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+
+DROP TABLE t1;
+DROP TABLE t2;
+
+CREATE TABLE t1 (a INT, b INT);
+CREATE TABLE t2 (c INT, d INT);
+
+INSERT INTO t1 SELECT i/10, 100000 * random() FROM generate_series(1,10000) s(i);
+INSERT INTO t2 SELECT i/10, 100000 * random() FROM generate_series(1,10000) s(i);
+
+CREATE INDEX ON t1 (a);
+CREATE INDEX ON t2 (c);
+
+VACUUM ANALYZE t1;
+VACUUM ANALYZE t2;
+
+SELECT * FROM unnest(ARRAY['64kB', '256kB', '1MB', '4MB', '16MB', '64MB']) AS work_mem, LATERAL joins_timing(work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+
+DROP TABLE t1;
+DROP TABLE t2;
+
+CREATE TABLE t1 (a INT, b INT);
+CREATE TABLE t2 (c INT, d INT);
+
+INSERT INTO t1 SELECT i/10, 100000 * random() FROM generate_series(1,10000) s(i) ORDER BY random();
+INSERT INTO t2 SELECT i/10, 100000 * random() FROM generate_series(1,10000) s(i) ORDER BY random();
+
+CREATE INDEX ON t1 (a);
+CREATE INDEX ON t2 (c);
+
+VACUUM ANALYZE t1;
+VACUUM ANALYZE t2;
+
+SELECT * FROM unnest(ARRAY['64kB', '256kB', '1MB', '4MB', '16MB', '64MB']) AS work_mem, LATERAL joins_timing(work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+
+DROP TABLE t1;
+DROP TABLE t2;
+
+-- 100k
+
+CREATE TABLE t1 (a INT, b INT);
+CREATE TABLE t2 (c INT, d INT);
+
+INSERT INTO t1 SELECT i, 100000 * random() FROM generate_series(1,100000) s(i);
+INSERT INTO t2 SELECT i, 100000 * random() FROM generate_series(1,100000) s(i);
+
+CREATE INDEX ON t1 (a);
+CREATE INDEX ON t2 (c);
+
+VACUUM ANALYZE t1;
+VACUUM ANALYZE t2;
+
+SELECT * FROM unnest(ARRAY['64kB', '256kB', '1MB', '4MB', '16MB', '64MB']) AS work_mem, LATERAL joins_timing(work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+
+DROP TABLE t1;
+DROP TABLE t2;
+
+CREATE TABLE t1 (a INT, b INT);
+CREATE TABLE t2 (c INT, d INT);
+
+INSERT INTO t1 SELECT i, 100000 * random() FROM generate_series(1,100000) s(i) ORDER BY random();
+INSERT INTO t2 SELECT i, 100000 * random() FROM generate_series(1,100000) s(i) ORDER BY random();
+
+CREATE INDEX ON t1 (a);
+CREATE INDEX ON t2 (c);
+
+VACUUM ANALYZE t1;
+VACUUM ANALYZE t2;
+
+SELECT * FROM unnest(ARRAY['64kB', '256kB', '1MB', '4MB', '16MB', '64MB']) AS work_mem, LATERAL joins_timing(work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+
+DROP TABLE t1;
+DROP TABLE t2;
+
+CREATE TABLE t1 (a INT, b INT);
+CREATE TABLE t2 (c INT, d INT);
+
+INSERT INTO t1 SELECT i/10, 100000 * random() FROM generate_series(1,100000) s(i);
+INSERT INTO t2 SELECT i/10, 100000 * random() FROM generate_series(1,100000) s(i);
+
+CREATE INDEX ON t1 (a);
+CREATE INDEX ON t2 (c);
+
+VACUUM ANALYZE t1;
+VACUUM ANALYZE t2;
+
+SELECT * FROM unnest(ARRAY['64kB', '256kB', '1MB', '4MB', '16MB', '64MB']) AS work_mem, LATERAL joins_timing(work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+
+DROP TABLE t1;
+DROP TABLE t2;
+
+CREATE TABLE t1 (a INT, b INT);
+CREATE TABLE t2 (c INT, d INT);
+
+INSERT INTO t1 SELECT i/10, 100000 * random() FROM generate_series(1,100000) s(i) ORDER BY random();
+INSERT INTO t2 SELECT i/10, 100000 * random() FROM generate_series(1,100000) s(i) ORDER BY random();
+
+CREATE INDEX ON t1 (a);
+CREATE INDEX ON t2 (c);
+
+VACUUM ANALYZE t1;
+VACUUM ANALYZE t2;
+
+SELECT * FROM unnest(ARRAY['64kB', '256kB', '1MB', '4MB', '16MB', '64MB']) AS work_mem, LATERAL joins_timing(work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+
+DROP TABLE t1;
+DROP TABLE t2;
+
+-- 1M
+
 CREATE TABLE t1 (a INT, b INT);
 CREATE TABLE t2 (c INT, d INT);
 
@@ -64,24 +210,7 @@ CREATE INDEX ON t2 (c);
 VACUUM ANALYZE t1;
 VACUUM ANALYZE t2;
 
-SET work_mem TO '64kB';
-SELECT '64kB' AS wm, * FROM joins_timing('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-
-SET work_mem TO '256kB';
-SELECT '256kB' AS wm, * FROM joins_timing('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-
-SET work_mem TO '1MB';
-SELECT '1MB' AS wm, * FROM joins_timing('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-
-SET work_mem TO '4MB';
-SELECT '4MB' AS wm, * FROM joins_timing('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-
-SET work_mem TO '16MB';
-SELECT '16MB' AS wm, * FROM joins_timing('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-
-SET work_mem TO '64MB';
-SELECT '64MB' AS wm, * FROM joins_timing('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-
+SELECT * FROM unnest(ARRAY['64kB', '256kB', '1MB', '4MB', '16MB', '64MB']) AS work_mem, LATERAL joins_timing(work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
 
 DROP TABLE t1;
 DROP TABLE t2;
@@ -98,24 +227,7 @@ CREATE INDEX ON t2 (c);
 VACUUM ANALYZE t1;
 VACUUM ANALYZE t2;
 
-SET work_mem TO '64kB';
-SELECT '64kB' AS wm, * FROM joins_timing('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-
-SET work_mem TO '256kB';
-SELECT '256kB' AS wm, * FROM joins_timing('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-
-SET work_mem TO '1MB';
-SELECT '1MB' AS wm, * FROM joins_timing('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-
-SET work_mem TO '4MB';
-SELECT '4MB' AS wm, * FROM joins_timing('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-
-SET work_mem TO '16MB';
-SELECT '16MB' AS wm, * FROM joins_timing('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-
-SET work_mem TO '64MB';
-SELECT '64MB' AS wm, * FROM joins_timing('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-
+SELECT * FROM unnest(ARRAY['64kB', '256kB', '1MB', '4MB', '16MB', '64MB']) AS work_mem, LATERAL joins_timing(work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
 
 DROP TABLE t1;
 DROP TABLE t2;
@@ -132,24 +244,7 @@ CREATE INDEX ON t2 (c);
 VACUUM ANALYZE t1;
 VACUUM ANALYZE t2;
 
-SET work_mem TO '64kB';
-SELECT '64kB' AS wm, * FROM joins_timing('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-
-SET work_mem TO '256kB';
-SELECT '256kB' AS wm, * FROM joins_timing('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-
-SET work_mem TO '1MB';
-SELECT '1MB' AS wm, * FROM joins_timing('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-
-SET work_mem TO '4MB';
-SELECT '4MB' AS wm, * FROM joins_timing('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-
-SET work_mem TO '16MB';
-SELECT '16MB' AS wm, * FROM joins_timing('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-
-SET work_mem TO '64MB';
-SELECT '64MB' AS wm, * FROM joins_timing('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-
+SELECT * FROM unnest(ARRAY['64kB', '256kB', '1MB', '4MB', '16MB', '64MB']) AS work_mem, LATERAL joins_timing(work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
 
 DROP TABLE t1;
 DROP TABLE t2;
@@ -166,20 +261,7 @@ CREATE INDEX ON t2 (c);
 VACUUM ANALYZE t1;
 VACUUM ANALYZE t2;
 
-SET work_mem TO '64kB';
-SELECT '64kB' AS wm, * FROM joins_timing('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+SELECT * FROM unnest(ARRAY['64kB', '256kB', '1MB', '4MB', '16MB', '64MB']) AS work_mem, LATERAL joins_timing(work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
 
-SET work_mem TO '256kB';
-SELECT '256kB' AS wm, * FROM joins_timing('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-
-SET work_mem TO '1MB';
-SELECT '1MB' AS wm, * FROM joins_timing('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-
-SET work_mem TO '4MB';
-SELECT '4MB' AS wm, * FROM joins_timing('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-
-SET work_mem TO '16MB';
-SELECT '16MB' AS wm, * FROM joins_timing('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-
-SET work_mem TO '64MB';
-SELECT '64MB' AS wm, * FROM joins_timing('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+DROP TABLE t1;
+DROP TABLE t2;

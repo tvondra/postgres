@@ -2349,6 +2349,8 @@ batch_free(Batch *batch)
 
 	pfree(batch->slots);
 	pfree(batch->hashes);
+
+	pfree(batch);
 }
 
 static void

@@ -209,6 +209,13 @@ typedef struct BatchRuns
  */
 #define	MAX_BATCH_SIZE 128
 
+/* XXX probably should use simplehash instead */
+typedef struct HashEntry
+{
+	uint32		hashvalue;
+	int32		slot;
+} HashEntry;
+
 /*
  * A small "batch" of tuples loaded from one sorted run. The batches form
  * a linked list, so that a run can have multiple buffers loaded at a time.
@@ -259,6 +266,7 @@ typedef struct Batch
 	int			maxslots;
 	int			nslots;
 	uint32	   *hashes;
+	HashEntry  *hashtable;
 	TupleTableSlot **slots;
 }			Batch;
 
@@ -522,6 +530,13 @@ static void debug_print_values(GJoinState *state, char *msg,
 #define debug_print_values(a, b, c)
 #define DEBUG_LOG(...)
 #endif
+
+//#define HASHTABLE_CAPACITY(batch)		((batch)->nslots * 4)
+#define HASHTABLE_CAPACITY(batch)		(MAX_BATCH_SIZE * 4)
+#define HASHTABLE_STEP					41
+#define HASHTABLE_SLOT_INDEX(batch, hashvalue)	((hashvalue) % HASHTABLE_CAPACITY(batch))
+#define HASHTABLE_SLOT_EMPTY(batch, idx)	((batch)->hashtable[(idx)].slot == -1)
+
 
 void
 _PG_init(void)
@@ -1344,6 +1359,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 						Batch	   *batch_inner;
 						Batch	   *batch_outer;
 						BatchRun   *run;
+						int			nloops = 0;
 
 						/* Have we ran out of runs? We're done. */
 						if (state->pos_inner.run >= state->runs.inner.nruns)
@@ -1386,9 +1402,6 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 							Assert(state->pos_inner.slot == -1);
 						}
 
-						/* Advance to the next slot in the current batch. */
-						state->pos_inner.slot++;
-
 						/*
 						 * get the current outer batch
 						 *
@@ -1401,6 +1414,47 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 						/* XXX We should simply use state->pos_outer.batch */
 						Assert(state->pos_outer.batch != NULL);
 						Assert(state->pos_outer.batch == batch_outer);
+
+						/* Advance to the next slot in the current batch. */
+						// state->pos_inner.slot++;
+						/**/
+						if (state->pos_inner.slot == -1)
+						{
+							state->pos_inner.slot
+								= HASHTABLE_SLOT_INDEX(batch_inner,
+													   batch_outer->hashes[state->pos_outer.slot]);
+						}
+						else
+						{
+							state->pos_inner.slot
+								= (state->pos_inner.slot + HASHTABLE_STEP) % HASHTABLE_CAPACITY(batch_inner);
+						}
+
+						/* find the slot with a matching hashtable */
+						for (;;)
+						{
+							uint32 inner_hash;
+
+							/* empty slot, no point in looking for more matches */
+							if (HASHTABLE_SLOT_EMPTY(batch_inner, state->pos_inner.slot))
+							{
+								state->pos_inner.slot = HASHTABLE_CAPACITY(batch_inner);
+								break;
+							}
+
+							/* slot with a values, does the hash match? */
+							inner_hash = batch_inner->hashes[batch_inner->hashtable[state->pos_inner.slot].slot];
+							if (inner_hash == batch_outer->hashes[state->pos_outer.slot])
+								break;
+
+							/* not empty but not a match, try the next one */
+							state->pos_inner.slot
+								= (state->pos_inner.slot + HASHTABLE_STEP) % HASHTABLE_CAPACITY(batch_inner);
+
+							/* too many loops, likely an infinite loop */
+							nloops++;
+							Assert(nloops <= batch_inner->nslots);
+						}
 
 						/*
 						 * If we processed all slots, or if the two batches
@@ -1421,7 +1475,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 						 * XXX The overlap is checked only on the first slot,
 						 * not every time we get here.
 						 */
-						if ((state->pos_inner.slot >= batch_inner->nslots) ||
+						if ((state->pos_inner.slot >= HASHTABLE_CAPACITY(batch_inner)) ||
 							((state->pos_inner.slot == 0) &&
 							 !batches_may_overlap(state, batch_inner, batch_outer)))
 						{
@@ -1460,13 +1514,13 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 							continue;
 						}
 
-//						{
-//							uint32 hash_outer = batch_outer->hashes[state->pos_outer.slot];
-//							uint32 hash_inner = batch_inner->hashes[state->pos_inner.slot];
-//	
-//							if (hash_outer != hash_inner)
-//								continue;
-//						}
+						{
+							uint32 hash_outer = batch_outer->hashes[state->pos_outer.slot];
+							int slot = batch_inner->hashtable[state->pos_inner.slot].slot;
+							uint32 hash_inner = batch_inner->hashes[slot];
+
+							Assert(hash_outer == hash_inner);
+						}
 
 						/*
 						 * Actually try to join inner/outer tuples from the
@@ -1476,7 +1530,10 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 							int		r;
 
 							TupleTableSlot *outer = batch_outer->slots[state->pos_outer.slot];
-							TupleTableSlot *inner = batch_inner->slots[state->pos_inner.slot];
+
+							int slot = batch_inner->hashtable[state->pos_inner.slot].slot;
+							uint32 hash_inner = batch_inner->hashes[slot];
+							TupleTableSlot *inner = batch_inner->slots[slot];
 
 							/* new tuple combination */
 							state->stats.tuples_cross++;
@@ -1484,35 +1541,35 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 							/* if the two tuples do not match, continue */
 							r = check_join_clause(state, outer, inner);
 
-//							if (r != 0)
-//								continue;
+							if (r != 0)
+								continue;
 
-							if (r > 0)
-							{
-								/*
-								 * remember position for the next outer tuple
-								 *
-								 * XXX It's important to look for *smaller* value
-								 * on the inner side, not a match. Because there
-								 * may not be exact matches for a particular key.
-								 */
-								batch_inner->cache_pos = state->pos_inner.slot;
-								continue;
-							}
-							else if (r < 0)
-							{
-								/*
-								 * More tuples in this inner batch can't possibly
-								 * match, jump to the end (by pretending we got to
-								 * the last slot) and try the next inner batch.
-								 *
-								 * XXX Just terminating the inner walk cuts the
-								 * number of comparisons roughly in half (even
-								 * without the caching of starting position).
-								 */
-								state->pos_inner.slot = (batch_inner->nslots - 1);
-								continue;
-							}
+//							if (r > 0)
+//							{
+//								/*
+//								 * remember position for the next outer tuple
+//								 *
+//								 * XXX It's important to look for *smaller* value
+//								 * on the inner side, not a match. Because there
+//								 * may not be exact matches for a particular key.
+//								 */
+//								batch_inner->cache_pos = state->pos_inner.slot;
+//								continue;
+//							}
+//							else if (r < 0)
+//							{
+//								/*
+//								 * More tuples in this inner batch can't possibly
+//								 * match, jump to the end (by pretending we got to
+//								 * the last slot) and try the next inner batch.
+//								 *
+//								 * XXX Just terminating the inner walk cuts the
+//								 * number of comparisons roughly in half (even
+//								 * without the caching of starting position).
+//								 */
+//								state->pos_inner.slot = (batch_inner->nslots - 1);
+//								continue;
+//							}
 
 							/*
 							 * r=0, so the join clauses match
@@ -2324,6 +2381,8 @@ batch_init(TupleDesc tdesc, int nattnums)
 	batch->max_isnull = palloc_array(bool, nattnums);
 	batch->min_isnull = palloc_array(bool, nattnums);
 
+	batch->hashtable = NULL;
+
 	return batch;
 }
 
@@ -2349,6 +2408,8 @@ batch_free(Batch *batch)
 
 	pfree(batch->slots);
 	pfree(batch->hashes);
+	if (batch->hashtable)
+		pfree(batch->hashtable);
 
 	pfree(batch);
 }
@@ -2373,6 +2434,36 @@ batch_calculate_hashes(GJoinState *state, Batch *batch, AttrNumber *attnums)
 		}
 
 		batch->hashes[i] = hashvalue;
+	}
+}
+
+static void
+batch_build_hashtable(GJoinState *state, Batch *batch)
+{
+	Assert(batch->hashtable == NULL);
+
+	/* aim for 50% load factor (XXX probably should be power-of-2, with prime step) */
+	batch->hashtable = palloc0_array(HashEntry, HASHTABLE_CAPACITY(batch));
+
+	/* mark slots as empty */
+	for (int i = 0; i < HASHTABLE_CAPACITY(batch); i++)
+	{
+		batch->hashtable[i].slot = -1;
+	}
+
+	/* add hashes to hash table */
+	for (int i = 0; i < batch->nslots; i++)
+	{
+		int	idx = HASHTABLE_SLOT_INDEX(batch, batch->hashes[i]);
+
+		/* find the next empty slot, linearly */
+		while (!HASHTABLE_SLOT_EMPTY(batch, idx))
+		{
+			idx = (idx + HASHTABLE_STEP) % HASHTABLE_CAPACITY(batch);
+		}
+
+		batch->hashtable[idx].hashvalue = batch->hashes[i];
+		batch->hashtable[idx].slot = i;
 	}
 }
 
@@ -2460,6 +2551,8 @@ init_inner_runs(GJoinState * state)
 			}
 
 			batch_calculate_hashes(state, batch, state->clauses.attnums_inner);
+
+			batch_build_hashtable(state, batch);
 
 			/*
 			 * Add the run to the grow/shrink priority queues (the paper calls
@@ -2696,6 +2789,8 @@ load_inner_batch(GJoinState * state, int run, Batch * batch)
 	}
 
 	batch_calculate_hashes(state, batch, state->clauses.attnums_inner);
+
+	batch_build_hashtable(state, batch);
 
 	/* add the buffer to the priority queue that manages growing */
 	priorityqueues_push(state->queues.inner_grow, run, batch->max_values);

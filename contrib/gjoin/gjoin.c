@@ -1336,6 +1336,14 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 				 *
 				 * XXX This expects to already have all needed internal
 				 * batches loaded (unless there are no more batches).
+				 *
+				 *
+				 * XXX An alternative idea - do a mini-mergejoin after
+				 * advancing to the next inner batch, and then simply walk
+				 * through the small result, without having to start from
+				 * scratch for new outer tuples, etc. That would also make
+				 * it unnecessary to do the hashing (although it could be
+				 * helpful for types with expensive comparisons, maybe?).
 				 */
 				{
 
@@ -2258,6 +2266,14 @@ build_runs(GJoinState * node, PlanState *state,
 		 * start spilling to tuplesorts when it's clear it can't do the
 		 * hashjoin-like execution. And we should try loading the other side
 		 * too first, in case we can swap the sides.
+		 *
+		 * XXX Maybe distribute the tuples to the runs randomly? That would
+		 * make it more resilient to adversary cases, I think. Which is what
+		 * some of the cases show in testing for "linear" data sets.
+		 *
+		 * XXX What if we sorted by hash value, and not by the keys? That
+		 * might be cheaper to do the "merge join" between batches, but it
+		 * would also mean we can't leverage presorted inputs.
 		 */
 		if (buffer->space + tuple->t_len > work_mem * 1024L)
 		{

@@ -832,7 +832,17 @@ create_gjoin_plan(PlannerInfo *root,
 	/* set the CustomJoin stuff */
 	cjoin->methods = &gjoin_plan_methods;
 	cjoin->custom_private = NIL;
-	cjoin->custom_plans = custom_plans;
+	cjoin->custom_plans = NIL;	/* setrefs operates on lefttree/righttree */
+
+	/*
+	 * XXX For now we assume there are only two plans passed through the
+	 * custom_paths/custom_plans. If a custom join needs to use more paths,
+	 * it needs to keep the other plans and set them to custom_plans.
+	 *
+	 * XXX Or maybe we should have a separate path type for custom joins?
+	 * The CustomPath is very tailored for scans? So there would be a
+	 * CustomJoinPath, embedding JoinPath, with separate left/right path.
+	 */
 
 	/*
 	 * For now we use custom_exprs only to pass join clauses, so a simple list
@@ -1042,8 +1052,8 @@ gjoin_BeginCustomJoin(CustomJoinState *node,
 	/*
 	 * Init the inner/outer subplan.
 	 */
-	outerplan = list_nth(cjoin->custom_plans, 0);
-	innerplan = list_nth(cjoin->custom_plans, 1);
+	outerplan = cjoin->join.plan.lefttree;
+	innerplan = cjoin->join.plan.righttree;
 
 	state->outerstate = ExecInitNode(outerplan, estate, eflags);
 	state->innerstate = ExecInitNode(innerplan, estate, eflags);

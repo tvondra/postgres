@@ -1799,7 +1799,7 @@ set_customscan_references(PlannerInfo *root,
 }
 
 /*
- * set_customscan_references
+ * set_customjoin_references
  *	   Do set_plan_references processing on a CustomJoin
  *
  * FIXME some of this is probably duplicate with set_join_references
@@ -1819,13 +1819,13 @@ set_customjoin_references(PlannerInfo *root,
 	outer_itlist = build_tlist_index(outer_plan->targetlist);
 	inner_itlist = build_tlist_index(inner_plan->targetlist);
 
-	if (cjoin->custom_join_tlist != NIL)
-	{
-		/* custom_join_tlist itself just needs fix_scan_list() adjustments */
-		cjoin->custom_join_tlist =
-			fix_scan_list(root, cjoin->custom_join_tlist,
-						  rtoffset, NUM_EXEC_TLIST((Plan *) cjoin));
-	}
+//	if (cjoin->custom_join_tlist != NIL)
+//	{
+//		/* custom_join_tlist itself just needs fix_scan_list() adjustments */
+//		cjoin->custom_join_tlist =
+//			fix_scan_list(root, cjoin->custom_join_tlist,
+//						  rtoffset, NUM_EXEC_TLIST((Plan *) cjoin));
+//	}
 
 	/*
 	 * The custom_exprs expressions need to be handled using fix_join_expr,

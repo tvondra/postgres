@@ -2123,6 +2123,7 @@ batch_run_init(BatchRun * run, Tuplesortstate *sort)
 {
 	run->ntuples = 0;
 	run->tuplesort = sort;
+	dlist_init(&run->batches);
 }
 
 /* close the runs - release the tuplesorts, etc. */

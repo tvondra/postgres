@@ -17,6 +17,7 @@ BEGIN
     v_start_time := extract(epoch from clock_timestamp());
 
     EXECUTE 'SELECT COUNT(*) FROM (' || sql || ')' INTO v_rows;
+    --EXECUTE sql || ' offset 1000000000' INTO v_rows;
 
     v_timing := extract(epoch from clock_timestamp()) - v_start_time;
 

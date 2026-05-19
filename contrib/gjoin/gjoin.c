@@ -672,6 +672,17 @@ create_gjoin_path(PlannerInfo *root, RelOptInfo *joinrel,
 	 * startup are not the best ones. It might be better to get cheapest total
 	 * paths and do sort. Or the paths may be sorted, and then we don't need
 	 * to do additional sort.
+	 *
+	 * XXX We might also consider using already-sorted paths (with any
+	 * ordering matching the join keys), but I'm not sure it makes sense.
+	 * With presorted paths we always pay some extra cost, even if we end
+	 * up doing the in-memory hashjoin. Maybe that's fine, or maybe the
+	 * extra cost is one of the problems (e.g. when it's provided by an
+	 * indexscan that fetches many more rows / be very expensive). Maybe
+	 * the right solution is to use the cheapest total path, but leverage
+	 * the ordering if the path happens to be sorted? Or should we be
+	 * defensive and always assume we'll be sorting? Still, the defensive
+	 * approach may be to do sorting on our own.
 	 */
 	Path	   *outer_path = outerrel->cheapest_startup_path;
 	Path	   *inner_path = innerrel->cheapest_startup_path;

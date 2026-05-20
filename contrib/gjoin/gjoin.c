@@ -2200,41 +2200,39 @@ buffer_flush_to_run(TupleBuffer * buffer, BatchRuns * runs, int run,
 		 * (because the outer batches are smaller, and cache_pos gets
 		 * reset more often).
 		 */
-		runs->maxruns = 32;	
+		runs->maxruns = 32;
 		runs->runs = palloc0_array(BatchRun, runs->maxruns);
-	}
-
-	/* initialize the run, if needed */
-	if ((tuplesortstate = runs->runs[run].tuplesort) == NULL)
-	{
-		/* we allocate all runs in sequence during the first cycle */
-		Assert(runs->nruns == run);
-
-		tuplesortstate = tuplesort_begin_heap(tdesc,
-											  clauses->nattnums,
-											  attnums,
-											  clauses->inequality,
-											  clauses->collations,
-											  clauses->nulls_first,
-											  work_mem,
-											  NULL,
-											  tuplesortopts);
-
-		batch_run_init(&runs->runs[run], tuplesortstate);
-		runs->nruns++;
 	}
 
 	/* offload the tuples */
 	tmpslot = MakeSingleTupleTableSlot(tdesc, &TTSOpsHeapTuple);
 	for (int i = 0; i < buffer->ntuples; i++)
 	{
+		run = (i % runs->maxruns);
+
+		if ((tuplesortstate = runs->runs[run].tuplesort) == NULL)
+		{
+			tuplesortstate = tuplesort_begin_heap(tdesc,
+												  clauses->nattnums,
+												  attnums,
+												  clauses->inequality,
+												  clauses->collations,
+												  clauses->nulls_first,
+												  work_mem,
+												  NULL,
+												  tuplesortopts);
+
+			batch_run_init(&runs->runs[i], tuplesortstate);
+			runs->nruns++;
+		}
+
+		runs->runs[run].ntuples += 1;
+
 		ExecClearTuple(tmpslot);
 		ExecStoreHeapTuple(buffer->tuples[i], tmpslot, true);
 		tuplesort_puttupleslot(tuplesortstate, tmpslot);
 	}
 	ExecDropSingleTupleTableSlot(tmpslot);
-
-	runs->runs[run].ntuples += buffer->ntuples;
 
 	buffer->space = 0;
 	buffer->ntuples = 0;

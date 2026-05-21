@@ -2202,15 +2202,8 @@ buffer_flush_to_run(TupleBuffer * buffer, BatchRuns * runs, int run,
 		 */
 		runs->maxruns = 32;
 		runs->runs = palloc0_array(BatchRun, runs->maxruns);
-	}
 
-	/* offload the tuples */
-	tmpslot = MakeSingleTupleTableSlot(tdesc, &TTSOpsHeapTuple);
-	for (int i = 0; i < buffer->ntuples; i++)
-	{
-		run = (i % runs->maxruns);
-
-		if ((tuplesortstate = runs->runs[run].tuplesort) == NULL)
+		for (int i = 0; i < runs->maxruns; i++)
 		{
 			tuplesortstate = tuplesort_begin_heap(tdesc,
 												  clauses->nattnums,
@@ -2223,10 +2216,19 @@ buffer_flush_to_run(TupleBuffer * buffer, BatchRuns * runs, int run,
 												  tuplesortopts);
 
 			batch_run_init(&runs->runs[i], tuplesortstate);
-			runs->nruns++;
 		}
 
+		runs->nruns = runs->maxruns;
+	}
+
+	/* offload the tuples */
+	tmpslot = MakeSingleTupleTableSlot(tdesc, &TTSOpsHeapTuple);
+	for (int i = 0; i < buffer->ntuples; i++)
+	{
+		run = (i % runs->maxruns);
 		runs->runs[run].ntuples += 1;
+
+		tuplesortstate = runs->runs[run].tuplesort;
 
 		ExecClearTuple(tmpslot);
 		ExecStoreHeapTuple(buffer->tuples[i], tmpslot, true);

@@ -1,0 +1,129 @@
+LOAD 'gjoin';
+SET gjoin.enabled = false;
+
+CREATE TABLE t1 (a INT, b INT, c INT);
+CREATE TABLE t2 (d INT, e INT, f INT);
+CREATE TABLE t3 (g INT, h INT, i INT);
+
+CREATE OR REPLACE FUNCTION compare_joins(sql TEXT) RETURNS bool AS $$
+DECLARE
+    v_custom_rows INT;
+    v_rows        INT;
+BEGIN
+
+    PERFORM set_config('gjoin.enabled', '1', false);
+    EXECUTE 'SELECT COUNT(*) FROM (' || sql || ')' INTO v_custom_rows;
+
+    PERFORM set_config('gjoin.enabled', '0', false);
+    EXECUTE 'SELECT COUNT(*) FROM (' || sql || ')' INTO v_rows;
+
+    IF v_rows != v_custom_rows THEN
+        RAISE WARNING '% %', v_rows, v_custom_rows;
+    END IF;
+
+    RETURN (v_rows = v_custom_rows);
+END;
+$$ LANGUAGE plpgsql;
+
+
+INSERT INTO t1 SELECT i, i, 1000 * random() FROM generate_series(1,10000) s(i);
+INSERT INTO t2 SELECT i, i, 1000 * random() FROM generate_series(1,10000) s(i);
+INSERT INTO t3 SELECT i, i, 1000 * random() FROM generate_series(1,10000) s(i);
+
+VACUUM ANALYZE t1;
+VACUUM ANALYZE t2;
+VACUUM ANALYZE t3;
+
+SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d) JOIN t3 ON (t1.b = t3.g)');
+SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND mod(t1.c + t2.f, 10) < 5) JOIN t3 ON (t1.b = t3.g AND mod(t1.c + t3.i, 10) < 5)');
+SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND t1.c < t2.f) JOIN t3 ON (t1.b = t3.g AND t1.c < t3.i)');
+
+
+TRUNCATE t1;
+TRUNCATE t2;
+TRUNCATE t3;
+
+INSERT INTO t1 SELECT i, i, 1000 * random() FROM generate_series(1,10000) s(i) ORDER BY random();
+INSERT INTO t2 SELECT i, i, 1000 * random() FROM generate_series(1,10000) s(i) ORDER BY random();
+INSERT INTO t3 SELECT i, i, 1000 * random() FROM generate_series(1,10000) s(i) ORDER BY random();
+
+VACUUM ANALYZE t1;
+VACUUM ANALYZE t2;
+VACUUM ANALYZE t3;
+
+SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d) JOIN t3 ON (t1.b = t3.g)');
+SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND mod(t1.c + t2.f, 10) < 5) JOIN t3 ON (t1.b = t3.g AND mod(t1.c + t3.i, 10) < 5)');
+SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND t1.c < t2.f) JOIN t3 ON (t1.b = t3.g AND t1.c < t3.i)');
+
+
+TRUNCATE t1;
+TRUNCATE t2;
+TRUNCATE t3;
+
+INSERT INTO t1 SELECT mod(i,1000), mod(i,1000), 1000 * random() FROM generate_series(1,10000) s(i);
+INSERT INTO t2 SELECT mod(i,1000), mod(i,1000), 1000 * random() FROM generate_series(1,10000) s(i);
+INSERT INTO t3 SELECT mod(i,1000), mod(i,1000), 1000 * random() FROM generate_series(1,10000) s(i);
+
+VACUUM ANALYZE t1;
+VACUUM ANALYZE t2;
+VACUUM ANALYZE t3;
+
+SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d) JOIN t3 ON (t1.b = t3.g)');
+SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND mod(t1.c + t2.f, 10) < 5) JOIN t3 ON (t1.b = t3.g AND mod(t1.c + t3.i, 10) < 5)');
+SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND t1.c < t2.f) JOIN t3 ON (t1.b = t3.g AND t1.c < t3.i)');
+
+
+TRUNCATE t1;
+TRUNCATE t2;
+TRUNCATE t3;
+
+INSERT INTO t1 SELECT mod(i,1000), mod(i,1000), 1000 * random() FROM generate_series(1,10000) s(i) ORDER BY random();
+INSERT INTO t2 SELECT mod(i,1000), mod(i,1000), 1000 * random() FROM generate_series(1,10000) s(i) ORDER BY random();
+INSERT INTO t3 SELECT mod(i,1000), mod(i,1000), 1000 * random() FROM generate_series(1,10000) s(i) ORDER BY random();
+
+VACUUM ANALYZE t1;
+VACUUM ANALYZE t2;
+VACUUM ANALYZE t3;
+
+SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d) JOIN t3 ON (t1.b = t3.g)');
+SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND mod(t1.c + t2.f, 10) < 5) JOIN t3 ON (t1.b = t3.g AND mod(t1.c + t3.i, 10) < 5)');
+SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND t1.c < t2.f) JOIN t3 ON (t1.b = t3.g AND t1.c < t3.i)');
+
+
+TRUNCATE t1;
+TRUNCATE t2;
+TRUNCATE t3;
+
+INSERT INTO t1 SELECT mod(i,100), mod(i,100), 1000 * random() FROM generate_series(1,10000) s(i);
+INSERT INTO t1 SELECT mod(i,100), mod(i,100), 1000 * random() FROM generate_series(1,10000) s(i);
+INSERT INTO t3 SELECT mod(i,100), mod(i,100), 1000 * random() FROM generate_series(1,10000) s(i);
+
+VACUUM ANALYZE t1;
+VACUUM ANALYZE t2;
+VACUUM ANALYZE t3;
+
+SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d) JOIN t3 ON (t1.b = t3.g)');
+SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND mod(t1.c + t2.f, 10) < 5) JOIN t3 ON (t1.b = t3.g AND mod(t1.c + t3.i, 10) < 5)');
+SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND t1.c < t2.f) JOIN t3 ON (t1.b = t3.g AND t1.c < t3.i)');
+
+
+TRUNCATE t1;
+TRUNCATE t2;
+TRUNCATE t3;
+
+INSERT INTO t1 SELECT mod(i,100), mod(i,100), 1000 * random() FROM generate_series(1,10000) s(i) ORDER BY random();
+INSERT INTO t2 SELECT mod(i,100), mod(i,100), 1000 * random() FROM generate_series(1,10000) s(i) ORDER BY random();
+INSERT INTO t3 SELECT mod(i,100), mod(i,100), 1000 * random() FROM generate_series(1,10000) s(i) ORDER BY random();
+
+VACUUM ANALYZE t1;
+VACUUM ANALYZE t2;
+VACUUM ANALYZE t3;
+
+SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d) JOIN t3 ON (t1.b = t3.g)');
+SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND mod(t1.c + t2.f, 10) < 5) JOIN t3 ON (t1.b = t3.g AND mod(t1.c + t3.i, 10) < 5)');
+SELECT compare_joins('SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND t1.c < t2.f) JOIN t3 ON (t1.b = t3.g AND t1.c < t3.i)');
+
+
+DROP TABLE t1;
+DROP TABLE t2;
+DROP TABLE t3;

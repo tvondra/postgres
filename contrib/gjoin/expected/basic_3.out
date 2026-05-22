@@ -1,0 +1,616 @@
+CREATE TABLE t1 (a INT, b INT, c INT);
+CREATE TABLE t2 (d INT, e INT, f INT);
+CREATE TABLE t3 (g INT, h INT, i INT);
+INSERT INTO t1 SELECT i, i, mod(i * 7121, 1000) FROM generate_series(1,10000) s(i);
+INSERT INTO t2 SELECT i, i, mod(i * 5443, 1000) FROM generate_series(1,10000) s(i);
+INSERT INTO t3 SELECT i, i, mod(i * 5441, 1000) FROM generate_series(1,10000) s(i);
+VACUUM ANALYZE t1;
+VACUUM ANALYZE t2;
+VACUUM ANALYZE t3;
+LOAD 'gjoin';
+SET gjoin.enabled = true;
+EXPLAIN (VERBOSE, COSTS OFF, BUFFERS OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d) JOIN t3 ON (t1.b = t3.g);
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Custom Join (GJoin) Join
+   Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+   Join Cond: (t1.b = t3.g)
+   ->  Custom Join (GJoin) Join
+         Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
+         Join Cond: (t1.a = t2.d)
+         ->  Seq Scan on public.t1
+               Output: t1.a, t1.b, t1.c
+         ->  Seq Scan on public.t2
+               Output: t2.d, t2.e, t2.f
+   ->  Seq Scan on public.t3
+         Output: t3.g, t3.h, t3.i
+(12 rows)
+
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d) JOIN t3 ON (t1.b = t3.g) LIMIT 100;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Limit (actual rows=100.00 loops=1)
+   Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+   ->  Custom Join (GJoin) Join (actual rows=100.00 loops=1)
+         Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+         Join Cond: (t1.b = t3.g)
+         Runs: inner=32 outer=32
+         Tuples: inner=4096 outer=4096 cross=100
+         Batches: inner=32 outer=32 cross=1
+         ->  Custom Join (GJoin) Join (actual rows=10000.00 loops=1)
+               Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
+               Join Cond: (t1.a = t2.d)
+               Runs: inner=32 outer=32
+               Tuples: inner=10000 outer=10000 cross=10000
+               Batches: inner=96 outer=128 cross=26
+               ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
+                     Output: t1.a, t1.b, t1.c
+               ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
+                     Output: t2.d, t2.e, t2.f
+         ->  Seq Scan on public.t3 (actual rows=10000.00 loops=1)
+               Output: t3.g, t3.h, t3.i
+(20 rows)
+
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d) JOIN t3 ON (t1.b = t3.g) LIMIT 200;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Limit (actual rows=200.00 loops=1)
+   Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+   ->  Custom Join (GJoin) Join (actual rows=200.00 loops=1)
+         Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+         Join Cond: (t1.b = t3.g)
+         Runs: inner=32 outer=32
+         Tuples: inner=4096 outer=4224 cross=200
+         Batches: inner=32 outer=33 cross=2
+         ->  Custom Join (GJoin) Join (actual rows=10000.00 loops=1)
+               Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
+               Join Cond: (t1.a = t2.d)
+               Runs: inner=32 outer=32
+               Tuples: inner=10000 outer=10000 cross=10000
+               Batches: inner=96 outer=128 cross=26
+               ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
+                     Output: t1.a, t1.b, t1.c
+               ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
+                     Output: t2.d, t2.e, t2.f
+         ->  Seq Scan on public.t3 (actual rows=10000.00 loops=1)
+               Output: t3.g, t3.h, t3.i
+(20 rows)
+
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d) JOIN t3 ON (t1.b = t3.g) LIMIT 500;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Limit (actual rows=500.00 loops=1)
+   Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+   ->  Custom Join (GJoin) Join (actual rows=500.00 loops=1)
+         Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+         Join Cond: (t1.b = t3.g)
+         Runs: inner=32 outer=32
+         Tuples: inner=4096 outer=4480 cross=500
+         Batches: inner=32 outer=35 cross=3
+         ->  Custom Join (GJoin) Join (actual rows=10000.00 loops=1)
+               Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
+               Join Cond: (t1.a = t2.d)
+               Runs: inner=32 outer=32
+               Tuples: inner=10000 outer=10000 cross=10000
+               Batches: inner=96 outer=128 cross=26
+               ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
+                     Output: t1.a, t1.b, t1.c
+               ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
+                     Output: t2.d, t2.e, t2.f
+         ->  Seq Scan on public.t3 (actual rows=10000.00 loops=1)
+               Output: t3.g, t3.h, t3.i
+(20 rows)
+
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d) JOIN t3 ON (t1.b = t3.g) LIMIT 1000;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Limit (actual rows=1000.00 loops=1)
+   Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+   ->  Custom Join (GJoin) Join (actual rows=1000.00 loops=1)
+         Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+         Join Cond: (t1.b = t3.g)
+         Runs: inner=32 outer=32
+         Tuples: inner=4096 outer=4992 cross=1000
+         Batches: inner=32 outer=39 cross=6
+         ->  Custom Join (GJoin) Join (actual rows=10000.00 loops=1)
+               Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
+               Join Cond: (t1.a = t2.d)
+               Runs: inner=32 outer=32
+               Tuples: inner=10000 outer=10000 cross=10000
+               Batches: inner=96 outer=128 cross=26
+               ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
+                     Output: t1.a, t1.b, t1.c
+               ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
+                     Output: t2.d, t2.e, t2.f
+         ->  Seq Scan on public.t3 (actual rows=10000.00 loops=1)
+               Output: t3.g, t3.h, t3.i
+(20 rows)
+
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d) JOIN t3 ON (t1.b = t3.g) LIMIT 5000;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Limit (actual rows=5000.00 loops=1)
+   Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+   ->  Custom Join (GJoin) Join (actual rows=5000.00 loops=1)
+         Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+         Join Cond: (t1.b = t3.g)
+         Runs: inner=32 outer=32
+         Tuples: inner=8192 outer=8591 cross=5000
+         Batches: inner=64 outer=71 cross=20
+         ->  Custom Join (GJoin) Join (actual rows=10000.00 loops=1)
+               Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
+               Join Cond: (t1.a = t2.d)
+               Runs: inner=32 outer=32
+               Tuples: inner=10000 outer=10000 cross=10000
+               Batches: inner=96 outer=128 cross=26
+               ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
+                     Output: t1.a, t1.b, t1.c
+               ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
+                     Output: t2.d, t2.e, t2.f
+         ->  Seq Scan on public.t3 (actual rows=10000.00 loops=1)
+               Output: t3.g, t3.h, t3.i
+(20 rows)
+
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d) JOIN t3 ON (t1.b = t3.g) LIMIT 10000;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Limit (actual rows=10000.00 loops=1)
+   Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+   ->  Custom Join (GJoin) Join (actual rows=10000.00 loops=1)
+         Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+         Join Cond: (t1.b = t3.g)
+         Runs: inner=32 outer=32
+         Tuples: inner=10000 outer=10000 cross=10000
+         Batches: inner=96 outer=127 cross=26
+         ->  Custom Join (GJoin) Join (actual rows=10000.00 loops=1)
+               Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
+               Join Cond: (t1.a = t2.d)
+               Runs: inner=32 outer=32
+               Tuples: inner=10000 outer=10000 cross=10000
+               Batches: inner=96 outer=128 cross=26
+               ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
+                     Output: t1.a, t1.b, t1.c
+               ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
+                     Output: t2.d, t2.e, t2.f
+         ->  Seq Scan on public.t3 (actual rows=10000.00 loops=1)
+               Output: t3.g, t3.h, t3.i
+(20 rows)
+
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d) JOIN t3 ON (t1.b = t3.g);
+                            QUERY PLAN                            
+------------------------------------------------------------------
+ Custom Join (GJoin) Join (actual rows=10000.00 loops=1)
+   Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+   Join Cond: (t1.b = t3.g)
+   Runs: inner=32 outer=32
+   Tuples: inner=10000 outer=10000 cross=10000
+   Batches: inner=96 outer=128 cross=26
+   ->  Custom Join (GJoin) Join (actual rows=10000.00 loops=1)
+         Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
+         Join Cond: (t1.a = t2.d)
+         Runs: inner=32 outer=32
+         Tuples: inner=10000 outer=10000 cross=10000
+         Batches: inner=96 outer=128 cross=26
+         ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
+               Output: t1.a, t1.b, t1.c
+         ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
+               Output: t2.d, t2.e, t2.f
+   ->  Seq Scan on public.t3 (actual rows=10000.00 loops=1)
+         Output: t3.g, t3.h, t3.i
+(18 rows)
+
+EXPLAIN (VERBOSE, COSTS OFF, BUFFERS OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND mod(t1.c + t2.f, 10) < 5) JOIN t3 ON (t1.b = t3.g AND mod(t1.c + t3.i, 10) < 5);
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Custom Join (GJoin) Join
+   Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+   Filter: (mod((t1.c + t3.i), 10) < 5)
+   Join Cond: (t1.b = t3.g)
+   ->  Custom Join (GJoin) Join
+         Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
+         Filter: (mod((t1.c + t2.f), 10) < 5)
+         Join Cond: (t1.a = t2.d)
+         ->  Seq Scan on public.t1
+               Output: t1.a, t1.b, t1.c
+         ->  Seq Scan on public.t2
+               Output: t2.d, t2.e, t2.f
+   ->  Seq Scan on public.t3
+         Output: t3.g, t3.h, t3.i
+(14 rows)
+
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND mod(t1.c + t2.f, 10) < 5) JOIN t3 ON (t1.b = t3.g AND mod(t1.c + t3.i, 10) < 5) LIMIT 100;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Limit (actual rows=100.00 loops=1)
+   Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+   ->  Custom Join (GJoin) Join (actual rows=100.00 loops=1)
+         Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+         Filter: (mod((t1.c + t3.i), 10) < 5)
+         Join Cond: (t1.b = t3.g)
+         Runs: inner=32 outer=32
+         Tuples: inner=8192 outer=4156 cross=150
+         Batches: inner=64 outer=33 cross=0
+         ->  Custom Join (GJoin) Join (actual rows=6000.00 loops=1)
+               Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
+               Filter: (mod((t1.c + t2.f), 10) < 5)
+               Join Cond: (t1.a = t2.d)
+               Runs: inner=32 outer=32
+               Tuples: inner=10000 outer=10000 cross=10000
+               Batches: inner=96 outer=128 cross=26
+               ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
+                     Output: t1.a, t1.b, t1.c
+               ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
+                     Output: t2.d, t2.e, t2.f
+         ->  Seq Scan on public.t3 (actual rows=10000.00 loops=1)
+               Output: t3.g, t3.h, t3.i
+(22 rows)
+
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND mod(t1.c + t2.f, 10) < 5) JOIN t3 ON (t1.b = t3.g AND mod(t1.c + t3.i, 10) < 5) LIMIT 200;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Limit (actual rows=200.00 loops=1)
+   Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+   ->  Custom Join (GJoin) Join (actual rows=200.00 loops=1)
+         Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+         Filter: (mod((t1.c + t3.i), 10) < 5)
+         Join Cond: (t1.b = t3.g)
+         Runs: inner=32 outer=32
+         Tuples: inner=8192 outer=4216 cross=308
+         Batches: inner=64 outer=34 cross=0
+         ->  Custom Join (GJoin) Join (actual rows=6000.00 loops=1)
+               Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
+               Filter: (mod((t1.c + t2.f), 10) < 5)
+               Join Cond: (t1.a = t2.d)
+               Runs: inner=32 outer=32
+               Tuples: inner=10000 outer=10000 cross=10000
+               Batches: inner=96 outer=128 cross=26
+               ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
+                     Output: t1.a, t1.b, t1.c
+               ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
+                     Output: t2.d, t2.e, t2.f
+         ->  Seq Scan on public.t3 (actual rows=10000.00 loops=1)
+               Output: t3.g, t3.h, t3.i
+(22 rows)
+
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND mod(t1.c + t2.f, 10) < 5) JOIN t3 ON (t1.b = t3.g AND mod(t1.c + t3.i, 10) < 5) LIMIT 500;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Limit (actual rows=500.00 loops=1)
+   Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+   ->  Custom Join (GJoin) Join (actual rows=500.00 loops=1)
+         Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+         Filter: (mod((t1.c + t3.i), 10) < 5)
+         Join Cond: (t1.b = t3.g)
+         Runs: inner=32 outer=32
+         Tuples: inner=8192 outer=4395 cross=755
+         Batches: inner=64 outer=37 cross=0
+         ->  Custom Join (GJoin) Join (actual rows=6000.00 loops=1)
+               Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
+               Filter: (mod((t1.c + t2.f), 10) < 5)
+               Join Cond: (t1.a = t2.d)
+               Runs: inner=32 outer=32
+               Tuples: inner=10000 outer=10000 cross=10000
+               Batches: inner=96 outer=128 cross=26
+               ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
+                     Output: t1.a, t1.b, t1.c
+               ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
+                     Output: t2.d, t2.e, t2.f
+         ->  Seq Scan on public.t3 (actual rows=10000.00 loops=1)
+               Output: t3.g, t3.h, t3.i
+(22 rows)
+
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND mod(t1.c + t2.f, 10) < 5) JOIN t3 ON (t1.b = t3.g AND mod(t1.c + t3.i, 10) < 5) LIMIT 1000;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Limit (actual rows=1000.00 loops=1)
+   Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+   ->  Custom Join (GJoin) Join (actual rows=1000.00 loops=1)
+         Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+         Filter: (mod((t1.c + t3.i), 10) < 5)
+         Join Cond: (t1.b = t3.g)
+         Runs: inner=32 outer=32
+         Tuples: inner=8192 outer=4754 cross=1512
+         Batches: inner=64 outer=43 cross=3
+         ->  Custom Join (GJoin) Join (actual rows=6000.00 loops=1)
+               Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
+               Filter: (mod((t1.c + t2.f), 10) < 5)
+               Join Cond: (t1.a = t2.d)
+               Runs: inner=32 outer=32
+               Tuples: inner=10000 outer=10000 cross=10000
+               Batches: inner=96 outer=128 cross=26
+               ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
+                     Output: t1.a, t1.b, t1.c
+               ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
+                     Output: t2.d, t2.e, t2.f
+         ->  Seq Scan on public.t3 (actual rows=10000.00 loops=1)
+               Output: t3.g, t3.h, t3.i
+(22 rows)
+
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND mod(t1.c + t2.f, 10) < 5) JOIN t3 ON (t1.b = t3.g AND mod(t1.c + t3.i, 10) < 5) LIMIT 5000;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Limit (actual rows=4000.00 loops=1)
+   Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+   ->  Custom Join (GJoin) Join (actual rows=4000.00 loops=1)
+         Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+         Filter: (mod((t1.c + t3.i), 10) < 5)
+         Join Cond: (t1.b = t3.g)
+         Runs: inner=32 outer=32
+         Tuples: inner=10000 outer=6000 cross=6000
+         Batches: inner=96 outer=96 cross=14
+         ->  Custom Join (GJoin) Join (actual rows=6000.00 loops=1)
+               Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
+               Filter: (mod((t1.c + t2.f), 10) < 5)
+               Join Cond: (t1.a = t2.d)
+               Runs: inner=32 outer=32
+               Tuples: inner=10000 outer=10000 cross=10000
+               Batches: inner=96 outer=128 cross=26
+               ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
+                     Output: t1.a, t1.b, t1.c
+               ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
+                     Output: t2.d, t2.e, t2.f
+         ->  Seq Scan on public.t3 (actual rows=10000.00 loops=1)
+               Output: t3.g, t3.h, t3.i
+(22 rows)
+
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND mod(t1.c + t2.f, 10) < 5) JOIN t3 ON (t1.b = t3.g AND mod(t1.c + t3.i, 10) < 5) LIMIT 10000;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Limit (actual rows=4000.00 loops=1)
+   Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+   ->  Custom Join (GJoin) Join (actual rows=4000.00 loops=1)
+         Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+         Filter: (mod((t1.c + t3.i), 10) < 5)
+         Join Cond: (t1.b = t3.g)
+         Runs: inner=32 outer=32
+         Tuples: inner=10000 outer=6000 cross=6000
+         Batches: inner=96 outer=96 cross=14
+         ->  Custom Join (GJoin) Join (actual rows=6000.00 loops=1)
+               Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
+               Filter: (mod((t1.c + t2.f), 10) < 5)
+               Join Cond: (t1.a = t2.d)
+               Runs: inner=32 outer=32
+               Tuples: inner=10000 outer=10000 cross=10000
+               Batches: inner=96 outer=128 cross=26
+               ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
+                     Output: t1.a, t1.b, t1.c
+               ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
+                     Output: t2.d, t2.e, t2.f
+         ->  Seq Scan on public.t3 (actual rows=10000.00 loops=1)
+               Output: t3.g, t3.h, t3.i
+(22 rows)
+
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND mod(t1.c + t2.f, 10) < 5) JOIN t3 ON (t1.b = t3.g AND mod(t1.c + t3.i, 10) < 5);
+                            QUERY PLAN                            
+------------------------------------------------------------------
+ Custom Join (GJoin) Join (actual rows=4000.00 loops=1)
+   Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+   Filter: (mod((t1.c + t3.i), 10) < 5)
+   Join Cond: (t1.b = t3.g)
+   Runs: inner=32 outer=32
+   Tuples: inner=10000 outer=6000 cross=6000
+   Batches: inner=96 outer=96 cross=14
+   ->  Custom Join (GJoin) Join (actual rows=6000.00 loops=1)
+         Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
+         Filter: (mod((t1.c + t2.f), 10) < 5)
+         Join Cond: (t1.a = t2.d)
+         Runs: inner=32 outer=32
+         Tuples: inner=10000 outer=10000 cross=10000
+         Batches: inner=96 outer=128 cross=26
+         ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
+               Output: t1.a, t1.b, t1.c
+         ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
+               Output: t2.d, t2.e, t2.f
+   ->  Seq Scan on public.t3 (actual rows=10000.00 loops=1)
+         Output: t3.g, t3.h, t3.i
+(20 rows)
+
+EXPLAIN (VERBOSE, COSTS OFF, BUFFERS OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND t1.c < t2.f) JOIN t3 ON (t1.b = t3.g AND t1.c < t3.i);
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Custom Join (GJoin) Join
+   Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+   Filter: (t1.c < t3.i)
+   Join Cond: (t1.b = t3.g)
+   ->  Custom Join (GJoin) Join
+         Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
+         Filter: (t1.c < t2.f)
+         Join Cond: (t1.a = t2.d)
+         ->  Seq Scan on public.t1
+               Output: t1.a, t1.b, t1.c
+         ->  Seq Scan on public.t2
+               Output: t2.d, t2.e, t2.f
+   ->  Seq Scan on public.t3
+         Output: t3.g, t3.h, t3.i
+(14 rows)
+
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND t1.c < t2.f) JOIN t3 ON (t1.b = t3.g AND t1.c < t3.i) LIMIT 100;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Limit (actual rows=100.00 loops=1)
+   Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+   ->  Custom Join (GJoin) Join (actual rows=100.00 loops=1)
+         Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+         Filter: (t1.c < t3.i)
+         Join Cond: (t1.b = t3.g)
+         Runs: inner=32 outer=32
+         Tuples: inner=8192 outer=4124 cross=149
+         Batches: inner=64 outer=33 cross=2
+         ->  Custom Join (GJoin) Join (actual rows=4990.00 loops=1)
+               Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
+               Filter: (t1.c < t2.f)
+               Join Cond: (t1.a = t2.d)
+               Runs: inner=32 outer=32
+               Tuples: inner=10000 outer=10000 cross=10000
+               Batches: inner=96 outer=128 cross=26
+               ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
+                     Output: t1.a, t1.b, t1.c
+               ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
+                     Output: t2.d, t2.e, t2.f
+         ->  Seq Scan on public.t3 (actual rows=10000.00 loops=1)
+               Output: t3.g, t3.h, t3.i
+(22 rows)
+
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND t1.c < t2.f) JOIN t3 ON (t1.b = t3.g AND t1.c < t3.i) LIMIT 200;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Limit (actual rows=200.00 loops=1)
+   Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+   ->  Custom Join (GJoin) Join (actual rows=200.00 loops=1)
+         Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+         Filter: (t1.c < t3.i)
+         Join Cond: (t1.b = t3.g)
+         Runs: inner=32 outer=32
+         Tuples: inner=8192 outer=4152 cross=321
+         Batches: inner=64 outer=34 cross=2
+         ->  Custom Join (GJoin) Join (actual rows=4990.00 loops=1)
+               Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
+               Filter: (t1.c < t2.f)
+               Join Cond: (t1.a = t2.d)
+               Runs: inner=32 outer=32
+               Tuples: inner=10000 outer=10000 cross=10000
+               Batches: inner=96 outer=128 cross=26
+               ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
+                     Output: t1.a, t1.b, t1.c
+               ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
+                     Output: t2.d, t2.e, t2.f
+         ->  Seq Scan on public.t3 (actual rows=10000.00 loops=1)
+               Output: t3.g, t3.h, t3.i
+(22 rows)
+
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND t1.c < t2.f) JOIN t3 ON (t1.b = t3.g AND t1.c < t3.i) LIMIT 500;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Limit (actual rows=500.00 loops=1)
+   Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+   ->  Custom Join (GJoin) Join (actual rows=500.00 loops=1)
+         Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+         Filter: (t1.c < t3.i)
+         Join Cond: (t1.b = t3.g)
+         Runs: inner=32 outer=32
+         Tuples: inner=8192 outer=4264 cross=773
+         Batches: inner=64 outer=38 cross=2
+         ->  Custom Join (GJoin) Join (actual rows=4990.00 loops=1)
+               Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
+               Filter: (t1.c < t2.f)
+               Join Cond: (t1.a = t2.d)
+               Runs: inner=32 outer=32
+               Tuples: inner=10000 outer=10000 cross=10000
+               Batches: inner=96 outer=128 cross=26
+               ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
+                     Output: t1.a, t1.b, t1.c
+               ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
+                     Output: t2.d, t2.e, t2.f
+         ->  Seq Scan on public.t3 (actual rows=10000.00 loops=1)
+               Output: t3.g, t3.h, t3.i
+(22 rows)
+
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND t1.c < t2.f) JOIN t3 ON (t1.b = t3.g AND t1.c < t3.i) LIMIT 1000;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Limit (actual rows=1000.00 loops=1)
+   Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+   ->  Custom Join (GJoin) Join (actual rows=1000.00 loops=1)
+         Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+         Filter: (t1.c < t3.i)
+         Join Cond: (t1.b = t3.g)
+         Runs: inner=32 outer=32
+         Tuples: inner=8192 outer=4432 cross=1552
+         Batches: inner=64 outer=44 cross=4
+         ->  Custom Join (GJoin) Join (actual rows=4990.00 loops=1)
+               Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
+               Filter: (t1.c < t2.f)
+               Join Cond: (t1.a = t2.d)
+               Runs: inner=32 outer=32
+               Tuples: inner=10000 outer=10000 cross=10000
+               Batches: inner=96 outer=128 cross=26
+               ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
+                     Output: t1.a, t1.b, t1.c
+               ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
+                     Output: t2.d, t2.e, t2.f
+         ->  Seq Scan on public.t3 (actual rows=10000.00 loops=1)
+               Output: t3.g, t3.h, t3.i
+(22 rows)
+
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND t1.c < t2.f) JOIN t3 ON (t1.b = t3.g AND t1.c < t3.i) LIMIT 5000;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Limit (actual rows=3260.00 loops=1)
+   Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+   ->  Custom Join (GJoin) Join (actual rows=3260.00 loops=1)
+         Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+         Filter: (t1.c < t3.i)
+         Join Cond: (t1.b = t3.g)
+         Runs: inner=32 outer=32
+         Tuples: inner=10000 outer=4990 cross=4990
+         Batches: inner=96 outer=96 cross=11
+         ->  Custom Join (GJoin) Join (actual rows=4990.00 loops=1)
+               Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
+               Filter: (t1.c < t2.f)
+               Join Cond: (t1.a = t2.d)
+               Runs: inner=32 outer=32
+               Tuples: inner=10000 outer=10000 cross=10000
+               Batches: inner=96 outer=128 cross=26
+               ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
+                     Output: t1.a, t1.b, t1.c
+               ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
+                     Output: t2.d, t2.e, t2.f
+         ->  Seq Scan on public.t3 (actual rows=10000.00 loops=1)
+               Output: t3.g, t3.h, t3.i
+(22 rows)
+
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND t1.c < t2.f) JOIN t3 ON (t1.b = t3.g AND t1.c < t3.i) LIMIT 10000;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Limit (actual rows=3260.00 loops=1)
+   Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+   ->  Custom Join (GJoin) Join (actual rows=3260.00 loops=1)
+         Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+         Filter: (t1.c < t3.i)
+         Join Cond: (t1.b = t3.g)
+         Runs: inner=32 outer=32
+         Tuples: inner=10000 outer=4990 cross=4990
+         Batches: inner=96 outer=96 cross=11
+         ->  Custom Join (GJoin) Join (actual rows=4990.00 loops=1)
+               Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
+               Filter: (t1.c < t2.f)
+               Join Cond: (t1.a = t2.d)
+               Runs: inner=32 outer=32
+               Tuples: inner=10000 outer=10000 cross=10000
+               Batches: inner=96 outer=128 cross=26
+               ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
+                     Output: t1.a, t1.b, t1.c
+               ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
+                     Output: t2.d, t2.e, t2.f
+         ->  Seq Scan on public.t3 (actual rows=10000.00 loops=1)
+               Output: t3.g, t3.h, t3.i
+(22 rows)
+
+EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM t1 JOIN t2 ON (t1.a = t2.d AND t1.c < t2.f) JOIN t3 ON (t1.b = t3.g AND t1.c < t3.i);
+                            QUERY PLAN                            
+------------------------------------------------------------------
+ Custom Join (GJoin) Join (actual rows=3260.00 loops=1)
+   Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f, t3.g, t3.h, t3.i
+   Filter: (t1.c < t3.i)
+   Join Cond: (t1.b = t3.g)
+   Runs: inner=32 outer=32
+   Tuples: inner=10000 outer=4990 cross=4990
+   Batches: inner=96 outer=96 cross=11
+   ->  Custom Join (GJoin) Join (actual rows=4990.00 loops=1)
+         Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
+         Filter: (t1.c < t2.f)
+         Join Cond: (t1.a = t2.d)
+         Runs: inner=32 outer=32
+         Tuples: inner=10000 outer=10000 cross=10000
+         Batches: inner=96 outer=128 cross=26
+         ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
+               Output: t1.a, t1.b, t1.c
+         ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
+               Output: t2.d, t2.e, t2.f
+   ->  Seq Scan on public.t3 (actual rows=10000.00 loops=1)
+         Output: t3.g, t3.h, t3.i
+(20 rows)
+
+DROP TABLE t1;
+DROP TABLE t2;
+DROP TABLE t3;

@@ -3,6 +3,7 @@ SET gjoin.enabled = false;
 
 DROP TABLE IF EXISTS t1;
 DROP TABLE IF EXISTS t2;
+DROP TABLE IF EXISTS t3;
 
 DROP TABLE IF EXISTS results;
 CREATE TABLE results(rows int, ndistinct INT, dataset TEXT, work_mem INT, join_algo TEXT, run INT, timing NUMERIC);
@@ -76,71 +77,95 @@ $$ LANGUAGE plpgsql;
 
 CREATE TABLE t1 (a INT, b INT);
 CREATE TABLE t2 (c INT, d INT);
+CREATE TABLE t3 (e INT, f INT);
 
-INSERT INTO t1 SELECT i, 100000 * random() FROM generate_series(1,10000) s(i);
-INSERT INTO t2 SELECT i, 100000 * random() FROM generate_series(1,10000) s(i);
+INSERT INTO t1 SELECT i, i FROM generate_series(1,10000) s(i);
+INSERT INTO t2 SELECT i, i FROM generate_series(1,10000) s(i);
+INSERT INTO t3 SELECT i, i FROM generate_series(1,10000) s(i);
 
 CREATE INDEX ON t1 (a);
 CREATE INDEX ON t2 (c);
+CREATE INDEX ON t3 (e);
 
 VACUUM ANALYZE t1;
 VACUUM ANALYZE t2;
+VACUUM ANALYZE t3;
 
 SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('10000', '10000', 'linear', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('10000', '10000', 'linear_3', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) JOIN t3 ON (t1.b = t3.e)');
 
 DROP TABLE t1;
 DROP TABLE t2;
+DROP TABLE t3;
 
 CREATE TABLE t1 (a INT, b INT);
 CREATE TABLE t2 (c INT, d INT);
+CREATE TABLE t3 (e INT, f INT);
 
-INSERT INTO t1 SELECT i, 100000 * random() FROM generate_series(1,10000) s(i) ORDER BY random();
-INSERT INTO t2 SELECT i, 100000 * random() FROM generate_series(1,10000) s(i) ORDER BY random();
+INSERT INTO t1 SELECT i, i FROM generate_series(1,10000) s(i) ORDER BY random();
+INSERT INTO t2 SELECT i, i FROM generate_series(1,10000) s(i) ORDER BY random();
+INSERT INTO t3 SELECT i, i FROM generate_series(1,10000) s(i) ORDER BY random();
 
 CREATE INDEX ON t1 (a);
 CREATE INDEX ON t2 (c);
+CREATE INDEX ON t3 (e);
 
 VACUUM ANALYZE t1;
 VACUUM ANALYZE t2;
+VACUUM ANALYZE t3;
 
 SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('10000', '10000', 'random', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('10000', '10000', 'random_3', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) JOIN t3 ON (t1.b = t3.e)');
 
 DROP TABLE t1;
 DROP TABLE t2;
+DROP TABLE t3;
 
 CREATE TABLE t1 (a INT, b INT);
 CREATE TABLE t2 (c INT, d INT);
+CREATE TABLE t3 (e INT, f INT);
 
-INSERT INTO t1 SELECT i/10, 100000 * random() FROM generate_series(1,10000) s(i);
-INSERT INTO t2 SELECT i/10, 100000 * random() FROM generate_series(1,10000) s(i);
+INSERT INTO t1 SELECT i/10, i/10 FROM generate_series(1,10000) s(i);
+INSERT INTO t2 SELECT i/10, i/10 FROM generate_series(1,10000) s(i);
+INSERT INTO t3 SELECT i/10, i/10 FROM generate_series(1,10000) s(i);
 
 CREATE INDEX ON t1 (a);
 CREATE INDEX ON t2 (c);
+CREATE INDEX ON t3 (e);
 
 VACUUM ANALYZE t1;
 VACUUM ANALYZE t2;
+VACUUM ANALYZE t3;
 
 SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('10000', '1000', 'linear', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('10000', '1000', 'linear_3', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) JOIN t3 ON (t1.b = t3.e)');
 
 DROP TABLE t1;
 DROP TABLE t2;
+DROP TABLE t3;
 
 CREATE TABLE t1 (a INT, b INT);
 CREATE TABLE t2 (c INT, d INT);
+CREATE TABLE t3 (e INT, f INT);
 
-INSERT INTO t1 SELECT i/10, 100000 * random() FROM generate_series(1,10000) s(i) ORDER BY random();
-INSERT INTO t2 SELECT i/10, 100000 * random() FROM generate_series(1,10000) s(i) ORDER BY random();
+INSERT INTO t1 SELECT i/10, i/10 FROM generate_series(1,10000) s(i) ORDER BY random();
+INSERT INTO t2 SELECT i/10, i/10 FROM generate_series(1,10000) s(i) ORDER BY random();
+INSERT INTO t3 SELECT i/10, i/10 FROM generate_series(1,10000) s(i) ORDER BY random();
 
 CREATE INDEX ON t1 (a);
 CREATE INDEX ON t2 (c);
+CREATE INDEX ON t3 (e);
 
 VACUUM ANALYZE t1;
 VACUUM ANALYZE t2;
+VACUUM ANALYZE t3;
 
 SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('10000', '1000', 'random', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('10000', '1000', 'random_3', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) JOIN t3 ON (t1.b = t3.e)');
 
 DROP TABLE t1;
 DROP TABLE t2;
+DROP TABLE t3;
 
 -- 100k
 

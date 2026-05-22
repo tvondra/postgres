@@ -1390,13 +1390,13 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 						BatchRun   *run;
 						int			nloops = 0;
 
-						/* Have we ran out of runs? We're done. */
-						if (state->pos_inner.run >= state->runs.inner.nruns)
-							break;
-
 						/* We've just started, so try the first inner run. */
 						if (state->pos_inner.run == -1)
 							state->pos_inner.run = 0;
+
+						/* Have we ran out of runs? We're done. */
+						if (state->pos_inner.run >= state->runs.inner.nruns)
+							break;
 
 						/* current batch run */
 						run = &state->runs.inner.runs[state->pos_inner.run];
@@ -1829,6 +1829,10 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 						Batch	   *batch_inner;
 						BatchRun   *run_inner;
 						QueueEntry *entry_inner;
+
+						/* maybe there are no more inner batches? */
+						if (pairingheap_is_empty(state->queues.inner_shrink))
+							break;
 
 						/* peek - we don't know if we can evict it yet */
 						entry_inner = priorityqueues_peek(state->queues.inner_shrink);
@@ -2992,8 +2996,8 @@ check_join_clause(GJoinState * state,
 		bool		isnull;
 		int			r;
 
-		a = slot_getattr(outer, state->clauses.attnums_inner[i], &isnull);
-		b = slot_getattr(inner, state->clauses.attnums_outer[i], &isnull);
+		a = slot_getattr(outer, state->clauses.attnums_outer[i], &isnull);
+		b = slot_getattr(inner, state->clauses.attnums_inner[i], &isnull);
 
 		r = DatumGetInt32(FunctionCall2Coll(&state->clauses.cmp_info[i],
 											state->clauses.collations[i],

@@ -95,7 +95,7 @@ TRUNCATE t2;
 TRUNCATE t3;
 
 INSERT INTO t1 SELECT mod(i,100), mod(i,100), 1000 * random() FROM generate_series(1,10000) s(i);
-INSERT INTO t1 SELECT mod(i,100), mod(i,100), 1000 * random() FROM generate_series(1,10000) s(i);
+INSERT INTO t2 SELECT mod(i,100), mod(i,100), 1000 * random() FROM generate_series(1,10000) s(i);
 INSERT INTO t3 SELECT mod(i,100), mod(i,100), 1000 * random() FROM generate_series(1,10000) s(i);
 
 VACUUM ANALYZE t1;

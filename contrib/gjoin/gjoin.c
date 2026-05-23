@@ -207,7 +207,8 @@ typedef struct BatchRuns
  * XXX Would it make sense to have larger batches, and then build small
  * hash tables on them, to make finding matches more efficient?
  */
-#define	MAX_BATCH_SIZE 128
+static int	gjoin_max_runs = 32;
+static int	gjoin_batch_size = 128;
 
 /* XXX probably should use simplehash instead */
 typedef struct HashEntry
@@ -532,7 +533,7 @@ static void debug_print_values(GJoinState *state, char *msg,
 #endif
 
 //#define HASHTABLE_CAPACITY(batch)		((batch)->nslots * 4)
-#define HASHTABLE_CAPACITY(batch)		(MAX_BATCH_SIZE * 4)
+#define HASHTABLE_CAPACITY(batch)		(gjoin_batch_size * 4)
 #define HASHTABLE_STEP					41
 #define HASHTABLE_SLOT_INDEX(batch, hashvalue)	((hashvalue) % HASHTABLE_CAPACITY(batch))
 #define HASHTABLE_SLOT_EMPTY(batch, idx)	((batch)->hashtable[(idx)].slot == -1)
@@ -544,7 +545,38 @@ _PG_init(void)
 	DefineCustomBoolVariable(
 							 "gjoin.enabled",
 							 "whether to generate GJoin paths",
-							 NULL, &gjoin_enabled, false, PGC_USERSET, 0, NULL, NULL, NULL);
+							 NULL,
+							 &gjoin_enabled,
+							 false,
+							 PGC_USERSET,
+							 0,
+							 NULL,
+							 NULL,
+							 NULL);
+
+	DefineCustomIntVariable("gjoin.batch_size",
+							"size of a batch",
+							NULL,
+							&gjoin_batch_size,
+							128,
+							1, INT_MAX,
+							PGC_USERSET,
+							0,
+							NULL,
+							NULL,
+							NULL);
+
+	DefineCustomIntVariable("gjoin.max_runs",
+							"number of runs",
+							NULL,
+							&gjoin_max_runs,
+							32,
+							1, INT_MAX,
+							PGC_USERSET,
+							0,
+							NULL,
+							NULL,
+							NULL);
 
 	/* custom-scan node */
 	memset(&gjoin_path_methods, 0, sizeof(CustomPathMethods));
@@ -2204,7 +2236,7 @@ buffer_flush_to_run(TupleBuffer * buffer, BatchRuns * runs, int run,
 		 * (because the outer batches are smaller, and cache_pos gets
 		 * reset more often).
 		 */
-		runs->maxruns = 32;
+		runs->maxruns = gjoin_max_runs;
 		runs->runs = palloc0_array(BatchRun, runs->maxruns);
 
 		for (int i = 0; i < runs->maxruns; i++)
@@ -2405,7 +2437,7 @@ batch_init(TupleDesc tdesc, int nattnums)
 
 	batch = palloc(sizeof(Batch));
 
-	batch->maxslots = MAX_BATCH_SIZE;
+	batch->maxslots = gjoin_batch_size;
 	batch->nslots = 0;
 	batch->slots = palloc_array(TupleTableSlot *, batch->maxslots);
 	batch->hashes = palloc_array(uint32, batch->maxslots);

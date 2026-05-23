@@ -1,6 +1,9 @@
 LOAD 'gjoin';
 SET gjoin.enabled = false;
 
+SET gjoin.batch_size = 1024;
+SET gjoin.max_runs = 8;
+
 DROP TABLE IF EXISTS t1;
 DROP TABLE IF EXISTS t2;
 DROP TABLE IF EXISTS t3;

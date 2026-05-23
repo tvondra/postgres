@@ -188,8 +188,8 @@ VACUUM ANALYZE t1;
 VACUUM ANALYZE t2;
 VACUUM ANALYZE t3;
 
-SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('10000', '1000', 'random', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('10000', '1000', 'random_3', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) JOIN t3 ON (t1.b = t3.e)');
+SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('100000', '100000', 'linear', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('100000', '100000', 'linear_3', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) JOIN t3 ON (t1.b = t3.e)');
 
 DROP TABLE t1;
 DROP TABLE t2;
@@ -211,8 +211,8 @@ VACUUM ANALYZE t1;
 VACUUM ANALYZE t2;
 VACUUM ANALYZE t3;
 
-SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('10000', '1000', 'random', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('10000', '1000', 'random_3', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) JOIN t3 ON (t1.b = t3.e)');
+SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('100000', '100000', 'random', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('100000', '100000', 'random_3', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) JOIN t3 ON (t1.b = t3.e)');
 
 DROP TABLE t1;
 DROP TABLE t2;
@@ -234,8 +234,8 @@ VACUUM ANALYZE t1;
 VACUUM ANALYZE t2;
 VACUUM ANALYZE t3;
 
-SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('10000', '1000', 'random', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('10000', '1000', 'random_3', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) JOIN t3 ON (t1.b = t3.e)');
+SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('100000', '10000', 'linear', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('100000', '10000', 'linear_3', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) JOIN t3 ON (t1.b = t3.e)');
 
 DROP TABLE t1;
 DROP TABLE t2;
@@ -257,8 +257,8 @@ VACUUM ANALYZE t1;
 VACUUM ANALYZE t2;
 VACUUM ANALYZE t3;
 
-SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('10000', '1000', 'random', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('10000', '1000', 'random_3', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) JOIN t3 ON (t1.b = t3.e)');
+SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('100000', '10000', 'random', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('100000', '10000', 'random_3', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) JOIN t3 ON (t1.b = t3.e)');
 
 DROP TABLE t1;
 DROP TABLE t2;
@@ -282,8 +282,8 @@ VACUUM ANALYZE t1;
 VACUUM ANALYZE t2;
 VACUUM ANALYZE t3;
 
-SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('10000', '1000', 'random', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('10000', '1000', 'random_3', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) JOIN t3 ON (t1.b = t3.e)');
+SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('1000000', '1000000', 'linear', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('1000000', '1000000', 'linear_3', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) JOIN t3 ON (t1.b = t3.e)');
 
 DROP TABLE t1;
 DROP TABLE t2;
@@ -305,8 +305,8 @@ VACUUM ANALYZE t1;
 VACUUM ANALYZE t2;
 VACUUM ANALYZE t3;
 
-SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('10000', '1000', 'random', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('10000', '1000', 'random_3', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) JOIN t3 ON (t1.b = t3.e)');
+SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('1000000', '1000000', 'random', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('1000000', '1000000', 'random_3', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) JOIN t3 ON (t1.b = t3.e)');
 
 DROP TABLE t1;
 DROP TABLE t2;
@@ -328,8 +328,8 @@ VACUUM ANALYZE t1;
 VACUUM ANALYZE t2;
 VACUUM ANALYZE t3;
 
-SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('10000', '1000', 'random', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('10000', '1000', 'random_3', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) JOIN t3 ON (t1.b = t3.e)');
+SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('1000000', '100000', 'linear', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('1000000', '100000', 'linear_3', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) JOIN t3 ON (t1.b = t3.e)');
 
 DROP TABLE t1;
 DROP TABLE t2;
@@ -351,8 +351,8 @@ VACUUM ANALYZE t1;
 VACUUM ANALYZE t2;
 VACUUM ANALYZE t3;
 
-SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('10000', '1000', 'random', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
-SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('10000', '1000', 'random_3', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) JOIN t3 ON (t1.b = t3.e)');
+SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('1000000', '100000', 'random', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c)');
+SELECT * FROM unnest(ARRAY[64, 256, 1024, 4096, 16384, 65536]) AS work_mem, LATERAL joins_timing('1000000', '100000', 'random_3', work_mem, 'SELECT * FROM t1 JOIN t2 ON (t1.a = t2.c) JOIN t3 ON (t1.b = t3.e)');
 
 DROP TABLE t1;
 DROP TABLE t2;

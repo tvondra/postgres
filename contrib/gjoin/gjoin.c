@@ -529,7 +529,7 @@ static void hashtable_insert_batch(GJoinState *state, Batch *batch);
 static void hashtable_maybe_compact(GJoinState *state, int needed);
 static void hashtable_maybe_resize(GJoinState *state, int needed);
 
-static inline void AssertCheckHashTable(GJoinState *state);
+static inline void AssertCheckHashTable(GJoinState *state, bool full);
 
 // #define GJOIN_DEBUG
 
@@ -2500,7 +2500,7 @@ hashtable_insert_batch(GJoinState *state, Batch *batch)
 		state->hashtable.nused++;
 	}
 
-	AssertCheckHashTable(state);
+	AssertCheckHashTable(state, true);
 //elog(LOG, "hashtable_insert_batch AFTER used %d deleted %d",
 //	 state->hashtable.nused, state->hashtable.ndeleted);
 }
@@ -2560,7 +2560,7 @@ elog(LOG, "hashtable_compact CHECK used %d deleted %d needed %d capacity %d",
 elog(LOG, "hashtable_compact AFTER used %d deleted %d capacity %d",
 	 state->hashtable.nused, state->hashtable.ndeleted, state->hashtable.capacity);
 
-	AssertCheckHashTable(state);
+	AssertCheckHashTable(state, false);
 }
 
 static void
@@ -2626,7 +2626,7 @@ elog(LOG, "hashtable_maybe_enlarge CHECK used %d deleted %d needed %d capacity %
 elog(LOG, "hashtable_compact AFTER used %d deleted %d capacity %d",
 	 state->hashtable.nused, state->hashtable.ndeleted, state->hashtable.capacity);
 
-	AssertCheckHashTable(state);
+	AssertCheckHashTable(state, false);
 }
 
 static void
@@ -2681,7 +2681,7 @@ elog(LOG, "hashtable_delete_batch BEFORE capacity %d used %d deleted %d",
 	for (int i = 0; i < batch->nslots; i++)
 		hashtable_delete_entry(state, batch, i);
 
-	AssertCheckHashTable(state);
+	AssertCheckHashTable(state, true);
 
 //	/* delete all entries for a batch */
 //	for (int i = 0; i < state->hashtable.capacity; i++)
@@ -2703,7 +2703,7 @@ elog(LOG, "hashtable_delete_batch AFTER capacity %d used %d deleted %d",
 }
 
 static inline void
-AssertCheckHashTable(GJoinState *state)
+AssertCheckHashTable(GJoinState *state, bool full)
 {
 #ifdef USE_ASSERT_CHECKING
 	/* check that the counters match contents of the hash table */
@@ -2732,6 +2732,10 @@ AssertCheckHashTable(GJoinState *state)
 
 	Assert(state->hashtable.nused == nused);
 	Assert(state->hashtable.ndeleted == ndeleted);
+
+	/* the remaining checks require consistent check with loaded batches */
+	if (!full)
+		return;
 
 	/* check that the counters match the in-memory batches */
 	nused = 0;

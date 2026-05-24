@@ -36,13 +36,13 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Join Cond: (t1.b = t3.g)
          Runs: inner=32 outer=32
          Tuples: inner=4096 outer=4096 cross=100
-         Batches: inner=32 outer=32 cross=1
+         Batches: inner=32 outer=32
          ->  Custom Join (GJoin) Join (actual rows=10000.00 loops=1)
                Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
                Join Cond: (t1.a = t2.d)
                Runs: inner=32 outer=32
                Tuples: inner=10000 outer=10000 cross=10000
-               Batches: inner=96 outer=128 cross=26
+               Batches: inner=96 outer=128
                ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                      Output: t1.a, t1.b, t1.c
                ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
@@ -61,13 +61,13 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Join Cond: (t1.b = t3.g)
          Runs: inner=32 outer=32
          Tuples: inner=4096 outer=4224 cross=200
-         Batches: inner=32 outer=33 cross=2
+         Batches: inner=32 outer=33
          ->  Custom Join (GJoin) Join (actual rows=10000.00 loops=1)
                Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
                Join Cond: (t1.a = t2.d)
                Runs: inner=32 outer=32
                Tuples: inner=10000 outer=10000 cross=10000
-               Batches: inner=96 outer=128 cross=26
+               Batches: inner=96 outer=128
                ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                      Output: t1.a, t1.b, t1.c
                ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
@@ -86,13 +86,13 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Join Cond: (t1.b = t3.g)
          Runs: inner=32 outer=32
          Tuples: inner=4096 outer=4480 cross=500
-         Batches: inner=32 outer=35 cross=3
+         Batches: inner=32 outer=35
          ->  Custom Join (GJoin) Join (actual rows=10000.00 loops=1)
                Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
                Join Cond: (t1.a = t2.d)
                Runs: inner=32 outer=32
                Tuples: inner=10000 outer=10000 cross=10000
-               Batches: inner=96 outer=128 cross=26
+               Batches: inner=96 outer=128
                ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                      Output: t1.a, t1.b, t1.c
                ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
@@ -111,13 +111,13 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Join Cond: (t1.b = t3.g)
          Runs: inner=32 outer=32
          Tuples: inner=4096 outer=4992 cross=1000
-         Batches: inner=32 outer=39 cross=6
+         Batches: inner=32 outer=39
          ->  Custom Join (GJoin) Join (actual rows=10000.00 loops=1)
                Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
                Join Cond: (t1.a = t2.d)
                Runs: inner=32 outer=32
                Tuples: inner=10000 outer=10000 cross=10000
-               Batches: inner=96 outer=128 cross=26
+               Batches: inner=96 outer=128
                ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                      Output: t1.a, t1.b, t1.c
                ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
@@ -136,13 +136,13 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Join Cond: (t1.b = t3.g)
          Runs: inner=32 outer=32
          Tuples: inner=8192 outer=8591 cross=5000
-         Batches: inner=64 outer=71 cross=20
+         Batches: inner=64 outer=71
          ->  Custom Join (GJoin) Join (actual rows=10000.00 loops=1)
                Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
                Join Cond: (t1.a = t2.d)
                Runs: inner=32 outer=32
                Tuples: inner=10000 outer=10000 cross=10000
-               Batches: inner=96 outer=128 cross=26
+               Batches: inner=96 outer=128
                ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                      Output: t1.a, t1.b, t1.c
                ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
@@ -161,13 +161,13 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Join Cond: (t1.b = t3.g)
          Runs: inner=32 outer=32
          Tuples: inner=10000 outer=10000 cross=10000
-         Batches: inner=96 outer=127 cross=26
+         Batches: inner=96 outer=127
          ->  Custom Join (GJoin) Join (actual rows=10000.00 loops=1)
                Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
                Join Cond: (t1.a = t2.d)
                Runs: inner=32 outer=32
                Tuples: inner=10000 outer=10000 cross=10000
-               Batches: inner=96 outer=128 cross=26
+               Batches: inner=96 outer=128
                ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                      Output: t1.a, t1.b, t1.c
                ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
@@ -184,13 +184,13 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
    Join Cond: (t1.b = t3.g)
    Runs: inner=32 outer=32
    Tuples: inner=10000 outer=10000 cross=10000
-   Batches: inner=96 outer=128 cross=26
+   Batches: inner=96 outer=128
    ->  Custom Join (GJoin) Join (actual rows=10000.00 loops=1)
          Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
          Join Cond: (t1.a = t2.d)
          Runs: inner=32 outer=32
          Tuples: inner=10000 outer=10000 cross=10000
-         Batches: inner=96 outer=128 cross=26
+         Batches: inner=96 outer=128
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a, t1.b, t1.c
          ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
@@ -229,14 +229,14 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Join Cond: (t1.b = t3.g)
          Runs: inner=32 outer=32
          Tuples: inner=8192 outer=4156 cross=150
-         Batches: inner=64 outer=33 cross=0
+         Batches: inner=64 outer=33
          ->  Custom Join (GJoin) Join (actual rows=6000.00 loops=1)
                Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
                Filter: (mod((t1.c + t2.f), 10) < 5)
                Join Cond: (t1.a = t2.d)
                Runs: inner=32 outer=32
                Tuples: inner=10000 outer=10000 cross=10000
-               Batches: inner=96 outer=128 cross=26
+               Batches: inner=96 outer=128
                ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                      Output: t1.a, t1.b, t1.c
                ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
@@ -256,14 +256,14 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Join Cond: (t1.b = t3.g)
          Runs: inner=32 outer=32
          Tuples: inner=8192 outer=4216 cross=308
-         Batches: inner=64 outer=34 cross=0
+         Batches: inner=64 outer=34
          ->  Custom Join (GJoin) Join (actual rows=6000.00 loops=1)
                Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
                Filter: (mod((t1.c + t2.f), 10) < 5)
                Join Cond: (t1.a = t2.d)
                Runs: inner=32 outer=32
                Tuples: inner=10000 outer=10000 cross=10000
-               Batches: inner=96 outer=128 cross=26
+               Batches: inner=96 outer=128
                ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                      Output: t1.a, t1.b, t1.c
                ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
@@ -283,14 +283,14 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Join Cond: (t1.b = t3.g)
          Runs: inner=32 outer=32
          Tuples: inner=8192 outer=4395 cross=755
-         Batches: inner=64 outer=37 cross=0
+         Batches: inner=64 outer=37
          ->  Custom Join (GJoin) Join (actual rows=6000.00 loops=1)
                Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
                Filter: (mod((t1.c + t2.f), 10) < 5)
                Join Cond: (t1.a = t2.d)
                Runs: inner=32 outer=32
                Tuples: inner=10000 outer=10000 cross=10000
-               Batches: inner=96 outer=128 cross=26
+               Batches: inner=96 outer=128
                ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                      Output: t1.a, t1.b, t1.c
                ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
@@ -310,14 +310,14 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Join Cond: (t1.b = t3.g)
          Runs: inner=32 outer=32
          Tuples: inner=8192 outer=4754 cross=1512
-         Batches: inner=64 outer=43 cross=3
+         Batches: inner=64 outer=43
          ->  Custom Join (GJoin) Join (actual rows=6000.00 loops=1)
                Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
                Filter: (mod((t1.c + t2.f), 10) < 5)
                Join Cond: (t1.a = t2.d)
                Runs: inner=32 outer=32
                Tuples: inner=10000 outer=10000 cross=10000
-               Batches: inner=96 outer=128 cross=26
+               Batches: inner=96 outer=128
                ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                      Output: t1.a, t1.b, t1.c
                ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
@@ -337,14 +337,14 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Join Cond: (t1.b = t3.g)
          Runs: inner=32 outer=32
          Tuples: inner=10000 outer=6000 cross=6000
-         Batches: inner=96 outer=96 cross=14
+         Batches: inner=96 outer=96
          ->  Custom Join (GJoin) Join (actual rows=6000.00 loops=1)
                Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
                Filter: (mod((t1.c + t2.f), 10) < 5)
                Join Cond: (t1.a = t2.d)
                Runs: inner=32 outer=32
                Tuples: inner=10000 outer=10000 cross=10000
-               Batches: inner=96 outer=128 cross=26
+               Batches: inner=96 outer=128
                ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                      Output: t1.a, t1.b, t1.c
                ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
@@ -364,14 +364,14 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Join Cond: (t1.b = t3.g)
          Runs: inner=32 outer=32
          Tuples: inner=10000 outer=6000 cross=6000
-         Batches: inner=96 outer=96 cross=14
+         Batches: inner=96 outer=96
          ->  Custom Join (GJoin) Join (actual rows=6000.00 loops=1)
                Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
                Filter: (mod((t1.c + t2.f), 10) < 5)
                Join Cond: (t1.a = t2.d)
                Runs: inner=32 outer=32
                Tuples: inner=10000 outer=10000 cross=10000
-               Batches: inner=96 outer=128 cross=26
+               Batches: inner=96 outer=128
                ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                      Output: t1.a, t1.b, t1.c
                ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
@@ -389,14 +389,14 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
    Join Cond: (t1.b = t3.g)
    Runs: inner=32 outer=32
    Tuples: inner=10000 outer=6000 cross=6000
-   Batches: inner=96 outer=96 cross=14
+   Batches: inner=96 outer=96
    ->  Custom Join (GJoin) Join (actual rows=6000.00 loops=1)
          Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
          Filter: (mod((t1.c + t2.f), 10) < 5)
          Join Cond: (t1.a = t2.d)
          Runs: inner=32 outer=32
          Tuples: inner=10000 outer=10000 cross=10000
-         Batches: inner=96 outer=128 cross=26
+         Batches: inner=96 outer=128
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a, t1.b, t1.c
          ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
@@ -435,14 +435,14 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Join Cond: (t1.b = t3.g)
          Runs: inner=32 outer=32
          Tuples: inner=8192 outer=4124 cross=149
-         Batches: inner=64 outer=33 cross=2
+         Batches: inner=64 outer=33
          ->  Custom Join (GJoin) Join (actual rows=4990.00 loops=1)
                Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
                Filter: (t1.c < t2.f)
                Join Cond: (t1.a = t2.d)
                Runs: inner=32 outer=32
                Tuples: inner=10000 outer=10000 cross=10000
-               Batches: inner=96 outer=128 cross=26
+               Batches: inner=96 outer=128
                ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                      Output: t1.a, t1.b, t1.c
                ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
@@ -462,14 +462,14 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Join Cond: (t1.b = t3.g)
          Runs: inner=32 outer=32
          Tuples: inner=8192 outer=4152 cross=321
-         Batches: inner=64 outer=34 cross=2
+         Batches: inner=64 outer=34
          ->  Custom Join (GJoin) Join (actual rows=4990.00 loops=1)
                Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
                Filter: (t1.c < t2.f)
                Join Cond: (t1.a = t2.d)
                Runs: inner=32 outer=32
                Tuples: inner=10000 outer=10000 cross=10000
-               Batches: inner=96 outer=128 cross=26
+               Batches: inner=96 outer=128
                ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                      Output: t1.a, t1.b, t1.c
                ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
@@ -489,14 +489,14 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Join Cond: (t1.b = t3.g)
          Runs: inner=32 outer=32
          Tuples: inner=8192 outer=4264 cross=773
-         Batches: inner=64 outer=38 cross=2
+         Batches: inner=64 outer=38
          ->  Custom Join (GJoin) Join (actual rows=4990.00 loops=1)
                Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
                Filter: (t1.c < t2.f)
                Join Cond: (t1.a = t2.d)
                Runs: inner=32 outer=32
                Tuples: inner=10000 outer=10000 cross=10000
-               Batches: inner=96 outer=128 cross=26
+               Batches: inner=96 outer=128
                ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                      Output: t1.a, t1.b, t1.c
                ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
@@ -516,14 +516,14 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Join Cond: (t1.b = t3.g)
          Runs: inner=32 outer=32
          Tuples: inner=8192 outer=4432 cross=1552
-         Batches: inner=64 outer=44 cross=4
+         Batches: inner=64 outer=44
          ->  Custom Join (GJoin) Join (actual rows=4990.00 loops=1)
                Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
                Filter: (t1.c < t2.f)
                Join Cond: (t1.a = t2.d)
                Runs: inner=32 outer=32
                Tuples: inner=10000 outer=10000 cross=10000
-               Batches: inner=96 outer=128 cross=26
+               Batches: inner=96 outer=128
                ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                      Output: t1.a, t1.b, t1.c
                ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
@@ -543,14 +543,14 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Join Cond: (t1.b = t3.g)
          Runs: inner=32 outer=32
          Tuples: inner=10000 outer=4990 cross=4990
-         Batches: inner=96 outer=96 cross=11
+         Batches: inner=96 outer=96
          ->  Custom Join (GJoin) Join (actual rows=4990.00 loops=1)
                Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
                Filter: (t1.c < t2.f)
                Join Cond: (t1.a = t2.d)
                Runs: inner=32 outer=32
                Tuples: inner=10000 outer=10000 cross=10000
-               Batches: inner=96 outer=128 cross=26
+               Batches: inner=96 outer=128
                ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                      Output: t1.a, t1.b, t1.c
                ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
@@ -570,14 +570,14 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
          Join Cond: (t1.b = t3.g)
          Runs: inner=32 outer=32
          Tuples: inner=10000 outer=4990 cross=4990
-         Batches: inner=96 outer=96 cross=11
+         Batches: inner=96 outer=96
          ->  Custom Join (GJoin) Join (actual rows=4990.00 loops=1)
                Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
                Filter: (t1.c < t2.f)
                Join Cond: (t1.a = t2.d)
                Runs: inner=32 outer=32
                Tuples: inner=10000 outer=10000 cross=10000
-               Batches: inner=96 outer=128 cross=26
+               Batches: inner=96 outer=128
                ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                      Output: t1.a, t1.b, t1.c
                ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)
@@ -595,14 +595,14 @@ EXPLAIN (VERBOSE, ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) SELE
    Join Cond: (t1.b = t3.g)
    Runs: inner=32 outer=32
    Tuples: inner=10000 outer=4990 cross=4990
-   Batches: inner=96 outer=96 cross=11
+   Batches: inner=96 outer=96
    ->  Custom Join (GJoin) Join (actual rows=4990.00 loops=1)
          Output: t1.a, t1.b, t1.c, t2.d, t2.e, t2.f
          Filter: (t1.c < t2.f)
          Join Cond: (t1.a = t2.d)
          Runs: inner=32 outer=32
          Tuples: inner=10000 outer=10000 cross=10000
-         Batches: inner=96 outer=128 cross=26
+         Batches: inner=96 outer=128
          ->  Seq Scan on public.t1 (actual rows=10000.00 loops=1)
                Output: t1.a, t1.b, t1.c
          ->  Seq Scan on public.t2 (actual rows=10000.00 loops=1)

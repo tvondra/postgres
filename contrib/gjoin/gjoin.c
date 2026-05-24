@@ -210,13 +210,6 @@ typedef struct BatchRuns
 static int	gjoin_max_runs = 32;
 static int	gjoin_batch_size = 128;
 
-/* XXX probably should use simplehash instead */
-typedef struct HashEntry
-{
-	uint32		hashvalue;
-	int32		slot;
-} HashEntry;
-
 /*
  * A small "batch" of tuples loaded from one sorted run. The batches form
  * a linked list, so that a run can have multiple buffers loaded at a time.
@@ -267,7 +260,6 @@ typedef struct Batch
 	int			maxslots;
 	int			nslots;
 	uint32	   *hashes;
-	HashEntry  *hashtable;
 	TupleTableSlot **slots;
 }			Batch;
 
@@ -339,6 +331,14 @@ typedef struct JoinStats
 	int	tuples_cross;	/* inner/outer tuple combinations */
 } JoinStats;
 
+/* XXX probably should use simplehash instead */
+typedef struct HashEntry
+{
+	bool		deleted;
+	uint32		hashvalue;
+	Batch	   *batch;
+	int32		slot;
+} HashEntry;
 
 /* ----------------
  *	 GJoinState information
@@ -449,6 +449,15 @@ typedef struct GJoinState
 	JoinPosition pos_inner;
 	JoinPosition pos_outer;
 
+	/* hash table */
+	struct
+	{
+		int			capacity;
+		int			nused;
+		int			ndeleted;
+		HashEntry  *entries;
+	}			hashtable;
+
 	/* stats about the join */
 	JoinStats		stats;
 
@@ -515,6 +524,11 @@ static bool batches_may_overlap(GJoinState *state, Batch *a, Batch *b);
 static bool batch_can_evict_inner(GJoinState *state, Batch *batch_inner);
 static void reset_cache_pos(GJoinState *state);
 
+static void hashtable_delete_batch(GJoinState *state, Batch *batch);
+static void hashtable_insert_batch(GJoinState *state, Batch *batch);
+static void hashtable_maybe_compact(GJoinState *state, int needed);
+static void hashtable_maybe_resize(GJoinState *state, int needed);
+
 // #define GJOIN_DEBUG
 
 #ifdef GJOIN_DEBUG
@@ -533,10 +547,11 @@ static void debug_print_values(GJoinState *state, char *msg,
 #endif
 
 //#define HASHTABLE_CAPACITY(batch)		((batch)->nslots * 4)
-#define HASHTABLE_CAPACITY(batch)		(gjoin_batch_size * 4)
+#define HASHTABLE_CAPACITY(state)		((state)->hashtable.capacity)
 #define HASHTABLE_STEP					41
-#define HASHTABLE_SLOT_INDEX(batch, hashvalue)	((hashvalue) % HASHTABLE_CAPACITY(batch))
-#define HASHTABLE_SLOT_EMPTY(batch, idx)	((batch)->hashtable[(idx)].slot == -1)
+#define HASHTABLE_SLOT_INDEX(state, hashvalue)	((hashvalue) % HASHTABLE_CAPACITY(state))
+#define HASHTABLE_SLOT_DELETED(state, idx)	((state)->hashtable.entries[(idx)].deleted)
+#define HASHTABLE_SLOT_EMPTY(state, idx)	((state)->hashtable.entries[(idx)].slot == -1)
 
 
 void
@@ -1060,6 +1075,16 @@ gjoin_CreatePlanState(CustomJoin *cjoin)
 	/* init the join stats */
 	memset(&state->stats, 0, sizeof(JoinStats));
 
+	/* assume each run can have two batches of maximum size */
+	state->hashtable.capacity = gjoin_batch_size * 4 * gjoin_max_runs;
+	state->hashtable.entries = palloc0_array(HashEntry, state->hashtable.capacity);
+	state->hashtable.nused = state->hashtable.ndeleted = 0;
+
+	for (int i = 0; i < state->hashtable.capacity; i++)
+	{
+		state->hashtable.entries[i].slot = -1;
+	}
+
 	return (Node *) state;
 }
 
@@ -1403,7 +1428,9 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					/*
 					 * We have a slot from S (outer relation) to join in
 					 * pos_outer. Walk all batches loaded from R (inner)
-					 * runs and join them to the S tuple.
+					 * runs and join them to the S tuple. We simply probe
+					 * all inner batches at once, using the global hash
+					 * table we have.
 					 *
 					 * XXX It should be possible to optimize this by first
 					 * comparing the inner batch range to the S range, and
@@ -1417,51 +1444,9 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 					 */
 					for (;;)
 					{
-						Batch	   *batch_inner;
-						Batch	   *batch_outer;
-						BatchRun   *run;
+						Batch	   *batch_inner = NULL;
+						Batch	   *batch_outer = NULL;
 						int			nloops = 0;
-
-						/* We've just started, so try the first inner run. */
-						if (state->pos_inner.run == -1)
-							state->pos_inner.run = 0;
-
-						/* Have we ran out of runs? We're done. */
-						if (state->pos_inner.run >= state->runs.inner.nruns)
-							break;
-
-						/* current batch run */
-						run = &state->runs.inner.runs[state->pos_inner.run];
-
-						/* get the current inner buffer */
-						batch_inner = state->pos_inner.batch;
-
-						/*
-						 * If there's no current batch yet, get the first one for
-						 * the selected run (if there's one).
-						 */
-						if (batch_inner == NULL)
-						{
-							/* skip runs with no more batches */
-							if (dlist_is_empty(&run->batches))
-							{
-								state->pos_inner.run++;
-								continue;
-							}
-
-							/* get first batch from the run */
-							batch_inner = dlist_head_element(Batch, node,
-															 &run->batches);
-							state->pos_inner.batch = batch_inner;
-
-							debug_print_batch(state, "processing inner batch",
-											  state->pos_inner.batch);
-
-							/* new combination of inner/outer batch */
-							// state->stats.batches_cross++;
-
-							Assert(state->pos_inner.slot == -1);
-						}
 
 						/*
 						 * get the current outer batch
@@ -1476,108 +1461,74 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 						Assert(state->pos_outer.batch != NULL);
 						Assert(state->pos_outer.batch == batch_outer);
 
-						/* Advance to the next slot in the current batch. */
-						// state->pos_inner.slot++;
-						/**/
+						/*
+						 * If we don't have any inner position yet, we're just
+						 * starting - start the walk for the current outer tuple.
+						 * Otherwise, advance to the next entry.
+						 */
 						if (state->pos_inner.slot == -1)
 						{
-							state->pos_inner.slot
-								= HASHTABLE_SLOT_INDEX(batch_inner,
-													   batch_outer->hashes[state->pos_outer.slot]);
+							uint32 hash = batch_outer->hashes[state->pos_outer.slot];
+							state->pos_inner.slot = HASHTABLE_SLOT_INDEX(state, hash);
 						}
 						else
 						{
 							state->pos_inner.slot
-								= (state->pos_inner.slot + HASHTABLE_STEP) % HASHTABLE_CAPACITY(batch_inner);
+								= (state->pos_inner.slot + HASHTABLE_STEP) % HASHTABLE_CAPACITY(state);
 						}
 
-						/* find the slot with a matching hashtable */
+						/*
+						 * We don't know if the hashtable entry is for the same
+						 * hash value, so let's advance to the next matching one.
+						 */
 						for (;;)
 						{
-							uint32 inner_hash;
+							uint32	inner_hash;
+
+							/* too many loops, likely an infinite loop */
+							nloops++;
+							Assert(nloops <= HASHTABLE_CAPACITY(state));
+
+							/* deleted slot - step over, as if used with a different hash value */
+							if (HASHTABLE_SLOT_DELETED(state, state->pos_inner.slot))
+							{
+								/* not empty but not a match, try the next one */
+								state->pos_inner.slot
+									= (state->pos_inner.slot + HASHTABLE_STEP) % HASHTABLE_CAPACITY(state);
+								continue;
+							}
 
 							/* empty slot, no point in looking for more matches */
-							if (HASHTABLE_SLOT_EMPTY(batch_inner, state->pos_inner.slot))
+							if (HASHTABLE_SLOT_EMPTY(state, state->pos_inner.slot))
 							{
-								state->pos_inner.slot = HASHTABLE_CAPACITY(batch_inner);
+								state->pos_inner.slot = HASHTABLE_CAPACITY(state);
 								break;
 							}
 
-							/* slot with a values, does the hash match? */
-							inner_hash = batch_inner->hashes[batch_inner->hashtable[state->pos_inner.slot].slot];
+							/* slot with a valid entry, do the hash values match? */
+							batch_inner = state->hashtable.entries[state->pos_inner.slot].batch;
+							inner_hash = batch_inner->hashes[state->hashtable.entries[state->pos_inner.slot].slot];
 							if (inner_hash == batch_outer->hashes[state->pos_outer.slot])
 								break;
 
 							/* not empty but not a match, try the next one */
 							state->pos_inner.slot
-								= (state->pos_inner.slot + HASHTABLE_STEP) % HASHTABLE_CAPACITY(batch_inner);
-
-							/* too many loops, likely an infinite loop */
-							nloops++;
-							Assert(nloops <= batch_inner->nslots);
+								= (state->pos_inner.slot + HASHTABLE_STEP) % HASHTABLE_CAPACITY(state);
 						}
 
 						/*
-						 * If we processed all slots, or if the two batches
-						 * can't possibly overlap, move to the next batch
-						 * in this run (or the next run).
-						 *
-						 * XXX We check that the two batches overlap - if
-						 * we could skip a futile loop over all concurrent
-						 * combinations of tuples, that would likely be a
-						 * huge speedup.
-						 *
-						 * XXX I'm not sure if getting non-overlapping batches
-						 * is inherent to the algorithm (how it calculates the
-						 * join range / evicts inner batches), maybe just for
-						 * the simplified variant with three queues. Or if
-						 * that's some sort of thinko in this code.
-						 *
-						 * XXX The overlap is checked only on the first slot,
-						 * not every time we get here.
+						 * If we processed all matches for this hash, time to move
+						 * to the next outer tuple.
 						 */
-						if ((state->pos_inner.slot >= HASHTABLE_CAPACITY(batch_inner)) ||
-							((state->pos_inner.slot == 0) &&
-							 !batches_may_overlap(state, batch_inner, batch_outer)))
+						if (state->pos_inner.slot == HASHTABLE_CAPACITY(state))
 						{
-							DEBUG_LOG("inner batch processed, or batches can't overlap");
-
-							/* advance to the next batch for this run */
-							if (dlist_has_next(&run->batches, &batch_inner->node))
-							{
-								dlist_node *next_node;
-
-								next_node = dlist_next_node(&run->batches,
-															&batch_inner->node);
-								batch_inner = dlist_container(Batch, node, next_node);
-
-								/*
-								 * Start at the position cached from matching
-								 * the previous outer tuple (in the same outer
-								 * batch). No earlier tuples can match, because
-								 * the outer tuples are ordered the same way.
-								 */
-								state->pos_inner.batch = batch_inner;
-								state->pos_inner.slot = batch_inner->cache_pos;
-								// state->pos_inner.slot = -1;
-
-								/* new combination of inner/outer batch */
-								// state->stats.batches_cross++;
-							}
-							else
-							{
-								/* no more batches, try the next run */
-								state->pos_inner.batch = NULL;
-								state->pos_inner.run++;
-								state->pos_inner.slot = -1;
-							}
-
-							continue;
+							state->phase = GJOIN_NEXT_OUTER;
+							break;
 						}
 
 						{
 							uint32 hash_outer = batch_outer->hashes[state->pos_outer.slot];
-							int slot = batch_inner->hashtable[state->pos_inner.slot].slot;
+							int slot = state->hashtable.entries[state->pos_inner.slot].slot;
 							uint32 hash_inner = batch_inner->hashes[slot];
 
 							Assert(hash_outer == hash_inner);
@@ -1592,8 +1543,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 
 							TupleTableSlot *outer = batch_outer->slots[state->pos_outer.slot];
 
-							int slot = batch_inner->hashtable[state->pos_inner.slot].slot;
-							uint32 hash_inner = batch_inner->hashes[slot];
+							int slot = state->hashtable.entries[state->pos_inner.slot].slot;
 							TupleTableSlot *inner = batch_inner->slots[slot];
 
 							/* new tuple combination */
@@ -1932,6 +1882,8 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 												entry_inner->run, next_batch->max_values);
 						}
 
+						hashtable_delete_batch(state, batch_inner);
+
 						/*
 						 * unlink the batch from the list, free it
 						 *
@@ -2044,10 +1996,9 @@ gjoin_ExplainCustomJoin(CustomJoinState *node,
 		ExplainPropertyText("Tuples", str.data, es);
 
 		resetStringInfo(&str);
-		appendStringInfo(&str, "inner=%d outer=%d cross=%d",
+		appendStringInfo(&str, "inner=%d outer=%d",
 						 state->stats.batches_inner,
-						 state->stats.batches_outer,
-						 state->stats.batches_cross);
+						 state->stats.batches_outer);
 		ExplainPropertyText("Batches", str.data, es);
 	}
 }
@@ -2455,8 +2406,6 @@ batch_init(TupleDesc tdesc, int nattnums)
 	batch->max_isnull = palloc_array(bool, nattnums);
 	batch->min_isnull = palloc_array(bool, nattnums);
 
-	batch->hashtable = NULL;
-
 	return batch;
 }
 
@@ -2482,8 +2431,6 @@ batch_free(Batch *batch)
 
 	pfree(batch->slots);
 	pfree(batch->hashes);
-	if (batch->hashtable)
-		pfree(batch->hashtable);
 
 	pfree(batch);
 }
@@ -2512,33 +2459,247 @@ batch_calculate_hashes(GJoinState *state, Batch *batch, AttrNumber *attnums)
 }
 
 static void
-batch_build_hashtable(GJoinState *state, Batch *batch)
+hashtable_insert_batch(GJoinState *state, Batch *batch)
 {
-	Assert(batch->hashtable == NULL);
+	/* FIXME resize the hash table as needed */
+//elog(LOG, "hashtable_insert_batch BEFORE used %d deleted %d",
+//	 state->hashtable.nused, state->hashtable.ndeleted);
 
-	/* aim for 50% load factor (XXX probably should be power-of-2, with prime step) */
-	batch->hashtable = palloc0_array(HashEntry, HASHTABLE_CAPACITY(batch));
+	/* XXX we should shrink the hash tables every now and then */
+	/* XXX maybe combine into a single function? */
 
-	/* mark slots as empty */
-	for (int i = 0; i < HASHTABLE_CAPACITY(batch); i++)
-	{
-		batch->hashtable[i].slot = -1;
-	}
+	/* try to compact, to get enough free space */
+	hashtable_maybe_compact(state, batch->nslots);
+	hashtable_maybe_resize(state, batch->nslots);
+
+	/* XXX must not exceed the capacity of the hash table */
+	Assert(state->hashtable.nused + state->hashtable.ndeleted + batch->nslots <= state->hashtable.capacity);
 
 	/* add hashes to hash table */
 	for (int i = 0; i < batch->nslots; i++)
 	{
-		int	idx = HASHTABLE_SLOT_INDEX(batch, batch->hashes[i]);
+		int	idx = HASHTABLE_SLOT_INDEX(state, batch->hashes[i]);
 
 		/* find the next empty slot, linearly */
-		while (!HASHTABLE_SLOT_EMPTY(batch, idx))
+		while (!HASHTABLE_SLOT_EMPTY(state, idx) && !HASHTABLE_SLOT_DELETED(state, idx))
 		{
-			idx = (idx + HASHTABLE_STEP) % HASHTABLE_CAPACITY(batch);
+			idx = (idx + HASHTABLE_STEP) % HASHTABLE_CAPACITY(state);
 		}
 
-		batch->hashtable[idx].hashvalue = batch->hashes[i];
-		batch->hashtable[idx].slot = i;
+		if (HASHTABLE_SLOT_DELETED(state, idx))
+			state->hashtable.ndeleted--;
+
+		Assert(state->hashtable.ndeleted >= 0);
+
+		state->hashtable.entries[idx].deleted = false;
+		state->hashtable.entries[idx].hashvalue = batch->hashes[i];
+		state->hashtable.entries[idx].batch = batch;
+		state->hashtable.entries[idx].slot = i;
+
+		state->hashtable.nused++;
 	}
+//elog(LOG, "hashtable_insert_batch AFTER used %d deleted %d",
+//	 state->hashtable.nused, state->hashtable.ndeleted);
+}
+
+static void
+hashtable_maybe_compact(GJoinState *state, int needed)
+{
+	HashEntry *entries;
+
+elog(LOG, "hashtable_compact CHECK used %d deleted %d needed %d capacity %d",
+	 state->hashtable.nused, state->hashtable.ndeleted, needed, state->hashtable.capacity);
+
+	/* consider 75% load factor acceptable */
+	if (state->hashtable.nused + state->hashtable.ndeleted + needed < state->hashtable.capacity * 3 / 4)
+		return;
+
+//elog(LOG, "hashtable_compact BEFORE used %d deleted %d",
+//	 state->hashtable.nused, state->hashtable.ndeleted);
+
+	entries = palloc_array(HashEntry, state->hashtable.capacity);
+	memcpy(entries, state->hashtable.entries, sizeof(HashEntry) * state->hashtable.capacity);
+
+	/* assume each run can have two batches of maximum size */
+	state->hashtable.nused = state->hashtable.ndeleted = 0;
+
+	for (int i = 0; i < state->hashtable.capacity; i++)
+	{
+		state->hashtable.entries[i].deleted = false;
+		state->hashtable.entries[i].slot = -1;
+	}
+
+	for (int i = 0; i < state->hashtable.capacity; i++)
+	{
+		HashEntry *entry = &entries[i];
+		int	idx;
+
+		/* deleted or unused */
+		if (entry->deleted || entry->slot == -1)
+			continue;
+
+		idx = HASHTABLE_SLOT_INDEX(state, entry->hashvalue);
+		while (!HASHTABLE_SLOT_EMPTY(state, idx) && !HASHTABLE_SLOT_DELETED(state, idx))
+		{
+			idx = (idx + HASHTABLE_STEP) % HASHTABLE_CAPACITY(state);
+		}
+
+		state->hashtable.entries[idx].deleted = false;
+		state->hashtable.entries[idx].hashvalue = entry->hashvalue;
+		state->hashtable.entries[idx].batch = entry->batch;
+		state->hashtable.entries[idx].slot = entry->slot;
+
+		state->hashtable.nused++;
+	}
+
+elog(LOG, "hashtable_compact AFTER used %d deleted %d capacity %d",
+	 state->hashtable.nused, state->hashtable.ndeleted, state->hashtable.capacity);
+
+	Assert(state->hashtable.ndeleted == 0);
+	Assert(state->hashtable.nused >= 0);
+
+	pfree(entries);
+}
+
+static void
+hashtable_maybe_resize(GJoinState *state, int needed)
+{
+	HashEntry  *entries;
+	int			capacity_old;
+
+elog(LOG, "hashtable_maybe_enlarge CHECK used %d deleted %d needed %d capacity %d",
+	 state->hashtable.nused, state->hashtable.ndeleted, needed, state->hashtable.capacity);
+
+	/* consider 75% load factor acceptable */
+	if (state->hashtable.nused + state->hashtable.ndeleted + needed < state->hashtable.capacity * 3 / 4)
+		return;
+
+//elog(LOG, "hashtable_maybe_enlarge BEFORE used %d deleted %d",
+//	 state->hashtable.nused, state->hashtable.ndeleted);
+
+	capacity_old = state->hashtable.capacity;
+	while (state->hashtable.nused + state->hashtable.ndeleted + needed >= state->hashtable.capacity * 3 / 4)
+		state->hashtable.capacity *= 2;
+
+	/* copy of current data */
+	entries = palloc_array(HashEntry, capacity_old);
+	memcpy(entries, state->hashtable.entries, sizeof(HashEntry) * capacity_old);
+
+	/* assume each run can have two batches of maximum size */
+	state->hashtable.nused = state->hashtable.ndeleted = 0;
+
+	/*
+	 * actually resize the hash table
+	 *
+	 * XXX maybe do a repalloc, but we want to reset all the memory to 0
+	 */
+	pfree(state->hashtable.entries);
+	state->hashtable.entries = palloc0_array(HashEntry, state->hashtable.capacity);
+
+	for (int i = 0; i < state->hashtable.capacity; i++)
+	{
+		state->hashtable.entries[i].slot = -1;
+	}
+
+	for (int i = 0; i < capacity_old; i++)
+	{
+		HashEntry *entry = &entries[i];
+		int	idx = HASHTABLE_SLOT_INDEX(state, entry->hashvalue);
+
+		while (!HASHTABLE_SLOT_EMPTY(state, idx) && !HASHTABLE_SLOT_DELETED(state, idx))
+		{
+			idx = (idx + HASHTABLE_STEP) % HASHTABLE_CAPACITY(state);
+		}
+
+		state->hashtable.entries[idx].deleted = false;
+		state->hashtable.entries[idx].hashvalue = entry->hashvalue;
+		state->hashtable.entries[idx].batch = entry->batch;
+		state->hashtable.entries[idx].slot = entry->slot;
+
+		state->hashtable.nused++;
+	}
+
+elog(LOG, "hashtable_compact AFTER used %d deleted %d capacity %d",
+	 state->hashtable.nused, state->hashtable.ndeleted, state->hashtable.capacity);
+
+	Assert(state->hashtable.ndeleted >= 0);
+	Assert(state->hashtable.nused >= 0);
+
+	pfree(entries);
+}
+
+static void
+hashtable_delete_entry(GJoinState *state, Batch *batch, int slot)
+{
+	uint32	hashvalue = batch->hashes[slot];
+	int		idx = HASHTABLE_SLOT_INDEX(state, hashvalue);
+
+	for (;;)
+	{
+		HashEntry *entry = &state->hashtable.entries[idx];
+
+		/* deleted entry, skip */
+		if (entry->deleted)
+		{
+			idx = (idx + HASHTABLE_STEP) % HASHTABLE_CAPACITY(state);
+			continue;
+		}
+
+		/* unused entry, we're done */
+		if (entry->slot == -1)
+		{
+			Assert(false);
+			return;
+		}
+
+		/* not deleted and not empty, check the entry */
+		if ((entry->batch == batch) && (entry->slot == slot))
+		{
+			Assert(entry->hashvalue == hashvalue);
+			entry->deleted = true;
+
+			state->hashtable.ndeleted++;
+			state->hashtable.nused--;
+
+			return;
+		}
+
+		idx = (idx + HASHTABLE_STEP) % HASHTABLE_CAPACITY(state);
+	}
+}
+
+static void
+hashtable_delete_batch(GJoinState *state, Batch *batch)
+{
+	/* FIXME resize the hash table as needed */
+elog(LOG, "hashtable_delete_batch BEFORE capacity %d used %d deleted %d",
+	 state->hashtable.capacity, state->hashtable.nused, state->hashtable.ndeleted);
+
+	Assert(state->hashtable.nused >= batch->nslots);
+
+	for (int i = 0; i < batch->nslots; i++)
+		hashtable_delete_entry(state, batch, i);
+
+	Assert(state->hashtable.ndeleted >= 0);
+	Assert(state->hashtable.nused >= 0);
+
+//	/* delete all entries for a batch */
+//	for (int i = 0; i < state->hashtable.capacity; i++)
+//	{
+//		if (state->hashtable.entries[i].batch != batch)
+//			continue;
+//
+//		state->hashtable.entries[i].deleted = true;
+//		state->hashtable.entries[i].hashvalue = 0;
+//		state->hashtable.entries[i].batch = NULL;
+//		state->hashtable.entries[i].slot = -1;
+//
+//		state->hashtable.ndeleted++;
+//		state->hashtable.nused--;
+//	}
+
+elog(LOG, "hashtable_delete_batch AFTER capacity %d used %d deleted %d",
+	 state->hashtable.capacity, state->hashtable.nused, state->hashtable.ndeleted);
 }
 
 /*
@@ -2626,7 +2787,7 @@ init_inner_runs(GJoinState * state)
 
 			batch_calculate_hashes(state, batch, state->clauses.attnums_inner);
 
-			batch_build_hashtable(state, batch);
+			hashtable_insert_batch(state, batch);
 
 			/*
 			 * Add the run to the grow/shrink priority queues (the paper calls
@@ -2864,7 +3025,7 @@ load_inner_batch(GJoinState * state, int run, Batch * batch)
 
 	batch_calculate_hashes(state, batch, state->clauses.attnums_inner);
 
-	batch_build_hashtable(state, batch);
+	hashtable_insert_batch(state, batch);
 
 	/* add the buffer to the priority queue that manages growing */
 	priorityqueues_push(state->queues.inner_grow, run, batch->max_values);

@@ -529,6 +529,8 @@ static void hashtable_insert_batch(GJoinState *state, Batch *batch);
 static void hashtable_maybe_compact(GJoinState *state, int needed);
 static void hashtable_maybe_resize(GJoinState *state, int needed);
 
+static inline void AssertCheckHashTable(GJoinState *state);
+
 // #define GJOIN_DEBUG
 
 #ifdef GJOIN_DEBUG
@@ -2498,6 +2500,8 @@ hashtable_insert_batch(GJoinState *state, Batch *batch)
 
 		state->hashtable.nused++;
 	}
+
+	AssertCheckHashTable(state);
 //elog(LOG, "hashtable_insert_batch AFTER used %d deleted %d",
 //	 state->hashtable.nused, state->hashtable.ndeleted);
 }
@@ -2552,13 +2556,12 @@ elog(LOG, "hashtable_compact CHECK used %d deleted %d needed %d capacity %d",
 		state->hashtable.nused++;
 	}
 
+	pfree(entries);
+
 elog(LOG, "hashtable_compact AFTER used %d deleted %d capacity %d",
 	 state->hashtable.nused, state->hashtable.ndeleted, state->hashtable.capacity);
 
-	Assert(state->hashtable.ndeleted == 0);
-	Assert(state->hashtable.nused >= 0);
-
-	pfree(entries);
+	AssertCheckHashTable(state);
 }
 
 static void
@@ -2619,13 +2622,12 @@ elog(LOG, "hashtable_maybe_enlarge CHECK used %d deleted %d needed %d capacity %
 		state->hashtable.nused++;
 	}
 
+	pfree(entries);
+
 elog(LOG, "hashtable_compact AFTER used %d deleted %d capacity %d",
 	 state->hashtable.nused, state->hashtable.ndeleted, state->hashtable.capacity);
 
-	Assert(state->hashtable.ndeleted >= 0);
-	Assert(state->hashtable.nused >= 0);
-
-	pfree(entries);
+	AssertCheckHashTable(state);
 }
 
 static void
@@ -2680,8 +2682,7 @@ elog(LOG, "hashtable_delete_batch BEFORE capacity %d used %d deleted %d",
 	for (int i = 0; i < batch->nslots; i++)
 		hashtable_delete_entry(state, batch, i);
 
-	Assert(state->hashtable.ndeleted >= 0);
-	Assert(state->hashtable.nused >= 0);
+	AssertCheckHashTable(state);
 
 //	/* delete all entries for a batch */
 //	for (int i = 0; i < state->hashtable.capacity; i++)
@@ -2700,6 +2701,38 @@ elog(LOG, "hashtable_delete_batch BEFORE capacity %d used %d deleted %d",
 
 elog(LOG, "hashtable_delete_batch AFTER capacity %d used %d deleted %d",
 	 state->hashtable.capacity, state->hashtable.nused, state->hashtable.ndeleted);
+}
+
+static inline void
+AssertCheckHashTable(GJoinState *state)
+{
+#ifdef USE_ASSERT_CHECKING
+	int	nused = 0;
+	int	ndeleted = 0;
+
+	Assert(state->hashtable.nused >= 0);
+	Assert(state->hashtable.ndeleted >= 0);
+	Assert(state->hashtable.capacity >= 0);
+	Assert(state->hashtable.ndeleted + state->hashtable.nused <= state->hashtable.capacity);
+
+	for (int i = 0; i < state->hashtable.capacity; i++)
+	{
+		if (state->hashtable.entries[i].deleted)
+		{
+			ndeleted++;
+			continue;
+		}
+
+		if (state->hashtable.entries[i].slot != -1)
+		{
+			nused++;
+			continue;
+		}
+	}
+
+	Assert(state->hashtable.nused == nused);
+	Assert(state->hashtable.ndeleted == ndeleted);
+#endif
 }
 
 /*

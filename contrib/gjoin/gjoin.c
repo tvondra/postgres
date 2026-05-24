@@ -1884,8 +1884,6 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 												entry_inner->run, next_batch->max_values);
 						}
 
-						hashtable_delete_batch(state, batch_inner);
-
 						/*
 						 * unlink the batch from the list, free it
 						 *
@@ -1894,6 +1892,7 @@ gjoin_ExecCustomJoin(CustomJoinState *node)
 						 * over again?
 						 */
 						dlist_delete(&(batch_inner->node));
+						hashtable_delete_batch(state, batch_inner);
 						batch_free(batch_inner);
 					}
 
@@ -2707,6 +2706,7 @@ static inline void
 AssertCheckHashTable(GJoinState *state)
 {
 #ifdef USE_ASSERT_CHECKING
+	/* check that the counters match contents of the hash table */
 	int	nused = 0;
 	int	ndeleted = 0;
 
@@ -2732,6 +2732,26 @@ AssertCheckHashTable(GJoinState *state)
 
 	Assert(state->hashtable.nused == nused);
 	Assert(state->hashtable.ndeleted == ndeleted);
+
+	/* check that the counters match the in-memory batches */
+	nused = 0;
+
+	for (int r = 0; r < state->runs.inner.maxruns; r++)
+	{
+		dlist_iter	iter;
+		dlist_head *batches = &state->runs.inner.runs[r].batches;
+
+		if (dlist_is_empty(batches))
+			continue;
+
+		dlist_foreach(iter, batches)
+		{
+			Batch *batch = dlist_container(Batch, node, iter.cur);
+			nused += batch->nslots;
+		}
+	}
+
+	Assert(state->hashtable.nused == nused);
 #endif
 }
 
@@ -2818,10 +2838,6 @@ init_inner_runs(GJoinState * state)
 								   &batch->max_isnull[j]);
 			}
 
-			batch_calculate_hashes(state, batch, state->clauses.attnums_inner);
-
-			hashtable_insert_batch(state, batch);
-
 			/*
 			 * Add the run to the grow/shrink priority queues (the paper calls
 			 * those "A" and "B").
@@ -2837,6 +2853,9 @@ init_inner_runs(GJoinState * state)
 		/* initialize the list of tuple batches for a run, add the batch */
 		dlist_init(&runs->runs[i].batches);
 		dlist_push_tail(&runs->runs[i].batches, &batch->node);
+
+		batch_calculate_hashes(state, batch, state->clauses.attnums_inner);
+		hashtable_insert_batch(state, batch);
 
 		/* account for the loaded batch */
 		state->stats.batches_inner++;
@@ -3056,16 +3075,15 @@ load_inner_batch(GJoinState * state, int run, Batch * batch)
 											&batch->max_isnull[i]);
 	}
 
-	batch_calculate_hashes(state, batch, state->clauses.attnums_inner);
-
-	hashtable_insert_batch(state, batch);
-
 	/* add the buffer to the priority queue that manages growing */
 	priorityqueues_push(state->queues.inner_grow, run, batch->max_values);
 
 	/* also add the buffer to the run */
 	dlist_push_tail(&state->runs.inner.runs[run].batches,
 					&batch->node);
+
+	batch_calculate_hashes(state, batch, state->clauses.attnums_inner);
+	hashtable_insert_batch(state, batch);
 
 	debug_print_batch(state, "loaded inner batch", batch);
 

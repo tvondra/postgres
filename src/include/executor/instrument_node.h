@@ -227,6 +227,13 @@ typedef struct HashInstrumentation
 	int			nbatch;			/* number of batches at end of execution */
 	int			nbatch_original;	/* planned number of batches */
 	Size		space_peak;		/* peak memory usage in bytes */
+	int64		bloom_num_probes;	/* number of Bloom filter probes */
+	int64		bloom_num_matches;	/* probes not rejected by the filter */
+	int64		bloom_total_bits;	/* size of the Bloom filter bitset, in bits */
+	int			bloom_num_hash_funcs;	/* number of Bloom filter hash functions */
+	double		bloom_false_positive_rate;	/* estimated false positive rate */
+	int64		hash_num_lookups;	/* number of hash table lookups */
+	int64		hash_num_matches;	/* lookups that found a match */
 } HashInstrumentation;
 
 /*

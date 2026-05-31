@@ -15,6 +15,7 @@
 #define HASHJOIN_H
 
 #include "nodes/execnodes.h"
+#include "lib/bloomfilter.h"
 #include "port/atomics.h"
 #include "storage/barrier.h"
 #include "storage/buffile.h"
@@ -274,7 +275,23 @@ typedef struct ParallelHashJoinState
 	pg_atomic_uint32 distributor;	/* counter for load balancing */
 
 	SharedFileSet fileset;		/* space for shared temporary files */
+
+	/*
+	 * Shared Bloom filter state.  When a Parallel Hash join uses a Bloom
+	 * filter, the filter lives in the DSA area pointed to by "bloom_filter".
+	 * "bloom_state" coordinates building it (see PHJ_BLOOM_* constants), and
+	 * "bloom_nelems" is the element count estimate used to size it so that
+	 * every worker builds a mergeable local filter of identical dimensions.
+	 */
+	dsa_pointer bloom_filter;	/* shared bloom_filter, or InvalidDsaPointer */
+	int			bloom_state;	/* PHJ_BLOOM_* */
+	int64		bloom_nelems;	/* element estimate used to size the filter */
 } ParallelHashJoinState;
+
+/* Values for ParallelHashJoinState.bloom_state. */
+#define PHJ_BLOOM_NONE			0	/* no decision made yet */
+#define PHJ_BLOOM_BUILT			1	/* shared filter is built and usable */
+#define PHJ_BLOOM_DISABLED		2	/* decided not to use a bloom filter */
 
 /* The phases for building batches, used by build_barrier. */
 #define PHJ_BUILD_ELECT					0
@@ -378,6 +395,40 @@ typedef struct HashJoinTableData
 	ParallelHashJoinState *parallel_state;
 	ParallelHashJoinBatchAccessor *batches;
 	dsa_pointer current_chunk_shared;
+
+	/*
+	 * Optional Bloom filter on the join-key hash values of the inner side.
+	 * It is probed before the hash table during the outer scan so that outer
+	 * tuples that cannot possibly have a match are discarded cheaply.
+	 *
+	 * bloomFilter points at the filter that should be probed (this may be a
+	 * backend-local filter, or a mapping of the shared filter for Parallel
+	 * Hash).  bloomEnabled indicates whether bloomFilter is ready to be used.
+	 * For a single-batch join the filter is built adaptively, so we track the
+	 * number of probes and the number that found a match; bloomChecked records
+	 * that the adaptive decision has already been made (so we don't keep
+	 * re-evaluating it).
+	 *
+	 * bloomNumProbes and bloomNumMatches count every probe of the filter and
+	 * every probe that the filter did not reject (i.e. the outer tuple might
+	 * have a match), over the whole execution, so they can be reported in
+	 * EXPLAIN (ANALYZE).
+	 */
+	bloom_filter *bloomFilter;	/* filter to probe, or NULL */
+	int64		bloomProbes;	/* probes counted for the adaptive decision */
+	int64		bloomMatches;	/* probes that found a match in the table */
+	int64		bloomNumProbes; /* total number of filter probes */
+	int64		bloomNumMatches;	/* total probes not rejected by the filter */
+
+	/*
+	 * Counters for hash table lookups performed during the outer scan, and
+	 * how many of those lookups found a matching tuple in the hash table.
+	 * These count only actual probes of the hash table, so outer tuples that
+	 * were rejected by the Bloom filter (and therefore never looked up) are
+	 * excluded.  They are reported in EXPLAIN (ANALYZE).
+	 */
+	int64		hashLookups; /* total number of hash table lookups */
+	int64		hashMatches; /* lookups that found a match in the table */
 } HashJoinTableData;
 
 #endif							/* HASHJOIN_H */

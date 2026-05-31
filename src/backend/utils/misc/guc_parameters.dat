@@ -920,6 +920,13 @@
   boot_val => 'true',
 },
 
+{ name => 'enable_hashjoin_bloom', type => 'bool', context => 'PGC_USERSET', group => 'QUERY_TUNING_METHOD',
+  short_desc => 'Enables the use of bloom filters in hash joins.',
+  flags => 'GUC_EXPLAIN',
+  variable => 'enable_hashjoin_bloom',
+  boot_val => 'true',
+},
+
 { name => 'enable_incremental_sort', type => 'bool', context => 'PGC_USERSET', group => 'QUERY_TUNING_METHOD',
   short_desc => 'Enables the planner\'s use of incremental sort steps.',
   flags => 'GUC_EXPLAIN',

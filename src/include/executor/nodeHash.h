@@ -36,6 +36,7 @@ extern void ExecParallelHashTableSetCurrentBatch(HashJoinTable hashtable,
 extern void ExecHashTableInsert(HashJoinTable hashtable,
 								TupleTableSlot *slot,
 								uint32 hashvalue);
+extern void ExecHashBloomAccountLookup(HashJoinTable hashtable);
 extern void ExecParallelHashTableInsert(HashJoinTable hashtable,
 										TupleTableSlot *slot,
 										uint32 hashvalue);
@@ -48,6 +49,7 @@ extern void ExecHashGetBucketAndBatch(HashJoinTable hashtable,
 									  int *batchno);
 extern bool ExecScanHashBucket(HashJoinState *hjstate, ExprContext *econtext);
 extern bool ExecParallelScanHashBucket(HashJoinState *hjstate, ExprContext *econtext);
+extern bool ExecHashBloomReject(HashJoinTable hashtable, uint32 hashvalue);
 extern void ExecPrepHashTableForUnmatched(HashJoinState *hjstate);
 extern bool ExecParallelPrepHashTableForUnmatched(HashJoinState *hjstate);
 extern bool ExecScanHashTableForUnmatched(HashJoinState *hjstate,

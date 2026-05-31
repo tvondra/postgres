@@ -3433,6 +3433,27 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 											  worker_hi->nbatch_original);
 			hinstrument.space_peak = Max(hinstrument.space_peak,
 										 worker_hi->space_peak);
+
+			/*
+			 * In a parallel-aware hash join each worker probes its own outer
+			 * tuples, so the probe and match counts are summed.
+			 */
+			hinstrument.bloom_num_probes += worker_hi->bloom_num_probes;
+			hinstrument.bloom_num_matches += worker_hi->bloom_num_matches;
+			hinstrument.hash_num_lookups += worker_hi->hash_num_lookups;
+			hinstrument.hash_num_matches += worker_hi->hash_num_matches;
+
+			/*
+			 * The Bloom filter dimensions and false positive rate describe the
+			 * (shared) filter itself rather than per-worker counters, so they
+			 * are identical across participants; just keep any non-zero value.
+			 */
+			hinstrument.bloom_total_bits = Max(hinstrument.bloom_total_bits,
+											   worker_hi->bloom_total_bits);
+			hinstrument.bloom_num_hash_funcs = Max(hinstrument.bloom_num_hash_funcs,
+												   worker_hi->bloom_num_hash_funcs);
+			hinstrument.bloom_false_positive_rate = Max(hinstrument.bloom_false_positive_rate,
+														worker_hi->bloom_false_positive_rate);
 		}
 	}
 
@@ -3452,6 +3473,31 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 								   hinstrument.nbatch_original, es);
 			ExplainPropertyUInteger("Peak Memory Usage", "kB",
 									spacePeakKb, es);
+			if (hinstrument.bloom_total_bits > 0)
+			{
+				ExplainPropertyInteger("Bloom Filter Size", "kB",
+									   hinstrument.bloom_total_bits /
+									   (BITS_PER_BYTE * INT64CONST(1024)), es);
+				ExplainPropertyInteger("Bloom Filter Hash Functions", NULL,
+									   hinstrument.bloom_num_hash_funcs, es);
+				ExplainPropertyFloat("Bloom Filter False Positive Rate", NULL,
+									 hinstrument.bloom_false_positive_rate, 6,
+									 es);
+			}
+			if (hinstrument.bloom_num_probes > 0)
+			{
+				ExplainPropertyInteger("Bloom Filter Probes", NULL,
+									   hinstrument.bloom_num_probes, es);
+				ExplainPropertyInteger("Bloom Filter Matches", NULL,
+									   hinstrument.bloom_num_matches, es);
+			}
+			if (hinstrument.hash_num_lookups > 0)
+			{
+				ExplainPropertyInteger("Hash Lookups", NULL,
+									   hinstrument.hash_num_lookups, es);
+				ExplainPropertyInteger("Hash Matches", NULL,
+									   hinstrument.hash_num_matches, es);
+			}
 		}
 		else if (hinstrument.nbatch_original != hinstrument.nbatch ||
 				 hinstrument.nbuckets_original != hinstrument.nbuckets)
@@ -3472,6 +3518,53 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 							 "Buckets: %d  Batches: %d  Memory Usage: " UINT64_FORMAT "kB\n",
 							 hinstrument.nbuckets, hinstrument.nbatch,
 							 spacePeakKb);
+		}
+
+		/*
+		 * If a Bloom filter was built, report its parameters: the size of the
+		 * bitset, the number of hash functions, and the estimated false
+		 * positive rate given how full the filter ended up.
+		 */
+		if (es->format == EXPLAIN_FORMAT_TEXT &&
+			hinstrument.bloom_total_bits > 0)
+		{
+			ExplainIndentText(es);
+			appendStringInfo(es->str,
+							 "Bloom Filter Size: " INT64_FORMAT "kB  Hash Functions: %d  False Positive Rate: %.6f\n",
+							 hinstrument.bloom_total_bits /
+							 (BITS_PER_BYTE * INT64CONST(1024)),
+							 hinstrument.bloom_num_hash_funcs,
+							 hinstrument.bloom_false_positive_rate);
+		}
+
+		/*
+		 * If a Bloom filter was probed, report how many probes were made and
+		 * how many of them the filter let through (the rest were rejected
+		 * without scanning the hash bucket).
+		 */
+		if (es->format == EXPLAIN_FORMAT_TEXT &&
+			hinstrument.bloom_num_probes > 0)
+		{
+			ExplainIndentText(es);
+			appendStringInfo(es->str,
+							 "Bloom Filter Probes: " INT64_FORMAT "  Matches: " INT64_FORMAT "\n",
+							 hinstrument.bloom_num_probes,
+							 hinstrument.bloom_num_matches);
+		}
+
+		/*
+		 * Report how many times the hash table was probed and how many of
+		 * those lookups found a match.  This excludes any probes that the
+		 * Bloom filter rejected before the hash table was consulted.
+		 */
+		if (es->format == EXPLAIN_FORMAT_TEXT &&
+			hinstrument.hash_num_lookups > 0)
+		{
+			ExplainIndentText(es);
+			appendStringInfo(es->str,
+							 "Hash Lookups: " INT64_FORMAT "  Matches: " INT64_FORMAT "\n",
+							 hinstrument.hash_num_lookups,
+							 hinstrument.hash_num_matches);
 		}
 	}
 }

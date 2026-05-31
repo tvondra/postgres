@@ -86,6 +86,26 @@ static inline uint32 mod_m(uint32 val, uint64 m);
 bloom_filter *
 bloom_create(int64 total_elems, int bloom_work_mem, uint64 seed)
 {
+	return bloom_create_custom(total_elems, bloom_work_mem, seed,
+							   1024 * 1024);
+}
+
+/*
+ * Create Bloom filter in caller's memory context, like bloom_create(), but
+ * with a caller-specified minimum bitset size.
+ *
+ * This behaves exactly like bloom_create(), except that the minimum size of
+ * the underlying bitset (in bytes) is given by min_bitset_bytes rather than
+ * being hard-coded to 1MB.  This is useful for callers that want to allow
+ * smaller filters, for example when fingerprinting small sets where a 1MB
+ * minimum would waste memory.  The bitset is still sized as a power of two
+ * number of bits, and is never smaller than this minimum (subject to that
+ * rounding).
+ */
+bloom_filter *
+bloom_create_custom(int64 total_elems, int bloom_work_mem, uint64 seed,
+					uint64 min_bitset_bytes)
+{
 	bloom_filter *filter;
 	int			bloom_power;
 	uint64		bitset_bytes;
@@ -99,7 +119,7 @@ bloom_create(int64 total_elems, int bloom_work_mem, uint64 seed)
 	 * false positive rate still won't exceed 2% in almost all cases.
 	 */
 	bitset_bytes = Min(bloom_work_mem * UINT64CONST(1024), total_elems * 2);
-	bitset_bytes = Max(1024 * 1024, bitset_bytes);
+	bitset_bytes = Max(min_bitset_bytes, bitset_bytes);
 
 	/*
 	 * Size in bits should be the highest power of two <= target.  bitset_bits
@@ -190,6 +210,39 @@ bloom_prop_bits_set(bloom_filter *filter)
 	uint64		bits_set = pg_popcount((char *) filter->bitset, bitset_bytes);
 
 	return bits_set / (double) filter->m;
+}
+
+/*
+ * How many hash functions does this Bloom filter use?
+ */
+int
+bloom_num_hash_funcs(bloom_filter *filter)
+{
+	return filter->k_hash_funcs;
+}
+
+/*
+ * Total size of the Bloom filter's bitset, in bits.
+ */
+uint64
+bloom_total_bits(bloom_filter *filter)
+{
+	return filter->m;
+}
+
+/*
+ * Estimate the current false positive rate of the Bloom filter.
+ *
+ * For a filter that uses k hash functions, the probability that a membership
+ * test for an element that was never added still reports "possibly present" is
+ * approximately p^k, where p is the proportion of bits currently set.  This
+ * reflects the actual contents of the filter rather than the target rate aimed
+ * for at creation time.
+ */
+double
+bloom_false_positive_rate(bloom_filter *filter)
+{
+	return pow(bloom_prop_bits_set(filter), filter->k_hash_funcs);
 }
 
 /*

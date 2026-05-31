@@ -3474,6 +3474,95 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 							 spacePeakKb);
 		}
 	}
+
+	/*
+	 * Hash table runtime statistics - number of hash table lookups and matches,
+	 * for tuples not eliminated by a Bloom filter (if there's one).
+	 */
+	if (es->analyze && es->verbose)
+	{
+		double	match_rate
+			= (double) hinstrument.hash_nmatches / Max(1, hinstrument.hash_nlookups);
+
+		if (es->format != EXPLAIN_FORMAT_TEXT)
+		{
+			ExplainPropertyInteger("Hash Lookups", NULL,
+								   hinstrument.hash_nlookups, es);
+			ExplainPropertyInteger("Hash Matches", NULL,
+								   hinstrument.hash_nmatches, es);
+			ExplainPropertyFloat("Hash Match Rate", NULL,
+								 (100.0 * match_rate), 3, es);
+		}
+		else
+		{
+			ExplainIndentText(es);
+			appendStringInfo(es->str,
+							 "Hash Lookups: " INT64_FORMAT "  Matches: " INT64_FORMAT "  Match Rate: %.3f%%\n",
+							 hinstrument.hash_nlookups,
+							 hinstrument.hash_nmatches,
+							 (100.0 * match_rate));
+		}
+	}
+
+	/*
+	 * Bloom filter statistics, if the filter was built during execution.
+	 * We report the basic filter properties (size, number of hash functions
+	 * and the estimated false positive rate), and also the probe statistics.
+	 *
+	 * XXX I think all of this matters only under EXPLAIN ANALYZE, due to the
+	 * adaptive build strategy. Or maybe we build the filter if (nbatch > 1)?
+	 */
+	if (hinstrument.bloom_used)
+	{
+		uint64		bloomSizeKb = BYTES_TO_KILOBYTES(hinstrument.bloom_nbits / BITS_PER_BYTE);
+		double		match_fraction = 0.0;
+
+		/* what fraction matches */
+		if (hinstrument.bloom_nprobes > 0)
+			match_fraction = (double) hinstrument.bloom_nmatches /
+				hinstrument.bloom_nprobes;
+
+		if (es->format != EXPLAIN_FORMAT_TEXT)
+		{
+			ExplainOpenGroup("Bloom Filter", "Bloom Filter", true, es);
+			ExplainPropertyUInteger("Filter Size", "kB", bloomSizeKb, es);
+			ExplainPropertyInteger("Hash Functions", NULL,
+								   hinstrument.bloom_nhashfuncs, es);
+			ExplainPropertyFloat("False Positive Rate", NULL,
+								 100.0 * hinstrument.bloom_false_positive_rate, 3, es);
+
+			if (es->analyze)
+			{
+				ExplainPropertyInteger("Probes", NULL,
+									   hinstrument.bloom_nprobes, es);
+				ExplainPropertyInteger("Matches", NULL,
+									   hinstrument.bloom_nmatches, es);
+				ExplainPropertyFloat("Match Rate", NULL,
+									 (100.0 * match_fraction), 3, es);
+			}
+
+			ExplainCloseGroup("Bloom Filter", "Bloom Filter", true, es);
+		}
+		else
+		{
+			ExplainIndentText(es);
+			appendStringInfo(es->str,
+							 "Bloom Filter: Size: " UINT64_FORMAT "kB  Hash Functions: %d  False Positive Rate: %.3f%%\n",
+							 bloomSizeKb,
+							 hinstrument.bloom_nhashfuncs,
+							 100.0 * hinstrument.bloom_false_positive_rate);
+
+			if (es->analyze)
+			{
+				ExplainIndentText(es);
+				appendStringInfo(es->str,
+								 "Bloom Filter Probes: " INT64_FORMAT "  Matches: " INT64_FORMAT "  Match Rate: %.3f%%\n",
+								 hinstrument.bloom_nprobes,
+								 hinstrument.bloom_nmatches,
+								 (100.0 * match_fraction));
+			}
+		}
+	}
 }
 
 /*

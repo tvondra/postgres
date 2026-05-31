@@ -14,6 +14,7 @@
 #ifndef HASHJOIN_H
 #define HASHJOIN_H
 
+#include "lib/bloomfilter.h"
 #include "nodes/execnodes.h"
 #include "port/atomics.h"
 #include "storage/barrier.h"
@@ -337,6 +338,44 @@ typedef struct HashJoinTableData
 	int			nbatch_outstart;	/* nbatch when we started outer scan */
 
 	bool		growEnabled;	/* flag to shut off nbatch increases */
+
+	/*
+	 * Optional Bloom filter built on the hashes of the inner relation's join
+	 * keys (the same hash values used by the hash table).  When present, it is
+	 * consulted before probing the hash table to discard outer tuples that
+	 * cannot have a match.  It always contains the hashes of every inner
+	 * tuple, so a negative answer is conclusive across all batches.  This is
+	 * only used by the non-parallel hash join.
+	 */
+	bloom_filter *bloomFilter;	/* Bloom filter, or NULL if not used */
+	double		bloomElems;		/* estimated number of inner tuples */
+	int64		bloomProbes;	/* hash-table probes in the current window */
+	int64		bloomMatches;	/* matches among those probes */
+	bool		bloomSampling;	/* only probe the filter for a sample? */
+	uint64		bloomSampleCounter; /* counter used while sampling */
+	uint64		bloomSampleProbes;  /* counter used while sampling */
+	uint64		bloomSampleMatches; /* counter used while sampling */
+
+	/*
+	 * Cumulative Bloom filter probe statistics, retained for the lifetime of
+	 * the join so EXPLAIN ANALYZE can report how effective the filter was.
+	 * bloomLookups counts how many outer tuples were actually checked against
+	 * the filter, and bloomRejects how many of those were discarded because
+	 * the filter proved they could not match.  Unlike bloomProbes/bloomMatches
+	 * above, these are never reset.
+	 */
+	int64		bloomLookups;	/* outer tuples tested against the filter */
+	int64		bloomRejects;	/* outer tuples rejected by the filter */
+
+	/*
+	 * Cumulative hash-table probe statistics, retained for the lifetime of the
+	 * join.  hashLookups counts how many outer tuples actually probed the hash
+	 * table, and hashMatches how many of those found at least one matching
+	 * inner tuple.  Outer tuples eliminated by the Bloom filter never probe the
+	 * hash table and so are not counted here.
+	 */
+	int64		hashLookups;	/* outer tuples that probed the hash table */
+	int64		hashMatches;	/* probes that found a matching inner tuple */
 
 	/*
 	 * totalTuples is the running total of tuples inserted into either the

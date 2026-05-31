@@ -35,7 +35,9 @@
 #include "executor/instrument.h"
 #include "executor/nodeHash.h"
 #include "executor/nodeHashjoin.h"
+#include "lib/bloomfilter.h"
 #include "miscadmin.h"
+#include "optimizer/cost.h"
 #include "port/pg_bitutils.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -80,6 +82,49 @@ static bool ExecParallelHashTuplePrealloc(HashJoinTable hashtable,
 										  size_t size);
 static void ExecParallelHashMergeCounters(HashJoinTable hashtable);
 static void ExecParallelHashCloseBatchAccessors(HashJoinTable hashtable);
+
+/*
+ * Tunables for the hash join Bloom filter.
+ */
+
+/* minimum filter size, in bytes */
+#define BLOOM_MIN_FILTER_SIZE	(8 * 1024)
+
+/*
+ * Adaptive filter build.
+ *
+ * When the hash table fits into memory (i.e. nbatch=1), we don't build the
+ * filter right away, because there's a risk the filter won't eliminate any
+ * hash table lookups. Instead, we wait for 1000 lookups and then see how
+ * many lookups found a match. If there are fewer than 90% matches, we build
+ * the filter. If not, we try again after 1000 more lookups (in case the
+ * data set is not uniform).
+ */
+#define BLOOM_BUILD_WINDOW		1000
+#define BLOOM_BUILD_THRESHOLD	0.9
+
+/*
+ *
+ * Adaptive filter probing.
+ *
+ * We use the fraction of recent filter probes that find a match to decide
+ * whether the filter is worth using. For each group (window) of 1000 probes,
+ * we count the matches. If there are more than 90% matches, the filter
+ * becomes an overhead, so we stop using it. Or rather - we start sampling
+ * only 1% of probes. After 1000 more filter probes, we reevaluate. And if
+ * the match rate droppped below 80%, we start using the filter again.
+ * This helps with data sets that have non-even distribution.
+ *
+ * The difference between 80% and 90% introduces hysteresis, so that the
+ * heuristics does not "flap" for datasets with ~90% matches.
+ *
+ * XXX Maybe 1000 and 1% is a bit too much, because we'll recheck after 100k
+ * lookups. Which seems like a lot.
+ */
+#define BLOOM_PROBE_WINDOW		1000
+#define BLOOM_SAMPLE_HIGH		0.9
+#define BLOOM_SAMPLE_LOW		0.8
+#define BLOOM_SAMPLE_RATE		100
 
 
 /* ----------------------------------------------------------------
@@ -183,6 +228,16 @@ MultiExecPrivateHash(HashState *node)
 			/* normal case with a non-null join key */
 			uint32		hashvalue = DatumGetUInt32(hashdatum);
 			int			bucketNumber;
+
+			/*
+			 * If a Bloom filter is already in use, record this inner tuple's
+			 * hash in it. Tuples seen before the filter was created (if it is
+			 * built mid-scan) are added when the filter is populated.
+			 */
+			if (hashtable->bloomFilter != NULL)
+				bloom_add_element(hashtable->bloomFilter,
+								  (unsigned char *) &hashvalue,
+								  sizeof(uint32));
 
 			bucketNumber = ExecHashGetSkewBucket(hashtable, hashvalue);
 			if (bucketNumber != INVALID_SKEW_BUCKET_NO)
@@ -535,6 +590,16 @@ ExecHashTableCreate(HashState *state)
 	hashtable->totalTuples = 0;
 	hashtable->reportTuples = 0;
 	hashtable->skewTuples = 0;
+	hashtable->bloomFilter = NULL;
+	hashtable->bloomElems = rows;
+	hashtable->bloomProbes = 0;
+	hashtable->bloomMatches = 0;
+	hashtable->bloomSampling = false;
+	hashtable->bloomSampleCounter = 0;
+	hashtable->bloomSampleMatches = 0;
+	hashtable->bloomSampleProbes = 0;
+	hashtable->hashLookups = 0;
+	hashtable->hashMatches = 0;
 	hashtable->innerBatchFile = NULL;
 	hashtable->outerBatchFile = NULL;
 	hashtable->spaceUsed = 0;
@@ -663,11 +728,234 @@ ExecHashTableCreate(HashState *state)
 			ExecHashBuildSkewHash(state, hashtable, node, num_skew_mcvs);
 
 		MemoryContextSwitchTo(oldcxt);
+
+		/*
+		 * If we already expect to need more than one batch, start building a
+		 * Bloom filter right away so that it ends up containing every inner
+		 * tuple.  (For a single-batch join we start without a filter and may
+		 * build one later, either when we are forced to start batching or
+		 * adaptively while probing.)
+		 */
+		if (nbatch > 1)
+			ExecHashCreateBloomFilter(hashtable, false);
 	}
 
 	return hashtable;
 }
 
+/*
+ * ExecHashCreateBloomFilter
+ *		Create (and optionally populate) the inner-relation Bloom filter.
+ *
+ * The filter is built on hashes of the inner join keys, already used for the
+ * hash table. The filter is created in hashCxt just like the hash table, so
+ * that it survives between batches.
+ *
+ * When "populate" is false, an empty filter is created and every inner tuple is
+ * added during the build. This assumes the filter is created before any tuples
+ * are added to the hash table.
+ *
+ * When "populate" is true, the filter is seeded with the hashes of tuples
+ * already present in the hash table (both the main hash table and the skew hash
+ * table). Remaining tuples are added as they are inserted into the hash table.
+ *
+ * XXX The Bloom filter is only used by the non-parallel hash join.
+ *
+ * XXX Actually, could we destroy the filter after the first batch? At that
+ * point all outer tuples are already probed, so the filter is not needed.
+ */
+void
+ExecHashCreateBloomFilter(HashJoinTable hashtable, bool populate)
+{
+	MemoryContext oldcxt;
+	int64		nelems;
+
+	/* Nothing to do if the feature is off, already decided, or parallel. */
+	if (!enable_hashjoin_bloom ||
+		hashtable->parallel_state != NULL ||
+		hashtable->bloomFilter != NULL)
+		return;
+
+	/*
+	 * Size the filter for the expected number of inner tuples. Use the larger
+	 * of the planner estimate and the number of tuples seen so far; the Bloom
+	 * filter implementation copes well with the estimate being somewhat off.
+	 *
+	 * XXX Maybe we should use a multiple, to make it better in case of poor
+	 * estimates? But only if we build the filter while still reading the inner
+	 * relation. If we already saw all tuples, we size the filter perfectly.
+	 *
+	 * XXX We should also consider what to do if the filter can't fit into
+	 * the memory budget. We may try building a filter with worse false
+	 * positive rate, as long as the final match rate is low enough.
+	 */
+	nelems = (int64) Max(hashtable->bloomElems, hashtable->totalTuples);
+	if (nelems < 1)
+		nelems = 1000.0;
+
+	oldcxt = MemoryContextSwitchTo(hashtable->hashCxt);
+	hashtable->bloomFilter = bloom_create_custom(nelems, work_mem, 0,
+												 BLOOM_MIN_FILTER_SIZE);
+	MemoryContextSwitchTo(oldcxt);
+
+	if (!populate)
+		return;
+
+	/* Add every tuple currently stored in the main hash table. */
+	for (HashMemoryChunk chunk = hashtable->chunks;
+		 chunk != NULL;
+		 chunk = chunk->next.unshared)
+	{
+		size_t		idx = 0;
+
+		while (idx < chunk->used)
+		{
+			HashJoinTuple hashTuple = (HashJoinTuple) (HASH_CHUNK_DATA(chunk) + idx);
+			MinimalTuple tuple = HJTUPLE_MINTUPLE(hashTuple);
+
+			bloom_add_element(hashtable->bloomFilter,
+							  (unsigned char *) &hashTuple->hashvalue,
+							  sizeof(uint32));
+
+			idx += MAXALIGN(HJTUPLE_OVERHEAD + tuple->t_len);
+		}
+	}
+
+	/* And every stored in the skew hash table, if any. */
+	if (hashtable->skewEnabled)
+	{
+		for (int i = 0; i < hashtable->nSkewBuckets; i++)
+		{
+			int			j = hashtable->skewBucketNums[i];
+			HashJoinTuple skewTuple = hashtable->skewBucket[j]->tuples;
+
+			while (skewTuple != NULL)
+			{
+				bloom_add_element(hashtable->bloomFilter,
+								  (unsigned char *) &skewTuple->hashvalue,
+								  sizeof(uint32));
+				skewTuple = skewTuple->next.unshared;
+			}
+		}
+	}
+}
+
+/*
+ * ExecHashBloomReject
+ *		Should this hashvalue (for an outer tuple) be discarded?
+ *
+ * Returns true if a Bloom filter is in use and it proves that the given hash
+ * value (and therefore the outer tuple) cannot match any inner tuple.
+ *
+ * When sampling the filter probes, most tuples bypass the filter and the
+ * function returns false without consulting it.
+ */
+bool
+ExecHashBloomReject(HashJoinTable hashtable, uint32 hashvalue)
+{
+	bool		reject = false;
+
+	if (hashtable->curbatch != 0)
+		return false;
+
+	/*
+	 * Consult the filter for the current tuple, unless we have no filter yet
+	 * or we are skipping it for this tuple while sampling. While sampling, we
+	 * only consult the filter for one tuple in BLOOM_SAMPLE_RATE; the rest go
+	 * straight to the hash table.
+	 */
+	if (hashtable->bloomFilter != NULL &&
+		!(hashtable->bloomSampling &&
+		  (++hashtable->bloomSampleCounter % BLOOM_SAMPLE_RATE) != 0))
+	{
+		hashtable->bloomProbes++;
+		if (bloom_lacks_element(hashtable->bloomFilter,
+								(unsigned char *) &hashvalue,
+								sizeof(uint32)))
+		{
+			hashtable->bloomRejects++;
+			reject = true;
+		}
+
+		if (!reject)
+			hashtable->bloomMatches++;
+
+		/* Account for the probe (and maybe adjust the sampling state). */
+		ExecHashBloomSamplingUpdate(hashtable, !reject);
+	}
+
+	return reject;
+}
+
+/*
+ * ExecHashBloomSamplingUpdate
+ *		Record the outcome of a filter probe and adjust the filter behavior.
+ *
+ * "match" indicates whether the filter probe rejected the hash value, so that
+ * the tuple can be eliminated. Over a sliding window of BLOOM_PROBE_WINDOW probes
+ * we track the fraction that find a match and use it to switch to sampling, if
+ * too many probes find a match (or disable sampling again).
+ */
+void
+ExecHashBloomSamplingUpdate(HashJoinTable hashtable, bool match)
+{
+	double		fraction;
+
+	hashtable->bloomSampleProbes++;
+	if (match)
+		hashtable->bloomSampleMatches++;
+
+	/* Wait until we have a full window before reassessing. */
+	if (hashtable->bloomSampleProbes < BLOOM_PROBE_WINDOW)
+		return;
+
+	/* fraction of probes that found a match */
+	fraction = (double) hashtable->bloomSampleMatches / hashtable->bloomSampleProbes;
+
+	/* Filter exists: adapt how often we apply it. */
+	if (!hashtable->bloomSampling && fraction > BLOOM_SAMPLE_HIGH)
+		hashtable->bloomSampling = true;
+	else if (hashtable->bloomSampling && fraction < BLOOM_SAMPLE_LOW)
+		hashtable->bloomSampling = false;
+
+	/* Start a new window. */
+	hashtable->bloomSampleCounter = 0;
+	hashtable->bloomSampleMatches = 0;
+	hashtable->bloomSampleProbes = 0;
+}
+
+/*
+ * ExecHashBloomAccountLookup
+ *		Account for hash table lookup, and maybe create the Bloom filter.
+ */
+void
+ExecHashBloomAccountLookup(HashJoinTable hashtable)
+{
+	hashtable->hashMatches++;
+
+	/*
+	 * Bail out if Bloom filter can't be built (batching, parallel join), or
+	 * if it's already built.
+	 */
+	if ((hashtable->nbatch > 1) ||
+		(hashtable->parallel_state != NULL) ||
+		(hashtable->bloomFilter != NULL) ||
+		!enable_hashjoin_bloom)
+		return;
+
+	/*
+	 * No filter yet, and we're in a single-batch serial join. Build a filter if
+	 * the hash table lookups found sufficiently few matches so far. Recheck
+	 * regularly, after each window of lookups.
+	 *
+	 * XXX Maybe we should reset the counters, just like for filter probes?
+	 */
+	if (((hashtable->hashLookups % BLOOM_BUILD_WINDOW) == 0) &&
+		(hashtable->hashMatches < hashtable->hashLookups * BLOOM_BUILD_THRESHOLD))
+	{
+		ExecHashCreateBloomFilter(hashtable, true);
+	}
+}
 
 /*
  * Compute appropriate size for hashtable given the estimated size of the
@@ -1102,6 +1390,15 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 	}
 
 	hashtable->nbatch = nbatch;
+
+	/*
+	 * When switching from a single batch to multiple batches, build the Bloom
+	 * filter now, so that it contains the inner tuples loaded so far. Remaining
+	 * tuples tuples are added as they are inserted, so the filter contains all
+	 * inner tuple from all batches.
+	 */
+	if (oldnbatch == 1)
+		ExecHashCreateBloomFilter(hashtable, true);
 
 	/*
 	 * Scan through the existing hash table entries and dump out any that are
@@ -2945,6 +3242,31 @@ ExecHashAccumInstrumentation(HashInstrumentation *instrument,
 									  hashtable->nbatch_original);
 	instrument->space_peak = Max(instrument->space_peak,
 								 hashtable->spacePeak);
+
+	/*
+	 * Record Bloom filter information, if a filter was built.
+	 *
+	 * XXX Shouldn't this use Max(), just like the block above?
+	 */
+	if (hashtable->bloomFilter != NULL)
+	{
+		instrument->bloom_used = true;
+		instrument->bloom_nhashfuncs =
+			bloom_num_hash_funcs(hashtable->bloomFilter);
+		instrument->bloom_nbits = bloom_total_bits(hashtable->bloomFilter);
+		instrument->bloom_false_positive_rate =
+			bloom_false_positive_rate(hashtable->bloomFilter);
+		instrument->bloom_nprobes = hashtable->bloomProbes;
+		instrument->bloom_nmatches = hashtable->bloomMatches;
+	}
+
+	/*
+	 * Record hash-table probe statistics.
+	 *
+	 * XXX Shouldn't this use Max(), just like the earlier block?
+	 */
+	instrument->hash_nlookups = hashtable->hashLookups;
+	instrument->hash_nmatches = hashtable->hashMatches;
 }
 
 /*

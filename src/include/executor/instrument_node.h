@@ -227,6 +227,18 @@ typedef struct HashInstrumentation
 	int			nbatch;			/* number of batches at end of execution */
 	int			nbatch_original;	/* planned number of batches */
 	Size		space_peak;		/* peak memory usage in bytes */
+
+	/* Bloom filter statistics (only the non-parallel hash join builds one) */
+	bool		bloom_used;		/* was a Bloom filter built? */
+	int			bloom_nhashfuncs;	/* number of hash functions used */
+	uint64		bloom_nbits;	/* size of the filter's bitset, in bits */
+	double		bloom_false_positive_rate;	/* estimated false positive rate */
+	int64		bloom_nprobes;	/* number of filter probes */
+	int64		bloom_nmatches;	/* number of probes matching the filter */
+
+	/* Hash table probe statistics */
+	int64		hash_nlookups;	/* outer tuples that probed the hash table */
+	int64		hash_nmatches;	/* probes that found a matching inner tuple */
 } HashInstrumentation;
 
 /*

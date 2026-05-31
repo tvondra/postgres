@@ -170,6 +170,7 @@
 #include "executor/nodeHash.h"
 #include "executor/nodeHashjoin.h"
 #include "miscadmin.h"
+#include "optimizer/cost.h"
 #include "utils/lsyscache.h"
 #include "utils/sharedtuplestore.h"
 #include "utils/tuplestore.h"
@@ -501,6 +502,20 @@ ExecHashJoinImpl(PlanState *pstate, bool parallel)
 				node->hj_CurTuple = NULL;
 
 				/*
+				 * Consult the inner-relation Bloom filter, if any, before
+				 * probing the hash table. A negative answer means this outer
+				 * tuple cannot match in any batch: we can skip both the
+				 * hash-table lookup and any spilling to a later batch. Jumping to
+				 * HJ_FILL_OUTER_TUPLE emits a null-extended row for outer joins
+				 * and simply discards the tuple otherwise.
+				 */
+				if (!parallel && ExecHashBloomReject(hashtable, hashvalue))
+				{
+					node->hj_JoinState = HJ_FILL_OUTER_TUPLE;
+					continue;
+				}
+
+				/*
 				 * The tuple might not belong to the current batch (where
 				 * "current batch" includes the skew buckets if any).
 				 */
@@ -530,6 +545,9 @@ ExecHashJoinImpl(PlanState *pstate, bool parallel)
 
 				/* OK, let's scan the bucket for matches */
 				node->hj_JoinState = HJ_SCAN_BUCKET;
+
+				/* Count this as a lookup in the hash table. */
+				hashtable->hashLookups++;
 
 				pg_fallthrough;
 
@@ -564,6 +582,13 @@ ExecHashJoinImpl(PlanState *pstate, bool parallel)
 				if (node->js.jointype == JOIN_RIGHT_SEMI &&
 					HeapTupleHeaderHasMatch(HJTUPLE_MINTUPLE(node->hj_CurTuple)))
 					continue;
+
+				/*
+				 * Count the first match found for this outer tuple (may create the
+				 * Bloom filter, if sufficienly few matches.
+				 */
+				if (!node->hj_MatchedOuter)
+					ExecHashBloomAccountLookup(hashtable);
 
 				/*
 				 * We've got a match, but still need to test non-hashed quals.

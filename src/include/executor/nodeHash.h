@@ -36,6 +36,11 @@ extern void ExecParallelHashTableSetCurrentBatch(HashJoinTable hashtable,
 extern void ExecHashTableInsert(HashJoinTable hashtable,
 								TupleTableSlot *slot,
 								uint32 hashvalue);
+extern void ExecHashCreateBloomFilter(HashJoinTable hashtable);
+extern void ExecHashBuildBloomFilter(HashJoinTable hashtable);
+extern bool ExecHashBloomReject(HashJoinTable hashtable, uint32 hashvalue);
+extern void ExecHashBloomSamplingUpdate(HashJoinTable hashtable, bool matched);
+extern void ExecHashBloomAccountLookup(HashJoinTable hashtable);
 extern void ExecParallelHashTableInsert(HashJoinTable hashtable,
 										TupleTableSlot *slot,
 										uint32 hashvalue);

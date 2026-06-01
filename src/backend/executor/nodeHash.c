@@ -1415,8 +1415,8 @@ ExecHashInitBloomFilter(HashJoinTable hashtable, int64 nelems)
 	nelems = Max(nelems, 1);
 
 	oldcxt = MemoryContextSwitchTo(hashtable->hashCxt);
-	hashtable->bloomFilter = bloom_create_custom(nelems, work_mem,
-												 BLOOM_MIN_FILTER_SIZE, 0);
+	hashtable->bloomFilter = bloom_create_custom(nelems, work_mem, 0,
+												 BLOOM_MIN_FILTER_SIZE);
 	MemoryContextSwitchTo(oldcxt);
 }
 

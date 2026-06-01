@@ -113,7 +113,7 @@ size_t
 bloom_estimate(int64 total_elems, int bloom_work_mem)
 {
 	return bloom_estimate_custom(total_elems, bloom_work_mem,
-								 BLOOM_DEFAULT_MIN_SIZE);
+								 DEFAULT_MIN_BITSET_BYTES);
 }
 
 /*
@@ -143,7 +143,7 @@ bloom_filter *
 bloom_init(void *ptr, int64 total_elems, int bloom_work_mem, uint64 seed)
 {
 	return bloom_init_custom(ptr, total_elems, bloom_work_mem,
-							 BLOOM_DEFAULT_MIN_SIZE, seed);
+							 DEFAULT_MIN_BITSET_BYTES, seed);
 }
 
 /*
@@ -156,7 +156,7 @@ bloom_init_custom(void *ptr, int64 total_elems, int bloom_work_mem,
 {
 	bloom_filter *filter = (bloom_filter *) ptr;
 	uint64		bitset_bytes = bloom_bitset_bytes(total_elems, bloom_work_mem,
-												  min_filter_size);
+												  min_bitset_bytes);
 	uint64		bitset_bits = bitset_bytes * BITS_PER_BYTE;
 
 	filter->k_hash_funcs = optimal_k(bitset_bits, total_elems);
@@ -220,7 +220,7 @@ bloom_filter *
 bloom_create(int64 total_elems, int bloom_work_mem, uint64 seed)
 {
 	return bloom_create_custom(total_elems, bloom_work_mem,
-							   BLOOM_DEFAULT_MIN_SIZE, seed);
+							   DEFAULT_MIN_BITSET_BYTES, seed);
 }
 
 /*
@@ -270,17 +270,6 @@ bloom_create_custom(int64 total_elems, int bloom_work_mem,
 	filter->m = bitset_bits;
 
 	return filter;
-}
-
-/*
- * Create Bloom filter in caller's memory context, like bloom_create_custom(),
- * but with the minimum bitset size set to DEFAULT_MIN_BITSET_BYTES (i.e. 1MB).
- */
-bloom_filter *
-bloom_create(int64 total_elems, int bloom_work_mem, uint64 seed)
-{
-	return bloom_create_custom(total_elems, bloom_work_mem,
-							   DEFAULT_MIN_BITSET_BYTES, seed);
 }
 
 /*

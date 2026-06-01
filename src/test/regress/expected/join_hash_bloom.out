@@ -1,0 +1,171 @@
+CREATE TABLE hash_bloom_fact (id int, did int, padding text);
+CREATE TABLE hash_bloom_dimension (id int, r float, padding text);
+-- fact is 10x the dimension size
+INSERT INTO hash_bloom_fact SELECT i, 1 + mod(i, 100000), md5(i::text) FROM generate_series(1,1000000) s(i);
+INSERT INTO hash_bloom_dimension SELECT i, random(), md5(i::text) FROM generate_series(1,100000) s(i);
+VACUUM ANALYZE hash_bloom_fact;
+VACUUM ANALYZE hash_bloom_dimension;
+-- no parallel queries for now, force hashjoins
+SET max_parallel_workers_per_gather = 0;
+SET enable_nestloop = off;
+SET enable_mergejoin = off;
+-- non-selective in-memory hash join does not use Bloom filters
+SET enable_hashjoin_bloom = off;
+EXPLAIN (ANALYZE, VERBOSE, TIMING OFF, COSTS OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id);
+                                      QUERY PLAN                                       
+---------------------------------------------------------------------------------------
+ Hash Join (actual rows=1000000.00 loops=1)
+   Output: f.id, f.did, f.padding, d.id, d.r, d.padding
+   Hash Cond: (f.did = d.id)
+   ->  Seq Scan on public.hash_bloom_fact f (actual rows=1000000.00 loops=1)
+         Output: f.id, f.did, f.padding
+   ->  Hash (actual rows=100000.00 loops=1)
+         Output: d.id, d.r, d.padding
+         Buckets: 131072  Batches: 2  Memory Usage: 4977kB
+         Hash Lookups: 1000000  Matches: 1000000  Match Rate: 100.000%
+         ->  Seq Scan on public.hash_bloom_dimension d (actual rows=100000.00 loops=1)
+               Output: d.id, d.r, d.padding
+(11 rows)
+
+SET enable_hashjoin_bloom = on;
+EXPLAIN (ANALYZE, VERBOSE, TIMING OFF, COSTS OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id);
+                                      QUERY PLAN                                       
+---------------------------------------------------------------------------------------
+ Hash Join (actual rows=1000000.00 loops=1)
+   Output: f.id, f.did, f.padding, d.id, d.r, d.padding
+   Hash Cond: (f.did = d.id)
+   ->  Seq Scan on public.hash_bloom_fact f (actual rows=1000000.00 loops=1)
+         Output: f.id, f.did, f.padding
+   ->  Hash (actual rows=100000.00 loops=1)
+         Output: d.id, d.r, d.padding
+         Buckets: 131072  Batches: 2  Memory Usage: 4977kB
+         Hash Lookups: 1000000  Matches: 1000000  Match Rate: 100.000%
+         Bloom Filter: Size: 128kB  Hash Functions: 7  False Positive Rate: 0.651%
+         Bloom Filter Probes: 10990  Matches: 10990  Match Rate: 100.000%
+         ->  Seq Scan on public.hash_bloom_dimension d (actual rows=100000.00 loops=1)
+               Output: d.id, d.r, d.padding
+(13 rows)
+
+-- a selective in-memory join uses a filter (after 1000 lookups)
+SET enable_hashjoin_bloom = off;
+EXPLAIN (ANALYZE, VERBOSE, TIMING OFF, COSTS OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id) WHERE d.r < 0.5;
+                                      QUERY PLAN                                      
+--------------------------------------------------------------------------------------
+ Hash Join (actual rows=500100.00 loops=1)
+   Output: f.id, f.did, f.padding, d.id, d.r, d.padding
+   Hash Cond: (f.did = d.id)
+   ->  Seq Scan on public.hash_bloom_fact f (actual rows=1000000.00 loops=1)
+         Output: f.id, f.did, f.padding
+   ->  Hash (actual rows=50010.00 loops=1)
+         Output: d.id, d.r, d.padding
+         Buckets: 65536  Batches: 1  Memory Usage: 4468kB
+         Hash Lookups: 1000000  Matches: 500100  Match Rate: 50.010%
+         ->  Seq Scan on public.hash_bloom_dimension d (actual rows=50010.00 loops=1)
+               Output: d.id, d.r, d.padding
+               Filter: (d.r < '0.5'::double precision)
+               Rows Removed by Filter: 49990
+(13 rows)
+
+SET enable_hashjoin_bloom = on;
+EXPLAIN (ANALYZE, VERBOSE, TIMING OFF, COSTS OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id) WHERE d.r < 0.5;
+                                      QUERY PLAN                                      
+--------------------------------------------------------------------------------------
+ Hash Join (actual rows=500100.00 loops=1)
+   Output: f.id, f.did, f.padding, d.id, d.r, d.padding
+   Hash Cond: (f.did = d.id)
+   ->  Seq Scan on public.hash_bloom_fact f (actual rows=1000000.00 loops=1)
+         Output: f.id, f.did, f.padding
+   ->  Hash (actual rows=50010.00 loops=1)
+         Output: d.id, d.r, d.padding
+         Buckets: 65536  Batches: 1  Memory Usage: 4468kB
+         Hash Lookups: 503862  Matches: 500100  Match Rate: 99.253%
+         Bloom Filter: Size: 64kB  Hash Functions: 7  False Positive Rate: 0.650%
+         Bloom Filter Probes: 999000  Matches: 502862  Match Rate: 50.337%
+         ->  Seq Scan on public.hash_bloom_dimension d (actual rows=50010.00 loops=1)
+               Output: d.id, d.r, d.padding
+               Filter: (d.r < '0.5'::double precision)
+               Rows Removed by Filter: 49990
+(15 rows)
+
+-- force batching
+SET work_mem = '1MB';
+-- batched join always creates a Bloom filter, but then disables it if
+-- not selective enough
+SET enable_hashjoin_bloom = off;
+EXPLAIN (ANALYZE, VERBOSE, TIMING OFF, COSTS OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id);
+                                      QUERY PLAN                                       
+---------------------------------------------------------------------------------------
+ Hash Join (actual rows=1000000.00 loops=1)
+   Output: f.id, f.did, f.padding, d.id, d.r, d.padding
+   Hash Cond: (f.did = d.id)
+   ->  Seq Scan on public.hash_bloom_fact f (actual rows=1000000.00 loops=1)
+         Output: f.id, f.did, f.padding
+   ->  Hash (actual rows=100000.00 loops=1)
+         Output: d.id, d.r, d.padding
+         Buckets: 32768  Batches: 8  Memory Usage: 1258kB
+         Hash Lookups: 1000000  Matches: 1000000  Match Rate: 100.000%
+         ->  Seq Scan on public.hash_bloom_dimension d (actual rows=100000.00 loops=1)
+               Output: d.id, d.r, d.padding
+(11 rows)
+
+SET enable_hashjoin_bloom = on;
+EXPLAIN (ANALYZE, VERBOSE, TIMING OFF, COSTS OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id);
+                                      QUERY PLAN                                       
+---------------------------------------------------------------------------------------
+ Hash Join (actual rows=1000000.00 loops=1)
+   Output: f.id, f.did, f.padding, d.id, d.r, d.padding
+   Hash Cond: (f.did = d.id)
+   ->  Seq Scan on public.hash_bloom_fact f (actual rows=1000000.00 loops=1)
+         Output: f.id, f.did, f.padding
+   ->  Hash (actual rows=100000.00 loops=1)
+         Output: d.id, d.r, d.padding
+         Buckets: 32768  Batches: 8  Memory Usage: 1258kB
+         Hash Lookups: 1000000  Matches: 1000000  Match Rate: 100.000%
+         Bloom Filter: Size: 128kB  Hash Functions: 7  False Positive Rate: 0.651%
+         Bloom Filter Probes: 10990  Matches: 10990  Match Rate: 100.000%
+         ->  Seq Scan on public.hash_bloom_dimension d (actual rows=100000.00 loops=1)
+               Output: d.id, d.r, d.padding
+(13 rows)
+
+-- batched join always creates a Bloom filter, and keeps using it if
+-- selective enough
+SET enable_hashjoin_bloom = off;
+EXPLAIN (ANALYZE, VERBOSE, TIMING OFF, COSTS OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id) WHERE d.r < 0.5;
+                                      QUERY PLAN                                      
+--------------------------------------------------------------------------------------
+ Hash Join (actual rows=500100.00 loops=1)
+   Output: f.id, f.did, f.padding, d.id, d.r, d.padding
+   Hash Cond: (f.did = d.id)
+   ->  Seq Scan on public.hash_bloom_fact f (actual rows=1000000.00 loops=1)
+         Output: f.id, f.did, f.padding
+   ->  Hash (actual rows=50010.00 loops=1)
+         Output: d.id, d.r, d.padding
+         Buckets: 32768  Batches: 4  Memory Usage: 1246kB
+         Hash Lookups: 1000000  Matches: 500100  Match Rate: 50.010%
+         ->  Seq Scan on public.hash_bloom_dimension d (actual rows=50010.00 loops=1)
+               Output: d.id, d.r, d.padding
+               Filter: (d.r < '0.5'::double precision)
+               Rows Removed by Filter: 49990
+(13 rows)
+
+SET enable_hashjoin_bloom = on;
+EXPLAIN (ANALYZE, VERBOSE, TIMING OFF, COSTS OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id) WHERE d.r < 0.5;
+                                      QUERY PLAN                                      
+--------------------------------------------------------------------------------------
+ Hash Join (actual rows=500100.00 loops=1)
+   Output: f.id, f.did, f.padding, d.id, d.r, d.padding
+   Hash Cond: (f.did = d.id)
+   ->  Seq Scan on public.hash_bloom_fact f (actual rows=1000000.00 loops=1)
+         Output: f.id, f.did, f.padding
+   ->  Hash (actual rows=50010.00 loops=1)
+         Output: d.id, d.r, d.padding
+         Buckets: 32768  Batches: 4  Memory Usage: 1246kB
+         Hash Lookups: 503390  Matches: 500100  Match Rate: 99.346%
+         Bloom Filter: Size: 64kB  Hash Functions: 7  False Positive Rate: 0.650%
+         Bloom Filter Probes: 1000000  Matches: 503390  Match Rate: 50.339%
+         ->  Seq Scan on public.hash_bloom_dimension d (actual rows=50010.00 loops=1)
+               Output: d.id, d.r, d.padding
+               Filter: (d.r < '0.5'::double precision)
+               Rows Removed by Filter: 49990
+(15 rows)
+

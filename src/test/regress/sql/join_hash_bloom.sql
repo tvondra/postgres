@@ -51,3 +51,6 @@ EXPLAIN (ANALYZE, VERBOSE, TIMING OFF, COSTS OFF, BUFFERS OFF, SUMMARY OFF) SELE
 
 SET enable_hashjoin_bloom = on;
 EXPLAIN (ANALYZE, VERBOSE, TIMING OFF, COSTS OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id) WHERE d.r < 0.5;
+
+DROP TABLE hash_bloom_fact;
+DROP TABLE hash_bloom_dimension;

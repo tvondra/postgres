@@ -3433,6 +3433,27 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 											  worker_hi->nbatch_original);
 			hinstrument.space_peak = Max(hinstrument.space_peak,
 										 worker_hi->space_peak);
+
+			/*
+			 * In a parallel-aware hash join each worker probes its own outer
+			 * tuples, so the probe and match counts are summed.
+			 */
+			hinstrument.bloom_nprobes += worker_hi->bloom_nprobes;
+			hinstrument.bloom_nmatches += worker_hi->bloom_nmatches;
+			hinstrument.hash_nlookups += worker_hi->hash_nlookups;
+			hinstrument.hash_nmatches += worker_hi->hash_nmatches;
+
+			/*
+			 * The Bloom filter dimensions and false positive rate describe the
+			 * (shared) filter itself rather than per-worker counters, so they
+			 * are identical across participants; just keep any non-zero value.
+			 */
+			hinstrument.bloom_nbits = Max(hinstrument.bloom_nbits,
+										  worker_hi->bloom_nbits);
+			hinstrument.bloom_nhashfuncs = Max(hinstrument.bloom_nhashfuncs,
+											   worker_hi->bloom_nhashfuncs);
+			hinstrument.bloom_false_positive_rate = Max(hinstrument.bloom_false_positive_rate,
+														worker_hi->bloom_false_positive_rate);
 		}
 	}
 
@@ -3493,7 +3514,7 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 			ExplainPropertyFloat("Hash Match Rate", NULL,
 								 (100.0 * match_rate), 3, es);
 		}
-		else
+		else if (hinstrument.hash_nlookups > 0)
 		{
 			ExplainIndentText(es);
 			appendStringInfo(es->str,

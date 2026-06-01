@@ -19,6 +19,15 @@ extern bloom_filter *bloom_create(int64 total_elems, int bloom_work_mem,
 								  uint64 seed);
 extern bloom_filter *bloom_create_custom(int64 total_elems, int bloom_work_mem,
 										 uint64 min_bitset_bytes, uint64 seed);
+extern size_t bloom_estimate(int64 total_elems, int bloom_work_mem);
+extern size_t bloom_estimate_custom(int64 total_elems, int bloom_work_mem,
+									Size min_filter_size);
+extern bloom_filter *bloom_init(void *ptr, int64 total_elems,
+								int bloom_work_mem, uint64 seed);
+extern bloom_filter *bloom_init_custom(void *ptr, int64 total_elems,
+									   int bloom_work_mem,
+									   Size min_filter_size, uint64 seed);
+extern void bloom_merge(bloom_filter *dst, const bloom_filter *src);
 extern void bloom_free(bloom_filter *filter);
 extern void bloom_add_element(bloom_filter *filter, unsigned char *elem,
 							  size_t len);

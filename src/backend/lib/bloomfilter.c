@@ -41,6 +41,13 @@
 
 #define MAX_HASH_FUNCS		10
 
+/*
+ * Default minimum size of the bitset, in bytes.  bloom_create() and the other
+ * default-sized entry points never produce a bitset smaller than this, even
+ * when the caller's total_elems estimate would suggest a smaller one.
+ */
+#define BLOOM_DEFAULT_MIN_SIZE	(1024 * 1024)
+
 struct bloom_filter
 {
 	/* K hash functions are used, seeded by caller's seed */
@@ -53,9 +60,136 @@ struct bloom_filter
 
 static int	my_bloom_power(uint64 target_bitset_bits);
 static int	optimal_k(uint64 bitset_bits, int64 total_elems);
+static uint64 bloom_bitset_bytes(int64 total_elems, int bloom_work_mem,
+								  Size min_filter_size);
 static void k_hashes(bloom_filter *filter, uint32 *hashes, unsigned char *elem,
 					 size_t len);
 static inline uint32 mod_m(uint32 val, uint64 m);
+
+/*
+ * Determine the size of the bitset (in bytes) that bloom_create()/bloom_init()
+ * will use for the given parameters.  The bitset is always a power-of-two
+ * number of bits; see bloom_create() for the rationale behind the sizing.
+ *
+ * min_filter_size is the minimum size of the bitset, in bytes.  The bitset
+ * will never be sized below this, even when the total_elems estimate would
+ * suggest a smaller one.
+ */
+static uint64
+bloom_bitset_bytes(int64 total_elems, int bloom_work_mem, Size min_filter_size)
+{
+	uint64		bitset_bytes;
+	uint64		bitset_bits;
+	int			bloom_power;
+
+	/*
+	 * Aim for two bytes per element; this is sufficient to get a false
+	 * positive rate below 1%, independent of the size of the bitset or total
+	 * number of elements.  Also, if rounding down the size of the bitset to
+	 * the next lowest power of two turns out to be a significant drop, the
+	 * false positive rate still won't exceed 2% in almost all cases.
+	 */
+	bitset_bytes = Min(bloom_work_mem * UINT64CONST(1024), total_elems * 2);
+	bitset_bytes = Max(min_filter_size, bitset_bytes);
+
+	/*
+	 * Size in bits should be the highest power of two <= target.  bitset_bits
+	 * is uint64 because PG_UINT32_MAX is 2^32 - 1, not 2^32
+	 */
+	bloom_power = my_bloom_power(bitset_bytes * BITS_PER_BYTE);
+	bitset_bits = UINT64CONST(1) << bloom_power;
+	bitset_bytes = bitset_bits / BITS_PER_BYTE;
+
+	return bitset_bytes;
+}
+
+/*
+ * Amount of memory (in bytes) that a Bloom filter sized for the given
+ * parameters occupies, including the fixed-size header.  This lets callers
+ * place a Bloom filter in caller-managed storage (for example shared memory)
+ * with bloom_init().
+ */
+size_t
+bloom_estimate(int64 total_elems, int bloom_work_mem)
+{
+	return bloom_estimate_custom(total_elems, bloom_work_mem,
+								 BLOOM_DEFAULT_MIN_SIZE);
+}
+
+/*
+ * Like bloom_estimate(), but the minimum size of the bitset (in bytes) is
+ * provided by the caller instead of the default.  See bloom_create_custom().
+ */
+size_t
+bloom_estimate_custom(int64 total_elems, int bloom_work_mem,
+					  Size min_filter_size)
+{
+	return offsetof(bloom_filter, bitset) +
+		sizeof(unsigned char) * bloom_bitset_bytes(total_elems, bloom_work_mem,
+												   min_filter_size);
+}
+
+/*
+ * Initialize a Bloom filter in caller-provided memory.
+ *
+ * "ptr" must point to at least bloom_estimate(total_elems, bloom_work_mem)
+ * bytes.  This is useful when the filter must live in memory that the caller
+ * manages itself, such as a DSA allocation shared between parallel workers.
+ *
+ * Two filters initialized with identical total_elems, bloom_work_mem and seed
+ * values share the same dimensions and may be combined with bloom_merge().
+ */
+bloom_filter *
+bloom_init(void *ptr, int64 total_elems, int bloom_work_mem, uint64 seed)
+{
+	return bloom_init_custom(ptr, total_elems, bloom_work_mem,
+							 BLOOM_DEFAULT_MIN_SIZE, seed);
+}
+
+/*
+ * Like bloom_init(), but the minimum size of the bitset (in bytes) is provided
+ * by the caller instead of the default.  See bloom_create_custom().
+ */
+bloom_filter *
+bloom_init_custom(void *ptr, int64 total_elems, int bloom_work_mem,
+				  Size min_filter_size, uint64 seed)
+{
+	bloom_filter *filter = (bloom_filter *) ptr;
+	uint64		bitset_bytes = bloom_bitset_bytes(total_elems, bloom_work_mem,
+												  min_filter_size);
+	uint64		bitset_bits = bitset_bytes * BITS_PER_BYTE;
+
+	filter->k_hash_funcs = optimal_k(bitset_bits, total_elems);
+	filter->seed = seed;
+	filter->m = bitset_bits;
+	memset(filter->bitset, 0, bitset_bytes);
+
+	return filter;
+}
+
+/*
+ * Merge the bits set in "src" into "dst".
+ *
+ * Both filters must have been created with identical dimensions (that is, the
+ * same total_elems, bloom_work_mem and seed values).  After this call "dst"
+ * reports an element as possibly-present if it was possibly-present in either
+ * of the input filters, which is exactly the filter that would have resulted
+ * from adding every element of both filters to a single Bloom filter.
+ */
+void
+bloom_merge(bloom_filter *dst, const bloom_filter *src)
+{
+	uint64		bitset_bytes;
+	uint64		i;
+
+	Assert(dst->m == src->m);
+	Assert(dst->k_hash_funcs == src->k_hash_funcs);
+	Assert(dst->seed == src->seed);
+
+	bitset_bytes = dst->m / BITS_PER_BYTE;
+	for (i = 0; i < bitset_bytes; i++)
+		dst->bitset[i] |= src->bitset[i];
+}
 
 /*
  * Create Bloom filter in caller's memory context.  We aim for a false positive
@@ -87,7 +221,7 @@ bloom_filter *
 bloom_create(int64 total_elems, int bloom_work_mem, uint64 seed)
 {
 	return bloom_create_custom(total_elems, bloom_work_mem, seed,
-							   1024 * 1024);
+							   BLOOM_DEFAULT_MIN_SIZE);
 }
 
 /*

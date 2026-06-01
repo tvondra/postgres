@@ -509,7 +509,7 @@ ExecHashJoinImpl(PlanState *pstate, bool parallel)
 				 * HJ_FILL_OUTER_TUPLE emits a null-extended row for outer joins
 				 * and simply discards the tuple otherwise.
 				 */
-				if (!parallel && ExecHashBloomReject(hashtable, hashvalue))
+				if (ExecHashBloomReject(hashtable, hashvalue))
 				{
 					node->hj_JoinState = HJ_FILL_OUTER_TUPLE;
 					continue;
@@ -1909,6 +1909,9 @@ ExecHashJoinInitializeDSM(HashJoinState *state, ParallelContext *pcxt)
 	pg_atomic_init_u32(&pstate->distributor, 0);
 	pstate->nparticipants = pcxt->nworkers + 1;
 	pstate->total_tuples = 0;
+	pstate->bloom_filter = InvalidDsaPointer;
+	pstate->bloom_state = PHJ_BLOOM_NONE;
+	pstate->bloom_nelems = 0;
 	LWLockInitialize(&pstate->lock,
 					 LWTRANCHE_PARALLEL_HASH_JOIN);
 	BarrierInit(&pstate->build_barrier, 0);
@@ -1980,6 +1983,13 @@ ExecHashJoinReInitializeDSM(HashJoinState *state, ParallelContext *pcxt)
 
 	/* Reset build_barrier to PHJ_BUILD_ELECT so we can go around again. */
 	BarrierInit(&pstate->build_barrier, 0);
+
+	/* Free any shared Bloom filter from the previous scan and reset state. */
+	if (DsaPointerIsValid(pstate->bloom_filter))
+		dsa_free(state->js.ps.state->es_query_dsa, pstate->bloom_filter);
+	pstate->bloom_filter = InvalidDsaPointer;
+	pstate->bloom_state = PHJ_BLOOM_NONE;
+	pstate->bloom_nelems = 0;
 }
 
 void

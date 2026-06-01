@@ -174,3 +174,5 @@ EXPLAIN (ANALYZE, VERBOSE, TIMING OFF, COSTS OFF, BUFFERS OFF, SUMMARY OFF) SELE
                Rows Removed by Filter: 4982
 (15 rows)
 
+DROP TABLE hash_bloom_fact;
+DROP TABLE hash_bloom_dimension;

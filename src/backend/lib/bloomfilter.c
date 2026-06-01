@@ -39,6 +39,13 @@
 #include "lib/bloomfilter.h"
 #include "port/pg_bitutils.h"
 
+/*
+ * Default minimum size of the bitset, in bytes. bloom_create() won't create
+ * a bitset smaller than this, even when the caller's total_elems estimate would
+ * suggest a smaller one.
+ */
+#define DEFAULT_MIN_BITSET_BYTES	(1024 * 1024)
+
 #define MAX_HASH_FUNCS		10
 
 struct bloom_filter
@@ -74,37 +81,25 @@ static inline uint32 mod_m(uint32 val, uint64 m);
  * bits, and the largest possible bitset is 512MB (2^32 bits).  The
  * implementation allocates only enough memory to target its standard false
  * positive rate, using a simple formula with caller's total_elems estimate as
- * an input.  The bitset might be as small as 1MB, even when bloom_work_mem is
- * much higher.
+ * an input.
  *
  * The Bloom filter is seeded using a value provided by the caller.  Using a
  * distinct seed value on every call makes it unlikely that the same false
  * positives will reoccur when the same set is fingerprinted a second time.
  * Callers that don't care about this pass a constant as their seed, typically
  * 0.  Callers can also use a pseudo-random seed, eg from pg_prng_uint64().
- */
-bloom_filter *
-bloom_create(int64 total_elems, int bloom_work_mem, uint64 seed)
-{
-	return bloom_create_custom(total_elems, bloom_work_mem, seed,
-							   1024 * 1024);
-}
-
-/*
- * Create Bloom filter in caller's memory context, like bloom_create(), but
- * with a caller-specified minimum bitset size.
  *
- * This behaves exactly like bloom_create(), except that the minimum size of
- * the underlying bitset (in bytes) is given by min_bitset_bytes rather than
- * being hard-coded to 1MB.  This is useful for callers that want to allow
- * smaller filters, for example when fingerprinting small sets where a 1MB
- * minimum would waste memory.  The bitset is still sized as a power of two
- * number of bits, and is never smaller than this minimum (subject to that
- * rounding).
+ * min_bitset_bytes is the minimum bitset size. The bitset might be as small
+ * as 1KiB, even when bloom_work_mem is much higher. This is useful for callers
+ * that want to allow filters smaller than the default DEFAULT_MIN_BITSET_BYTES
+ * (1MB), for example when fingerprinting small sets where the 1MB minimum
+ * would waste memory and would not fit into CPU caches. The bitset is still
+ * sized as a power of two number of bits, and is never smaller than this
+ * minimum (subject to that rounding).
  */
 bloom_filter *
-bloom_create_custom(int64 total_elems, int bloom_work_mem, uint64 seed,
-					uint64 min_bitset_bytes)
+bloom_create_custom(int64 total_elems, int bloom_work_mem,
+					uint64 min_bitset_bytes, uint64 seed)
 {
 	bloom_filter *filter;
 	int			bloom_power;
@@ -137,6 +132,17 @@ bloom_create_custom(int64 total_elems, int bloom_work_mem, uint64 seed,
 	filter->m = bitset_bits;
 
 	return filter;
+}
+
+/*
+ * Create Bloom filter in caller's memory context, like bloom_create_custom(),
+ * but with the minimum bitset size set to DEFAULT_MIN_BITSET_BYTES (i.e. 1MB).
+ */
+bloom_filter *
+bloom_create(int64 total_elems, int bloom_work_mem, uint64 seed)
+{
+	return bloom_create_custom(total_elems, bloom_work_mem, seed,
+							   DEFAULT_MIN_BITSET_BYTES);
 }
 
 /*
@@ -213,7 +219,7 @@ bloom_prop_bits_set(bloom_filter *filter)
 }
 
 /*
- * How many hash functions does this Bloom filter use?
+ * Returns the number of hash functions used by this Bloom filter.
  */
 int
 bloom_num_hash_funcs(bloom_filter *filter)
@@ -222,7 +228,7 @@ bloom_num_hash_funcs(bloom_filter *filter)
 }
 
 /*
- * Total size of the Bloom filter's bitset, in bits.
+ * Returns the total size of the Bloom filter's bitset, in bits.
  */
 uint64
 bloom_total_bits(bloom_filter *filter)
@@ -235,7 +241,7 @@ bloom_total_bits(bloom_filter *filter)
  *
  * For a filter that uses k hash functions, the probability that a membership
  * test for an element that was never added still reports "possibly present" is
- * approximately p^k, where p is the proportion of bits currently set.  This
+ * approximately p^k, where p is the proportion of bits currently set. This
  * reflects the actual contents of the filter rather than the target rate aimed
  * for at creation time.
  */

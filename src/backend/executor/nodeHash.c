@@ -794,8 +794,8 @@ ExecHashCreateBloomFilter(HashJoinTable hashtable, bool populate)
 		nelems = 1000.0;
 
 	oldcxt = MemoryContextSwitchTo(hashtable->hashCxt);
-	hashtable->bloomFilter = bloom_create_custom(nelems, work_mem, 0,
-												 BLOOM_MIN_FILTER_SIZE);
+	hashtable->bloomFilter = bloom_create_custom(nelems, work_mem,
+												 BLOOM_MIN_FILTER_SIZE, 0);
 	MemoryContextSwitchTo(oldcxt);
 
 	if (!populate)

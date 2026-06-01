@@ -174,5 +174,150 @@ EXPLAIN (ANALYZE, VERBOSE, TIMING OFF, COSTS OFF, BUFFERS OFF, SUMMARY OFF) SELE
                Rows Removed by Filter: 4982
 (15 rows)
 
+-- test parallel hash joins
+SET work_mem = '512kB';
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+ALTER TABLE hash_bloom_fact SET (parallel_workers = 2);
+-- non-selective in-memory hash join does not use Bloom filters
+SET enable_hashjoin_bloom = off;
+EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id);
+                                     QUERY PLAN                                      
+-------------------------------------------------------------------------------------
+ Gather (actual rows=100000.00 loops=1)
+   Workers Planned: 2
+   Workers Launched: 2
+   ->  Hash Join (actual rows=33333.33 loops=3)
+         Hash Cond: (f.did = d.id)
+         ->  Parallel Seq Scan on hash_bloom_fact f (actual rows=33333.33 loops=3)
+         ->  Hash (actual rows=10000.00 loops=3)
+               Buckets: 16384  Batches: 1  Memory Usage: 920kB
+               ->  Seq Scan on hash_bloom_dimension d (actual rows=10000.00 loops=3)
+(9 rows)
+
+SET enable_hashjoin_bloom = on;
+EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id);
+                                     QUERY PLAN                                      
+-------------------------------------------------------------------------------------
+ Gather (actual rows=100000.00 loops=1)
+   Workers Planned: 2
+   Workers Launched: 2
+   ->  Hash Join (actual rows=33333.33 loops=3)
+         Hash Cond: (f.did = d.id)
+         ->  Parallel Seq Scan on hash_bloom_fact f (actual rows=33333.33 loops=3)
+         ->  Hash (actual rows=10000.00 loops=3)
+               Buckets: 16384  Batches: 1  Memory Usage: 920kB
+               ->  Seq Scan on hash_bloom_dimension d (actual rows=10000.00 loops=3)
+(9 rows)
+
+-- a selective in-memory join uses a filter (after 1000 lookups)
+SET enable_hashjoin_bloom = off;
+EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id) WHERE d.r < 0.5;
+                                     QUERY PLAN                                     
+------------------------------------------------------------------------------------
+ Gather (actual rows=50180.00 loops=1)
+   Workers Planned: 2
+   Workers Launched: 2
+   ->  Hash Join (actual rows=16726.67 loops=3)
+         Hash Cond: (f.did = d.id)
+         ->  Parallel Seq Scan on hash_bloom_fact f (actual rows=33333.33 loops=3)
+         ->  Hash (actual rows=5018.00 loops=3)
+               Buckets: 8192  Batches: 1  Memory Usage: 461kB
+               ->  Seq Scan on hash_bloom_dimension d (actual rows=5018.00 loops=3)
+                     Filter: (r < '0.5'::double precision)
+                     Rows Removed by Filter: 4982
+(11 rows)
+
+SET enable_hashjoin_bloom = on;
+EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id) WHERE d.r < 0.5;
+                                      QUERY PLAN                                       
+---------------------------------------------------------------------------------------
+ Gather (actual rows=50180.00 loops=1)
+   Workers Planned: 2
+   Workers Launched: 2
+   ->  Hash Join (actual rows=16726.67 loops=3)
+         Hash Cond: (f.did = d.id)
+         ->  Parallel Seq Scan on hash_bloom_fact f (actual rows=33333.33 loops=3)
+         ->  Hash (actual rows=5018.00 loops=3)
+               Buckets: 8192  Batches: 1  Memory Usage: 461kB
+               Bloom Filter: Size: 8kB  Hash Functions: 9  False Positive Rate: 0.191%
+               ->  Seq Scan on hash_bloom_dimension d (actual rows=5018.00 loops=3)
+                     Filter: (r < '0.5'::double precision)
+                     Rows Removed by Filter: 4982
+(12 rows)
+
+-- force batching
+SET work_mem = '128kB';
+-- batched join always creates a Bloom filter, but then disables it if
+-- not selective enough
+SET enable_hashjoin_bloom = off;
+EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id);
+                                     QUERY PLAN                                      
+-------------------------------------------------------------------------------------
+ Gather (actual rows=100000.00 loops=1)
+   Workers Planned: 2
+   Workers Launched: 2
+   ->  Hash Join (actual rows=33333.33 loops=3)
+         Hash Cond: (f.did = d.id)
+         ->  Parallel Seq Scan on hash_bloom_fact f (actual rows=33333.33 loops=3)
+         ->  Hash (actual rows=10000.00 loops=3)
+               Buckets: 4096  Batches: 4  Memory Usage: 229kB
+               ->  Seq Scan on hash_bloom_dimension d (actual rows=10000.00 loops=3)
+(9 rows)
+
+SET enable_hashjoin_bloom = on;
+EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id);
+                                       QUERY PLAN                                       
+----------------------------------------------------------------------------------------
+ Gather (actual rows=100000.00 loops=1)
+   Workers Planned: 2
+   Workers Launched: 2
+   ->  Hash Join (actual rows=33333.33 loops=3)
+         Hash Cond: (f.did = d.id)
+         ->  Parallel Seq Scan on hash_bloom_fact f (actual rows=33333.33 loops=3)
+         ->  Hash (actual rows=10000.00 loops=3)
+               Buckets: 4096  Batches: 4  Memory Usage: 229kB
+               Bloom Filter: Size: 16kB  Hash Functions: 9  False Positive Rate: 0.187%
+               ->  Seq Scan on hash_bloom_dimension d (actual rows=10000.00 loops=3)
+(10 rows)
+
+-- batched join always creates a Bloom filter, and keeps using it if
+-- selective enough
+SET enable_hashjoin_bloom = off;
+EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id) WHERE d.r < 0.5;
+                                     QUERY PLAN                                     
+------------------------------------------------------------------------------------
+ Gather (actual rows=50180.00 loops=1)
+   Workers Planned: 2
+   Workers Launched: 2
+   ->  Hash Join (actual rows=16726.67 loops=3)
+         Hash Cond: (f.did = d.id)
+         ->  Parallel Seq Scan on hash_bloom_fact f (actual rows=33333.33 loops=3)
+         ->  Hash (actual rows=5018.00 loops=3)
+               Buckets: 4096  Batches: 2  Memory Usage: 228kB
+               ->  Seq Scan on hash_bloom_dimension d (actual rows=5018.00 loops=3)
+                     Filter: (r < '0.5'::double precision)
+                     Rows Removed by Filter: 4982
+(11 rows)
+
+SET enable_hashjoin_bloom = on;
+EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, BUFFERS OFF, SUMMARY OFF) SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id) WHERE d.r < 0.5;
+                                      QUERY PLAN                                       
+---------------------------------------------------------------------------------------
+ Gather (actual rows=50180.00 loops=1)
+   Workers Planned: 2
+   Workers Launched: 2
+   ->  Hash Join (actual rows=16726.67 loops=3)
+         Hash Cond: (f.did = d.id)
+         ->  Parallel Seq Scan on hash_bloom_fact f (actual rows=33333.33 loops=3)
+         ->  Hash (actual rows=5018.00 loops=3)
+               Buckets: 4096  Batches: 2  Memory Usage: 228kB
+               Bloom Filter: Size: 8kB  Hash Functions: 9  False Positive Rate: 0.191%
+               ->  Seq Scan on hash_bloom_dimension d (actual rows=5018.00 loops=3)
+                     Filter: (r < '0.5'::double precision)
+                     Rows Removed by Filter: 4982
+(12 rows)
+
 DROP TABLE hash_bloom_fact;
 DROP TABLE hash_bloom_dimension;

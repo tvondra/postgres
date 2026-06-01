@@ -275,7 +275,24 @@ typedef struct ParallelHashJoinState
 	pg_atomic_uint32 distributor;	/* counter for load balancing */
 
 	SharedFileSet fileset;		/* space for shared temporary files */
+
+	/*
+	 * Shared Bloom filter state.  When a Parallel Hash join uses a Bloom
+	 * filter, the filter lives in the DSA area pointed to by "bloom_filter".
+	 * "bloom_state" coordinates building it (see PHJ_BLOOM_* constants), and
+	 * "bloom_nelems" is the element count estimate used to size it so that
+	 * every worker builds a mergeable local filter of identical dimensions.
+	 */
+	dsa_pointer bloom_filter;	/* shared bloom_filter, or InvalidDsaPointer */
+	int			bloom_state;	/* PHJ_BLOOM_* */
+	int64		bloom_nelems;	/* element estimate used to size the filter */
 } ParallelHashJoinState;
+
+/* Values for ParallelHashJoinState.bloom_state. */
+#define PHJ_BLOOM_NONE			0	/* no decision made yet */
+#define PHJ_BLOOM_BUILT			1	/* shared filter is built and usable */
+/* FIXME The DISABLED macro is not used anywhere, maybe remove? */
+#define PHJ_BLOOM_DISABLED		2	/* decided not to use a bloom filter */
 
 /* The phases for building batches, used by build_barrier. */
 #define PHJ_BUILD_ELECT					0
@@ -409,6 +426,20 @@ typedef struct HashJoinTableData
 	 */
 	int64		hashLookupsTotal;
 	int64		hashMatchesTotal;
+
+	/*
+	 * Parameters of the Bloom filter, for EXPLAIN.
+	 * ExecHashAccumInstrumentation() copies them from bloomFilter while the
+	 * filter is alive, and reports the copy when it is not: in parallel hash
+	 * joins the shared filter is freed by ExecHashJoinReInitializeDSM() on
+	 * rescan, before the leader accumulates the instrumentation from the old
+	 * hash table, so that function saves the parameters here first.  Only
+	 * maintained when the node is instrumented.
+	 */
+	bool		bloomUsed;		/* a filter was built for this hash table */
+	int			bloomNHashfuncs;	/* number of hash functions */
+	uint64		bloomNBytes;	/* size of the filter, in bytes */
+	double		bloomFPR;		/* false positive rate */
 
 	/*
 	 * totalTuples is the running total of tuples inserted into either the

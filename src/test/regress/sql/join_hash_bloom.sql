@@ -340,6 +340,51 @@ SELECT * FROM hash_bloom_stats($$
     FROM (VALUES (0), (50000), (99990)) v(x)
 $$);
 
+-- test parallel hash joins
+SET work_mem = '512kB';
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+
+ALTER TABLE hash_bloom_fact SET (parallel_workers = 2);
+
+-- non-selective in-memory hash join does not use Bloom filters
+
+SET enable_hashjoin_bloom = off;
+SELECT * FROM hash_bloom_explain($$SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id)$$);
+
+SET enable_hashjoin_bloom = on;
+SELECT * FROM hash_bloom_explain($$SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id)$$);
+
+-- a selective in-memory join uses a filter (after 1000 lookups)
+
+SET enable_hashjoin_bloom = off;
+SELECT * FROM hash_bloom_explain($$SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id) WHERE d.r < 0.5$$);
+
+SET enable_hashjoin_bloom = on;
+SELECT * FROM hash_bloom_explain($$SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id) WHERE d.r < 0.5$$);
+
+-- force batching
+SET work_mem = '128kB';
+
+-- batched join always creates a Bloom filter, but then disables it if
+-- not selective enough
+
+SET enable_hashjoin_bloom = off;
+SELECT * FROM hash_bloom_explain($$SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id)$$);
+
+SET enable_hashjoin_bloom = on;
+SELECT * FROM hash_bloom_explain($$SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id)$$);
+
+-- batched join always creates a Bloom filter, and keeps using it if
+-- selective enough
+
+SET enable_hashjoin_bloom = off;
+SELECT * FROM hash_bloom_explain($$SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id) WHERE d.r < 0.5$$);
+
+SET enable_hashjoin_bloom = on;
+SELECT * FROM hash_bloom_explain($$SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id) WHERE d.r < 0.5$$);
+
 DROP TABLE hash_bloom_fact;
 DROP TABLE hash_bloom_dimension;
 DROP TABLE hash_bloom_probe;

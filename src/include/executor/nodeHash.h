@@ -15,6 +15,7 @@
 #define NODEHASH_H
 
 #include "access/parallel.h"
+#include "lib/bloomfilter.h"
 #include "nodes/execnodes.h"
 
 struct SharedHashJoinBatch;
@@ -71,6 +72,8 @@ extern void ExecHashInitializeDSM(HashState *node, ParallelContext *pcxt);
 extern void ExecHashInitializeWorker(HashState *node, ParallelWorkerContext *pwcxt);
 extern void ExecHashRetrieveInstrumentation(HashState *node);
 extern void ExecShutdownHash(HashState *node);
+extern void ExecHashBloomRememberFilter(HashJoinTable hashtable,
+										bloom_filter *filter);
 extern void ExecHashAccumInstrumentation(HashInstrumentation *instrument,
 										 HashJoinTable hashtable);
 

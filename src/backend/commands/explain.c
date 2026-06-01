@@ -3552,7 +3552,7 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 			ExplainPropertyFloat("False Positive Rate", NULL,
 								 100.0 * hinstrument.bloom_false_positive_rate, 3, es);
 
-			if (es->analyze)
+			if (es->analyze && es->verbose)
 			{
 				ExplainPropertyInteger("Probes", NULL,
 									   hinstrument.bloom_nprobes, es);
@@ -3573,7 +3573,7 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 							 hinstrument.bloom_nhashfuncs,
 							 100.0 * hinstrument.bloom_false_positive_rate);
 
-			if (es->analyze)
+			if (es->analyze && es->verbose)
 			{
 				ExplainIndentText(es);
 				appendStringInfo(es->str,

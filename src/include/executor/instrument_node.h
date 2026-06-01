@@ -252,7 +252,7 @@ typedef struct HashInstrumentation
 	int			nbatch_original;	/* planned number of batches */
 	Size		space_peak;		/* peak memory usage in bytes */
 
-	/* Bloom filter statistics (only the non-parallel hash join builds one) */
+	/* Bloom filter statistics */
 	bool		bloom_used;		/* was a Bloom filter built? */
 	int			bloom_nhashfuncs;	/* number of hash functions used */
 	uint64		bloom_nbytes;	/* size of the filter's bitset, in bytes */

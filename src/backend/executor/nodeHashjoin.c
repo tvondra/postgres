@@ -524,8 +524,16 @@ ExecHashJoinImpl(PlanState *pstate, bool parallel)
 				 * hash-table lookup and any spilling to a later batch. Jumping to
 				 * HJ_FILL_OUTER_TUPLE emits a null-extended row for outer joins
 				 * and simply discards the tuple otherwise.
+				 *
+				 * Only tuples coming straight from the outer plan need to be
+				 * checked. Tuples read back from a batch file were already
+				 * checked when they were written: in a serial join while
+				 * processing batch 0, in a Parallel Hash join while
+				 * partitioning the outer relation up front (see
+				 * ExecParallelHashJoinPartitionOuter).
 				 */
-				if (!parallel && ExecHashBloomReject(hashtable, hashvalue))
+				if ((parallel ? (hashtable->nbatch == 1) : (hashtable->curbatch == 0)) &&
+					ExecHashBloomReject(hashtable, hashvalue))
 				{
 					node->hj_JoinState = HJ_FILL_OUTER_TUPLE;
 					continue;
@@ -1843,9 +1851,18 @@ ExecParallelHashJoinPartitionOuter(HashJoinState *hjstate)
 															 econtext,
 															 &isnull));
 
-		if (!isnull)
+		/*
+		 * Consult the Bloom filter before writing a tuple to a batch file.
+		 * The shared filter is complete at this point (all participants
+		 * merged their private filters into it before leaving the build
+		 * phase), so a negative answer means the tuple cannot match in any
+		 * batch and there's no point in spilling it. We treat it just like a
+		 * tuple with a NULL join key: outer joins have to emit it
+		 * null-extended, other join types can simply discard it.
+		 */
+		if (!isnull && !ExecHashBloomReject(hashtable, hashvalue))
 		{
-			/* normal case with a non-null join key */
+			/* non-null join key that the filter did not reject */
 			int			batchno;
 			int			bucketno;
 			bool		shouldFree;
@@ -1861,7 +1878,10 @@ ExecParallelHashJoinPartitionOuter(HashJoinState *hjstate)
 		}
 		else if (hjstate->hj_KeepNullTuples)
 		{
-			/* null join key, but we must save tuple to be emitted later */
+			/*
+			 * null join key, or rejected by the Bloom filter, but we must save
+			 * tuple to be emitted later
+			 */
 			if (hjstate->hj_NullOuterTupleStore == NULL)
 				hjstate->hj_NullOuterTupleStore = ExecHashBuildNullTupleStore(hashtable);
 			tuplestore_puttupleslot(hjstate->hj_NullOuterTupleStore, slot);
@@ -1921,6 +1941,9 @@ ExecHashJoinInitializeDSM(HashJoinState *state, ParallelContext *pcxt)
 	pg_atomic_init_u32(&pstate->distributor, 0);
 	pstate->nparticipants = pcxt->nworkers + 1;
 	pstate->total_tuples = 0;
+	pstate->bloom_filter = InvalidDsaPointer;
+	pstate->bloom_state = PHJ_BLOOM_NONE;
+	pstate->bloom_nelems = 0;
 	LWLockInitialize(&pstate->lock,
 					 LWTRANCHE_PARALLEL_HASH_JOIN);
 	BarrierInit(&pstate->build_barrier, 0);
@@ -1992,6 +2015,52 @@ ExecHashJoinReInitializeDSM(HashJoinState *state, ParallelContext *pcxt)
 
 	/* Reset build_barrier to PHJ_BUILD_ELECT so we can go around again. */
 	BarrierInit(&pstate->build_barrier, 0);
+
+	/*
+	 * Remember the parameters of the shared Bloom filter in the leader's hash
+	 * table before we free the filter below, so that EXPLAIN can still report
+	 * them. (ExecHashTableDetach above does not touch the filter, it only
+	 * releases the batch descriptors.) The hash table itself is destroyed
+	 * only later, by ExecReScanHashJoin, which also accumulates the
+	 * instrumentation from it - and by then the filter is gone, so
+	 * ExecHashAccumInstrumentation falls back to this copy. Look at the
+	 * shared filter rather than hj_HashTable->bloomFilter, which stays NULL
+	 * if another participant built the filter adaptively and the leader never
+	 * got around to adopting it. Without instrumentation nothing reads the
+	 * copy, so skip it (the false positive rate is not free to compute).
+	 *
+	 * The hash table may be NULL here while a shared filter exists: with
+	 * parallel_leader_participation = off the leader never builds one, and
+	 * then there's nothing to accumulate from in the leader either.
+	 */
+	if (hashNode->ps.instrument &&
+		(state->hj_HashTable != NULL) &&
+		DsaPointerIsValid(pstate->bloom_filter))
+	{
+		bloom_filter *filter;
+
+		filter = (bloom_filter *)
+			dsa_get_address(state->js.ps.state->es_query_dsa,
+							pstate->bloom_filter);
+
+		ExecHashBloomRememberFilter(state->hj_HashTable, filter);
+	}
+
+	/* Free any shared Bloom filter from the previous scan and reset state. */
+	if (DsaPointerIsValid(pstate->bloom_filter))
+		dsa_free(state->js.ps.state->es_query_dsa, pstate->bloom_filter);
+	pstate->bloom_filter = InvalidDsaPointer;
+	pstate->bloom_state = PHJ_BLOOM_NONE;
+	pstate->bloom_nelems = 0;
+
+	/*
+	 * Reset the "private" pointer, pointing at the DSA we just released. It
+	 * can't point to a private per-participant filter: those are merged into
+	 * the shared filter and freed before any participant leaves the build
+	 * phase (see MultiExecParallelHash), so there's nothing to free here.
+	 */
+	if (state->hj_HashTable)
+		state->hj_HashTable->bloomFilter = NULL;
 }
 
 void

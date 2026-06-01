@@ -3436,6 +3436,116 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 											  worker_hi->nbatch_original);
 			hinstrument.space_peak = Max(hinstrument.space_peak,
 										 worker_hi->space_peak);
+
+			/*
+			 * Each participant (in a parallel-aware hash join) probes its own
+			 * outer tuples, so the probe and match counts are summed.
+			 */
+			hinstrument.bloom_nprobes += worker_hi->bloom_nprobes;
+			hinstrument.bloom_nmatches += worker_hi->bloom_nmatches;
+			hinstrument.hash_nlookups += worker_hi->hash_nlookups;
+			hinstrument.hash_nmatches += worker_hi->hash_nmatches;
+
+			/*
+			 * It's possible only some participants used a Bloom filter. For
+			 * example the leader might not have used the filter, but we still
+			 * want to show the info collected from workers.
+			 *
+			 * Parallel-aware and parallel-oblivious filters behave in very
+			 * different ways. In parallel-aware joins the filter is built in
+			 * a synchronized way, but then some participants may choose not to
+			 * use it. The filter parameters are taken from the shared filter.
+			 *
+			 * In parallel-oblivious joins each participant builds its own
+			 * private filter, independently of other participants. The filter
+			 * parameters are taken from the private filters, and participants
+			 * that never built a filter report zeroes. We take the maxima,
+			 * same as we do for hash tables.
+			 */
+			hinstrument.bloom_used |= worker_hi->bloom_used;
+			hinstrument.bloom_nbytes = Max(hinstrument.bloom_nbytes,
+										   worker_hi->bloom_nbytes);
+			hinstrument.bloom_nhashfuncs = Max(hinstrument.bloom_nhashfuncs,
+											   worker_hi->bloom_nhashfuncs);
+			hinstrument.bloom_false_positive_rate = Max(hinstrument.bloom_false_positive_rate,
+														worker_hi->bloom_false_positive_rate);
+		}
+
+		/*
+		 * In VERBOSE mode, also show the probe counts of each worker (the
+		 * merged totals are shown below).  Skip this when per-worker details
+		 * are hidden, i.e. when es->workers_state is NULL; ExplainOpenWorker
+		 * must not be called in that case.
+		 */
+		if (es->workers_state && es->verbose)
+		{
+			for (i = 0; i < shared_info->num_workers; ++i)
+			{
+				HashInstrumentation *worker_hi = &shared_info->hinstrument[i];
+
+				/* ignore workers that did not probe anything */
+				if (worker_hi->hash_nlookups == 0 && worker_hi->bloom_nprobes == 0)
+					continue;
+
+				ExplainOpenWorker(i, es);
+
+				if (es->format == EXPLAIN_FORMAT_TEXT)
+				{
+					if (worker_hi->hash_nlookups > 0)
+					{
+						ExplainIndentText(es);
+						appendStringInfo(es->str,
+										 "Hash Lookups: " INT64_FORMAT "  Matches: " INT64_FORMAT "  Match Rate: %.3f%%\n",
+										 worker_hi->hash_nlookups,
+										 worker_hi->hash_nmatches,
+										 (100.0 * worker_hi->hash_nmatches / worker_hi->hash_nlookups));
+					}
+
+					if (worker_hi->bloom_nprobes > 0)
+					{
+						ExplainIndentText(es);
+						appendStringInfo(es->str,
+										 "Bloom Filter Probes: " INT64_FORMAT "  Matches: " INT64_FORMAT "  Match Rate: %.3f%%\n",
+										 worker_hi->bloom_nprobes,
+										 worker_hi->bloom_nmatches,
+										 (100.0 * worker_hi->bloom_nmatches / worker_hi->bloom_nprobes));
+					}
+				}
+				else
+				{
+					double		match_rate;
+
+					if (worker_hi->hash_nlookups > 0)
+					{
+						match_rate = (double) worker_hi->hash_nmatches /
+							worker_hi->hash_nlookups;
+
+						ExplainPropertyInteger("Hash Lookups", NULL,
+											   worker_hi->hash_nlookups, es);
+						ExplainPropertyInteger("Hash Matches", NULL,
+											   worker_hi->hash_nmatches, es);
+						ExplainPropertyFloat("Hash Match Rate", NULL,
+											 (100.0 * match_rate), 3, es);
+					}
+
+					if (worker_hi->bloom_nprobes > 0)
+					{
+						match_rate = (double) worker_hi->bloom_nmatches /
+							worker_hi->bloom_nprobes;
+
+						ExplainOpenGroup("Bloom Filter", "Bloom Filter", true, es);
+						ExplainPropertyInteger("Probes", NULL,
+											   worker_hi->bloom_nprobes, es);
+						ExplainPropertyInteger("Matches", NULL,
+											   worker_hi->bloom_nmatches, es);
+						ExplainPropertyFloat("Match Rate", NULL,
+											 (100.0 * match_rate), 3, es);
+						ExplainCloseGroup("Bloom Filter", "Bloom Filter", true, es);
+					}
+				}
+
+				ExplainCloseWorker(i, es);
+			}
 		}
 	}
 
@@ -3500,7 +3610,7 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 			ExplainPropertyFloat("Hash Match Rate", NULL,
 								 (100.0 * match_rate), 3, es);
 		}
-		else
+		else if (hinstrument.hash_nlookups > 0)
 		{
 			ExplainIndentText(es);
 			appendStringInfo(es->str,
@@ -3546,7 +3656,7 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 			ExplainPropertyFloat("False Positive Rate", NULL,
 								 100.0 * hinstrument.bloom_false_positive_rate, 3, es);
 
-			if (es->analyze)
+			if (es->verbose)
 			{
 				ExplainPropertyInteger("Probes", NULL,
 									   hinstrument.bloom_nprobes, es);
@@ -3567,7 +3677,7 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 							 hinstrument.bloom_nhashfuncs,
 							 100.0 * hinstrument.bloom_false_positive_rate);
 
-			if (es->analyze)
+			if (es->verbose)
 			{
 				ExplainIndentText(es);
 				appendStringInfo(es->str,

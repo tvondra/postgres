@@ -83,6 +83,9 @@ static bool ExecParallelHashTuplePrealloc(HashJoinTable hashtable,
 static void ExecParallelHashMergeCounters(HashJoinTable hashtable);
 static void ExecParallelHashCloseBatchAccessors(HashJoinTable hashtable);
 
+static void ExecParallelHashBloomCreateFilter(HashJoinTable hashtable, int64 nelems);
+static void ExecParallelHashBloomBuildFilter(HashJoinTable hashtable);
+
 /* FIXME would it make sense to mark some of these inline? */
 static void ExecHashBloomCreateFilter(HashJoinTable hashtable, bool complete);
 static void ExecHashBloomBuildFilter(HashJoinTable hashtable, bool complete);
@@ -399,6 +402,17 @@ MultiExecParallelHash(HashState *node)
 				ExecParallelHashIncreaseNumBuckets(hashtable);
 			ExecParallelHashEnsureBatchAccessors(hashtable);
 			ExecParallelHashTableSetCurrentBatch(hashtable, 0);
+
+			/*
+			 * When in a multi-batch case, we want to build a shared filter from
+			 * the very beginning. So create per-worker filters with matching
+			 * parameters, and we'll merge them at the end of the build. (We
+			 * might have already created the private filter while helping to
+			 * repartition, in which case we must not create another one.)
+			 */
+			if ((pstate->bloom_nelems > 0) && (hashtable->bloomFilter == NULL))
+				ExecParallelHashBloomCreateFilter(hashtable, pstate->bloom_nelems);
+
 			for (;;)
 			{
 				bool		isnull;
@@ -420,6 +434,11 @@ MultiExecParallelHash(HashState *node)
 					/* normal case with a non-null join key */
 					ExecParallelHashTableInsert(hashtable, slot, hashvalue);
 					hashtable->reportTuples++;
+
+					/* add the hash to the private Bloom filter */
+					if (hashtable->bloomFilter != NULL)
+						bloom_add_element(hashtable->bloomFilter,
+										  (unsigned char *) &hashvalue, sizeof(uint32));
 				}
 				else if (node->keep_null_tuples)
 				{
@@ -444,6 +463,35 @@ MultiExecParallelHash(HashState *node)
 			 * to control the empty table optimization.
 			 */
 			ExecParallelHashMergeCounters(hashtable);
+
+			/*
+			 * If we built a private Bloom filter, merge it into the shared
+			 * filter now, while still holding the build barrier, so that the
+			 * shared filter is complete by the time anyone starts probing.
+			 *
+			 * This covers both the case when we know about batching from the
+			 * beginning of the build (with the shared filter allocated in
+			 * ExecHashTableCreate), and when we start batching only during
+			 * the build (in ExecParallelHashIncreaseNumBatches).
+			 */
+			if (hashtable->bloomFilter != NULL &&
+				DsaPointerIsValid(pstate->bloom_filter))
+			{
+				bloom_filter *shared;
+
+				LWLockAcquire(&pstate->lock, LW_EXCLUSIVE);
+				shared = (bloom_filter *)
+					dsa_get_address(hashtable->area, pstate->bloom_filter);
+				bloom_merge(shared, hashtable->bloomFilter);
+				LWLockRelease(&pstate->lock);
+
+				/*
+				 * Free the private filter, we won't need it anymore, and we
+				 * will set the pointer to the shared one in a bit.
+				 */
+				bloom_free(hashtable->bloomFilter);
+				hashtable->bloomFilter = NULL;
+			}
 
 			BarrierDetach(&pstate->grow_buckets_barrier);
 			BarrierDetach(&pstate->grow_batches_barrier);
@@ -476,6 +524,29 @@ MultiExecParallelHash(HashState *node)
 	hashtable->nbuckets = pstate->nbuckets;
 	hashtable->log2_nbuckets = pg_ceil_log2_32(hashtable->nbuckets);
 	hashtable->totalTuples = pstate->total_tuples;
+
+	/*
+	 * In the multi-batch case, set the pointer at the filter in shared memory,
+	 * so that the participants can probe it directly. In the single-batch case
+	 * the filter may get built adaptively later, during probing (and we'll set
+	 * the pointer then).
+	 *
+	 * If this participant attached late, another participant may have built
+	 * the filter already, or may be building it right now. The build barrier
+	 * does not order us with that build, so hold the lock while looking at
+	 * the filter. Otherwise we might see it as built before all its bits are
+	 * set, and then reject outer tuples that do have a match.
+	 *
+	 * XXX We could also add memory barriers somewhere, but this seems nicer.
+	 */
+	LWLockAcquire(&pstate->lock, LW_SHARED);
+	if (pstate->bloom_state == PHJ_BLOOM_BUILT &&
+		DsaPointerIsValid(pstate->bloom_filter))
+	{
+		hashtable->bloomFilter = (bloom_filter *)
+			dsa_get_address(hashtable->area, pstate->bloom_filter);
+	}
+	LWLockRelease(&pstate->lock);
 
 	/*
 	 * Unless we're completely done and the batch state has been freed, make
@@ -649,6 +720,10 @@ ExecHashTableCreate(HashState *state)
 	hashtable->bloomSampleProbes = 0;
 	hashtable->bloomProbes = 0;
 	hashtable->bloomMatches = 0;
+	hashtable->bloomUsed = false;
+	hashtable->bloomNHashfuncs = 0;
+	hashtable->bloomNBytes = 0;
+	hashtable->bloomFPR = 0;
 	hashtable->hashLookups = 0;
 	hashtable->hashMatches = 0;
 	hashtable->hashLookupsTotal = 0;
@@ -753,6 +828,40 @@ ExecHashTableCreate(HashState *state)
 			 */
 			pstate->nbuckets = nbuckets;
 			ExecParallelHashTableAlloc(hashtable, 0);
+
+			/*
+			 * If we already know we'll need more than one batch, set up a
+			 * shared Bloom filter right away so that it includes all inner
+			 * tuples. Each worker builds a private filter while hashing and
+			 * merges it into this one at the end of the build (see
+			 * MultiExecParallelHash).
+			 *
+			 * We size it from the planner's estimate so that all the filters
+			 * have matching dimensions (which is required for merging). The
+			 * estimate may be off, so expect at least 1000 tuples and double
+			 * the result, similar to the hedge the serial code applies when
+			 * sizing a filter before the build is complete. We don't want to
+			 * go much further than that - Bloom filters degrade smoothly when
+			 * undersized, but once the filter exceeds the CPU caches it gets
+			 * much slower. In the worst case the filter gets adaptively
+			 * disabled once too many probes find a match.
+			 */
+			if (nbatch > 1 && hashtable->bloomEnabled)
+			{
+				pstate->bloom_nelems = Max((int64) rows, 1000);
+				pstate->bloom_nelems *= 2.0;
+
+				pstate->bloom_filter =
+					dsa_allocate(hashtable->area,
+								 bloom_estimate_custom(pstate->bloom_nelems,
+													   work_mem,
+													   BLOOM_MIN_FILTER_SIZE));
+				bloom_init_custom(dsa_get_address(hashtable->area,
+												  pstate->bloom_filter),
+								  pstate->bloom_nelems, work_mem,
+								  BLOOM_MIN_FILTER_SIZE, 0);
+				pstate->bloom_state = PHJ_BLOOM_BUILT;
+			}
 		}
 
 		/*
@@ -966,6 +1075,13 @@ ExecHashBloomBuildFilter(HashJoinTable hashtable, bool complete)
  * When sampling the filter probes, most tuples bypass the filter and the
  * function returns false without consulting it.
  *
+ * The caller is responsible for probing each outer tuple only once.  Tuples
+ * written to a batch file have already been checked (either while processing
+ * batch 0 of a serial join, or while partitioning the outer relation of a
+ * Parallel Hash join), so there's no point in checking them again when they
+ * are read back.  Doing so would waste cycles and distort the probe counters
+ * used to drive the adaptive sampling.
+ *
  * XXX We can't mark it inline, it's called from a different translation unit.
  * Maybe we could optimize it in some other way?
  */
@@ -973,13 +1089,6 @@ bool
 ExecHashBloomReject(HashJoinTable hashtable, uint32 hashvalue)
 {
 	bool	reject = false;
-
-	/*
-	 * Ignore the filter after processing the first batch (all tuples spilled
-	 * to temporary files already went through the check).
-	 */
-	if (hashtable->curbatch != 0)
-		return false;
 
 	/* If there's no filter, all tuples should pass. */
 	if (hashtable->bloomFilter == NULL)
@@ -1071,6 +1180,8 @@ ExecHashBloomAdaptiveCreate(HashJoinTable hashtable)
 	int64		hashLookups,
 				hashMatches;
 
+	ParallelHashJoinState *pstate = hashtable->parallel_state;
+
 	/* Bail out if Bloom filters are disabled. */
 	if (!hashtable->bloomEnabled)
 		return;
@@ -1079,14 +1190,10 @@ ExecHashBloomAdaptiveCreate(HashJoinTable hashtable)
 	if (hashtable->bloomFilter != NULL)
 		return;
 
-	/* We can't build filters for parallel hash joins. */
-	if (hashtable->parallel_state != NULL)
-		return;
-
-	/* All serial batched runs should have a filter created automatically. */
+	/* All batched runs should have a filter created automatically. */
 	Assert(hashtable->nbatch == 1);
 
-	/* */
+	/* use the total counts, including the not-yet-accumulated part */
 	hashLookups = hashtable->hashLookupsTotal + hashtable->hashLookups;
 	hashMatches = hashtable->hashMatchesTotal + hashtable->hashMatches;
 
@@ -1116,7 +1223,62 @@ ExecHashBloomAdaptiveCreate(HashJoinTable hashtable)
 	if (hashMatches > hashLookups * BLOOM_BUILD_THRESHOLD)
 		return;
 
-	ExecHashBloomBuildFilter(hashtable, true);
+	if (!pstate)
+	{
+		/* serial join */
+		ExecHashBloomBuildFilter(hashtable, true);
+	}
+	else
+	{
+		/*
+		 * Parallel join: coordinate so that only one backend builds the shared
+		 * filter (by scanning the current hash table). The first backend to finish
+		 * its sample makes the decision for everyone; later backends simply observe
+		 * the result.
+		 *
+		 * The workers may hit the adaptive build threshold at different times (or
+		 * maybe some workers may not hit it at all), in which case the worker will
+		 * not know about the filter and won't probe it. But that's fine - it's up
+		 * to the worker to decide whether to probe or not (based on it's local
+		 * stats). We're not adding items to the hash table, so this can't cause
+		 * missing data or anything like that.
+		 *
+		 * XXX It's not great this happens while holding an exclusive LWLock. That
+		 * may take a bit of time (proportional to the hash table size, so roughly
+		 * hash_mem * nparticipants), with disabled interrupts (which disables
+		 * query cancel, etc.). We might do this differently - build without a lock,
+		 * then publish the result, maybe using some barriers. In fact, we could
+		 * simply allocate and publish the shared filter, so that everyone starts
+		 * using it when they choose to. So we'd switch to PHJ_BLOOM_BUILDING, and
+		 * release the lock until the end of the build. And everyone would treat it
+		 * as "no rejection" filter. And then later once the build completes, we'd
+		 * flip it to "PHJ_BLOOM_BUILT", and backends would start probing it. The
+		 * difference is whether backends can continue working during the build,
+		 * or should pause and wait.
+		 *
+		 * XXX Notice this happens during probing, in single-batch case, after
+		 * all tuples were added to the in-memory hashtable. There are no more
+		 * items added by any participant.
+		 */
+		LWLockAcquire(&pstate->lock, LW_EXCLUSIVE);
+
+		if (pstate->bloom_state == PHJ_BLOOM_NONE)
+		{
+			ExecParallelHashBloomBuildFilter(hashtable);
+		}
+
+		/*
+		 * If the shared filter is already built (possibly by this process), set
+		 * the pointer in the hashtable - that's what we use for probing.
+		 */
+		if (pstate->bloom_state == PHJ_BLOOM_BUILT)
+		{
+			hashtable->bloomFilter = (bloom_filter *)
+					dsa_get_address(hashtable->area, pstate->bloom_filter);
+		}
+
+		LWLockRelease(&pstate->lock);
+	}
 }
 
 /*
@@ -1456,6 +1618,78 @@ ExecHashTableDestroy(HashJoinTable hashtable)
 }
 
 /*
+ * ExecParallelHashBloomCreateFilter
+ *		Allocate an empty Bloom filter for this hash table.
+ *
+ * The filter is allocated in the long-lived hashCxt so that it survives
+ * per-batch resets.  "nelems" is an estimate of the number of inner tuples,
+ * used to size the filter; it should be computed identically by every
+ * participant of a Parallel Hash join so that local filters can be merged.
+ */
+static void
+ExecParallelHashBloomCreateFilter(HashJoinTable hashtable, int64 nelems)
+{
+	MemoryContext oldcxt;
+
+	Assert(hashtable->bloomFilter == NULL);
+
+	oldcxt = MemoryContextSwitchTo(hashtable->hashCxt);
+	hashtable->bloomFilter = bloom_create_custom(nelems, work_mem,
+												 BLOOM_MIN_FILTER_SIZE, 0);
+	MemoryContextSwitchTo(oldcxt);
+}
+
+/*
+ * ExecParallelHashBloomBuildFilter
+ *		Build the shared Bloom filter for a parallel single-batch hash table.
+ *
+ * Called with pstate->lock held by a single backend that has decided the join
+ * is selective enough to benefit.  The completed shared hash table is scanned
+ * to populate the filter, which is then published for all backends to probe.
+ */
+static void
+ExecParallelHashBloomBuildFilter(HashJoinTable hashtable)
+{
+	ParallelHashJoinState *pstate = hashtable->parallel_state;
+	bloom_filter *shared;
+	int			i;
+
+	Assert(hashtable->nbatch == 1);
+	Assert(pstate->bloom_state == PHJ_BLOOM_NONE);
+	Assert(!DsaPointerIsValid(pstate->bloom_filter));
+
+	/*
+	 * Size exactly for the expected number of tuples. We only call this from
+	 * the adaptive build during probing, at which point we know the total
+	 * number of tuples.
+	 */
+	pstate->bloom_nelems = Max((int64) pstate->total_tuples, 1000);
+	pstate->bloom_filter =
+		dsa_allocate(hashtable->area,
+					 bloom_estimate_custom(pstate->bloom_nelems, work_mem,
+										   BLOOM_MIN_FILTER_SIZE));
+	shared = bloom_init_custom(dsa_get_address(hashtable->area,
+											   pstate->bloom_filter),
+							   pstate->bloom_nelems, work_mem,
+							   BLOOM_MIN_FILTER_SIZE, 0);
+
+	for (i = 0; i < hashtable->nbuckets; i++)
+	{
+		HashJoinTuple tuple = ExecParallelHashFirstTuple(hashtable, i);
+
+		while (tuple != NULL)
+		{
+			bloom_add_element(shared,
+							  (unsigned char *) &tuple->hashvalue,
+							  sizeof(uint32));
+			tuple = ExecParallelHashNextTuple(hashtable, tuple);
+		}
+	}
+
+	pstate->bloom_state = PHJ_BLOOM_BUILT;
+}
+
+/*
  * Consider adjusting the allowed hash table size, depending on the number
  * of batches, to minimize the overall memory usage (for both the hashtable
  * and batch files).
@@ -1715,12 +1949,24 @@ ExecParallelHashIncreaseNumBatches(HashJoinTable hashtable)
 				ParallelHashJoinBatch *old_batch0;
 				int			new_nbatch;
 				int			i;
+				int64		ntuples;
 
 				/* Move the old batch out of the way. */
 				old_batch0 = hashtable->batches[0].shared;
 				pstate->old_batches = pstate->batches;
 				pstate->old_nbatch = hashtable->nbatch;
 				pstate->batches = InvalidDsaPointer;
+
+				/*
+				 * Number of tuples in batch 0 so far, used to size the Bloom
+				 * filter below. While there's a single batch, each
+				 * participant folds its local count into the shared one
+				 * whenever it allocates a new chunk (see
+				 * ExecParallelHashTupleAlloc), so the shared value covers all
+				 * participants except for their current chunks. Add our own
+				 * local count to get a bit closer.
+				 */
+				ntuples = old_batch0->ntuples + hashtable->batches[0].ntuples;
 
 				/* Free this backend's old accessors. */
 				ExecParallelHashCloseBatchAccessors(hashtable);
@@ -1801,6 +2047,50 @@ ExecParallelHashIncreaseNumBatches(HashJoinTable hashtable)
 					for (i = 0; i < new_nbuckets; ++i)
 						dsa_pointer_atomic_init(&buckets[i], InvalidDsaPointer);
 					pstate->nbuckets = new_nbuckets;
+
+					/*
+					 * Create the new shared filter (we'll create the new
+					 * private per-worker filters in
+					 * ExecParallelHashRepartitionFirst).
+					 *
+					 * sizing: We assume we've only seen 1/2 the tuples so far.
+					 * We clearly expected fewer tuples (otherwise we'd choose
+					 * batching right away), but maybe we should use a bigger
+					 * factor? We can easily be off by an order of magnitude.
+					 * OTOH we don't want to overdo it, oversized filters get
+					 * somewhat useless, especially once larger than CPU cache.
+					 *
+					 * XXX Is there a better way to estimate the number of
+					 * tuples we'll see for the inner relation?
+					 *
+					 * XXX This might be a good fit for scalable Bloom filters
+					 * (or some other type of filter?)
+					 */
+					if (hashtable->bloomEnabled)
+					{
+						/*
+						 * Double the combined number of tuples all
+						 * participants inserted so far (into the only batch
+						 * we have).
+						 */
+						pstate->bloom_nelems = Max(pstate->bloom_nelems, ntuples);
+						pstate->bloom_nelems *= 2.0;
+
+						/* same minimum as elsewhere */
+						pstate->bloom_nelems = Max(pstate->bloom_nelems, 1000);
+
+						pstate->bloom_filter =
+							dsa_allocate(hashtable->area,
+										 bloom_estimate_custom(pstate->bloom_nelems,
+															   work_mem,
+															   BLOOM_MIN_FILTER_SIZE));
+						bloom_init_custom(dsa_get_address(hashtable->area,
+														  pstate->bloom_filter),
+										  pstate->bloom_nelems, work_mem,
+										  BLOOM_MIN_FILTER_SIZE, 0);
+						pstate->bloom_state = PHJ_BLOOM_BUILT;
+					}
+
 				}
 				else
 				{
@@ -1924,7 +2214,24 @@ ExecParallelHashRepartitionFirst(HashJoinTable hashtable)
 	dsa_pointer chunk_shared;
 	HashMemoryChunk chunk;
 
+	/*
+	 * If starting to batch (from nbatch=1), we need to create a local filter
+	 * and populate it with entries in each worker.
+	 */
+	bool build_filter = hashtable->bloomEnabled &&
+			(hashtable->parallel_state->old_nbatch == 1);
+
 	Assert(hashtable->nbatch == hashtable->parallel_state->nbatch);
+
+	/*
+	 * Build filter with the same parameters as the shared filter created in
+	 * ExecParallelHashIncreaseNumBatches (so that we can merge them later).
+	 */
+	if (build_filter)
+	{
+		ExecParallelHashBloomCreateFilter(hashtable,
+										  hashtable->parallel_state->bloom_nelems);
+	}
 
 	while ((chunk = ExecParallelHashPopChunkQueue(hashtable, &chunk_shared)))
 	{
@@ -1942,6 +2249,12 @@ ExecParallelHashRepartitionFirst(HashJoinTable hashtable)
 
 			ExecHashGetBucketAndBatch(hashtable, hashTuple->hashvalue,
 									  &bucketno, &batchno);
+
+			/* insert everything into the filter */
+			if (build_filter)
+				bloom_add_element(hashtable->bloomFilter,
+								  (unsigned char *) &hashTuple->hashvalue,
+								  sizeof(uint32));
 
 			Assert(batchno < hashtable->nbatch);
 			if (batchno == 0)
@@ -2567,6 +2880,11 @@ ExecScanHashBucket(HashJoinState *hjstate,
  * On success, the inner tuple is stored into hjstate->hj_CurTuple and
  * econtext->ecxt_innertuple, using hjstate->hj_HashTupleSlot as the slot
  * for the latter.
+ *
+ * XXX This also updates the hashMatches, but only when starting to scan
+ * the hash bucket (with hj_CurTuple == NULL), so that it agrees with the
+ * hashLookup counter. This matters for joins with multiple matches on the
+ * inner side - the hashLookups is incremented only once per outer tuple.
  */
 bool
 ExecParallelScanHashBucket(HashJoinState *hjstate,
@@ -2601,6 +2919,23 @@ ExecParallelScanHashBucket(HashJoinState *hjstate,
 
 			if (ExecQualAndReset(hjclauses, econtext))
 			{
+				/*
+				 * Count the first match found for this outer tuple. This may
+				 * also create the Bloom filter - the decision is made on the
+				 * lookup that completes a window of BLOOM_BUILD_WINDOW
+				 * lookups, and that lookup may well be a match.
+				 *
+				 * If an outer tuple has multiple matching inner tuples, we want
+				 * it to count as a single match, so that it's comparable to
+				 * counters for the Bloom filter (which also counts each outer
+				 * as a single probe).
+				 */
+				if (hjstate->hj_CurTuple == NULL)
+				{
+					hashtable->hashMatches++;
+					ExecHashBloomAdaptiveCreate(hashtable);
+				}
+
 				hjstate->hj_CurTuple = hashTuple;
 				return true;
 			}
@@ -2608,6 +2943,10 @@ ExecParallelScanHashBucket(HashJoinState *hjstate,
 
 		hashTuple = ExecParallelHashNextTuple(hashtable, hashTuple);
 	}
+
+	/* first call only (no match found) */
+	if (hjstate->hj_CurTuple == NULL)
+		ExecHashBloomAdaptiveCreate(hashtable);
 
 	/*
 	 * no match
@@ -3410,6 +3749,31 @@ ExecHashRetrieveInstrumentation(HashState *node)
 }
 
 /*
+ * Remember the parameters of the Bloom filter in the hash table, so that
+ * ExecHashAccumInstrumentation() can report them after the filter itself is
+ * gone (see the comment on these fields in hashjoin.h).
+ *
+ * Computing the false positive rate counts the bits set in the whole filter,
+ * so callers should only bother when the node is instrumented.
+ */
+void
+ExecHashBloomRememberFilter(HashJoinTable hashtable, bloom_filter *filter)
+{
+	/*
+	 * Do this only once, on the first call - bloom_total_bits() walks the
+	 * whole filter, so we don't want to be calling it on every shutdown
+	 * (which for SPI and cursors can be quite often).
+	 */
+	if (hashtable->bloomUsed)
+		return;
+
+	hashtable->bloomUsed = true;
+	hashtable->bloomNHashfuncs = bloom_num_hash_funcs(filter);
+	hashtable->bloomNBytes = bloom_total_bits(filter) / BITS_PER_BYTE;
+	hashtable->bloomFPR = bloom_false_positive_rate(filter);
+}
+
+/*
  * Accumulate instrumentation data from 'hashtable' into an
  * initially-zeroed HashInstrumentation struct.
  *
@@ -3440,28 +3804,33 @@ ExecHashAccumInstrumentation(HashInstrumentation *instrument,
 								 hashtable->spacePeak);
 
 	/*
-	 * Record Bloom filter information, if a filter was built. Do this only
-	 * once, on the first call - bloom_total_bits() walks the whole filter,
-	 * so we don't want to be calling it on every shutdown (which for SPI
-	 * and cursors can be quite often).
+	 * Record Bloom filter information, if a filter was built. Unlike for the
+	 * hash table fields above, the last instance simply wins. The parameters
+	 * of different instances (e.g. before and after a rescan) can't be
+	 * combined in a meaningful way - taking the maxima of the size, number of
+	 * hash functions and false positive rate would describe a filter that
+	 * never existed.
 	 *
-	 * XXX Shouldn't this use Max(), just like the block above?
+	 * Normally the filter is still alive and we can inspect it directly. On a
+	 * parallel rescan, however, ExecHashJoinReInitializeDSM() frees the
+	 * shared filter before the leader gets here, and only the copy of the
+	 * parameters it made in the hash table is left - so report that.
 	 */
-	if (hashtable->bloomFilter != NULL && !instrument->bloom_used)
+	if (hashtable->bloomFilter != NULL)
+		ExecHashBloomRememberFilter(hashtable, hashtable->bloomFilter);
+
+	if (hashtable->bloomUsed)
 	{
 		instrument->bloom_used = true;
-		instrument->bloom_nhashfuncs
-			= bloom_num_hash_funcs(hashtable->bloomFilter);
-		instrument->bloom_nbytes
-			= bloom_total_bits(hashtable->bloomFilter) / BITS_PER_BYTE;
-		instrument->bloom_false_positive_rate
-			= bloom_false_positive_rate(hashtable->bloomFilter);
+		instrument->bloom_nhashfuncs = hashtable->bloomNHashfuncs;
+		instrument->bloom_nbytes = hashtable->bloomNBytes;
+		instrument->bloom_false_positive_rate = hashtable->bloomFPR;
 	}
 
 	/*
-	 * Record hash-table probe statistics.
-	 *
-	 * XXX Shouldn't this use Max(), just like the earlier block?
+	 * Bloom filter probe and match counts are cumulative, so sum them across
+	 * successive hash table instances (e.g. rescans) rather than taking the
+	 * maximum.
 	 */
 	instrument->bloom_nprobes += hashtable->bloomProbes;
 	instrument->bloom_nmatches += hashtable->bloomMatches;

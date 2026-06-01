@@ -2203,7 +2203,8 @@ typedef struct MergeJoinState
  *								outer joins
  *		hj_NullInnerTupleSlot	prepared null tuple for left/full outer joins
  *		hj_NullOuterTupleStore	tuplestore holding outer tuples that have
- *								null join keys (but must be emitted anyway);
+ *								null join keys, or were rejected by the
+ *								Bloom filter (but must be emitted anyway);
  *								used only in multi-batch parallel joins
  *		hj_FirstOuterTupleSlot	first tuple retrieved from outer plan
  *		hj_JoinState			current state of ExecHashJoin state machine

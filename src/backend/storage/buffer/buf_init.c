@@ -26,10 +26,12 @@ char	   *BufferBlocks;
 ConditionVariableMinimallyPadded *BufferIOCVArray;
 WritebackContext BackendWritebackContext;
 CkptSortItem *CkptBufferIds;
+BufferPartitions *BufferPartitionsArray;
 
 static void BufferManagerShmemRequest(void *arg);
 static void BufferManagerShmemInit(void *arg);
 static void BufferManagerShmemAttach(void *arg);
+static void BufferPartitionsInit(void);
 
 const ShmemCallbacks BufferManagerShmemCallbacks = {
 	.request_fn = BufferManagerShmemRequest,
@@ -70,6 +72,10 @@ const ShmemCallbacks BufferManagerShmemCallbacks = {
  */
 
 
+/* number of buffer partitions for clocksweep */
+#define NUM_CLOCK_SWEEP_PARTITIONS	4
+
+
 /*
  * Register shared memory area for the buffer pool.
  */
@@ -97,6 +103,13 @@ BufferManagerShmemRequest(void *arg)
 					   .ptr = (void **) &BufferIOCVArray,
 		);
 
+	ShmemRequestStruct(.name = "Buffer Partition Registry",
+					   .size = NUM_CLOCK_SWEEP_PARTITIONS * sizeof(BufferPartition),
+	/* Align descriptors to a cacheline boundary. */
+					   .alignment = PG_CACHE_LINE_SIZE,
+					   .ptr = (void **) &BufferPartitionsArray,
+		);
+
 	/*
 	 * The array used to sort to-be-checkpointed buffer ids is located in
 	 * shared memory, to avoid having to allocate significant amounts of
@@ -119,6 +132,12 @@ BufferManagerShmemRequest(void *arg)
 static void
 BufferManagerShmemInit(void *arg)
 {
+	/*
+	 * Initialize the buffer partition registry first, before other parts
+	 * have a chance to touch the memory.
+	 */
+	BufferPartitionsInit();
+
 	/*
 	 * Initialize all the buffer headers.
 	 */
@@ -150,4 +169,118 @@ BufferManagerShmemAttach(void *arg)
 	/* Initialize per-backend file flush context */
 	WritebackContextInit(&BackendWritebackContext,
 						 &backend_flush_after);
+}
+
+/*
+ * Sanity checks of buffers partitions - there must be no gaps, it must cover
+ * the whole range of buffers, etc.
+ */
+static void
+AssertCheckBufferPartitions(void)
+{
+#ifdef USE_ASSERT_CHECKING
+	int			num_buffers = 0;
+
+	Assert(BufferPartitionsArray->npartitions > 0);
+
+	for (int i = 0; i < BufferPartitionsArray->npartitions; i++)
+	{
+		BufferPartition *part = &BufferPartitionsArray->partitions[i];
+
+		/*
+		 * We can get a single-buffer partition, if the sizing forces the last
+		 * partition to be just one buffer. But it's unlikely (and
+		 * undesirable).
+		 */
+		Assert(part->first_buffer <= part->last_buffer);
+		Assert((part->last_buffer - part->first_buffer + 1) == part->num_buffers);
+
+		num_buffers += part->num_buffers;
+
+		/*
+		 * The first partition needs to start on buffer 0. Later partitions
+		 * need to be contiguous, without skipping any buffers.
+		 */
+		if (i == 0)
+		{
+			Assert(part->first_buffer == 0);
+		}
+		else
+		{
+			BufferPartition *prev = &BufferPartitionsArray->partitions[i - 1];
+
+			Assert((part->first_buffer - 1) == prev->last_buffer);
+		}
+
+		/* the last partition needs to end on buffer (NBuffers - 1) */
+		if (i == (BufferPartitionsArray->npartitions - 1))
+		{
+			Assert(part->last_buffer == (NBuffers - 1));
+		}
+	}
+
+	Assert(num_buffers == NBuffers);
+#endif
+}
+
+/*
+ * BufferPartitionsInit
+ *		Initialize registry of buffer partitions.
+ */
+static void
+BufferPartitionsInit(void)
+{
+	int			remaining_buffers = NBuffers;
+	int			buffer = 0;
+
+	/* number of buffers per partition (make sure to not overflow) */
+	int			part_buffers
+		= ((int64) NBuffers + (NUM_CLOCK_SWEEP_PARTITIONS - 1)) / NUM_CLOCK_SWEEP_PARTITIONS;
+
+	BufferPartitionsArray->npartitions = NUM_CLOCK_SWEEP_PARTITIONS;
+
+	for (int n = 0; n < BufferPartitionsArray->npartitions; n++)
+	{
+		BufferPartition *part = &BufferPartitionsArray->partitions[n];
+
+		/* buffers this partition should get (last partition can get fewer) */
+		int			num_buffers = Min(remaining_buffers, part_buffers);
+
+		remaining_buffers -= num_buffers;
+
+		Assert((num_buffers > 0) && (num_buffers <= part_buffers));
+		Assert((buffer >= 0) && (buffer < NBuffers));
+
+		part->num_buffers = num_buffers;
+		part->first_buffer = buffer;
+		part->last_buffer = buffer + (num_buffers - 1);
+
+		buffer += num_buffers;
+	}
+
+	AssertCheckBufferPartitions();
+}
+
+int
+BufferPartitionCount(void)
+{
+	return BufferPartitionsArray->npartitions;
+}
+
+void
+BufferPartitionGet(int idx, int *num_buffers,
+				   int *first_buffer, int *last_buffer)
+{
+	if ((idx >= 0) && (idx < BufferPartitionsArray->npartitions))
+	{
+		BufferPartition *part = &BufferPartitionsArray->partitions[idx];
+
+		*num_buffers = part->num_buffers;
+		*first_buffer = part->first_buffer;
+		*last_buffer = part->last_buffer;
+
+		return;
+	}
+
+	elog(ERROR, "invalid partition index");
 }

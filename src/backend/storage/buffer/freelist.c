@@ -90,7 +90,9 @@ typedef struct
 	//int			__attribute__((aligned(64))) bgwprocno;
 
 	/* info about freelist partitioning */
+	int			num_nodes;		/* effectively number of NUMA nodes */
 	int			num_partitions;
+	int			num_partitions_per_node;
 
 	/* clocksweep partitions */
 	ClockSweep	sweeps[FLEXIBLE_ARRAY_MEMBER];
@@ -216,16 +218,72 @@ ClockSweepTick(void)
  * calculate_partition_index
  *		calculate the buffer / clock-sweep partition to use
  *
- * use PID to determine the buffer partition
- *
- * XXX We could use NUMA node / core ID to pick partition, but we'd need
- * to handle cases with fewer nodes/cores than partitions somehow. Although,
- * maybe the balancing would handle that too.
+ * With libnuma, use the NUMA node and CPU to pick the partition. Otherwise
+ * use just PID instead of CPU (we assume everything is a single NUMA node).
  */
 static int
 calculate_partition_index(void)
 {
-	return (MyProcPid % StrategyControl->num_partitions);
+	int		cpu,
+			node,
+			index;
+
+	/*
+	 * The buffers are partitioned, so determine the CPU/NUMA node, and pick a
+	 * partition based on that.
+	 *
+	 * Without NUMA assume everything is a single NUMA node, and we pick the
+	 * partition based on PID (we may not have sched_getcpu).
+	 */
+#ifdef USE_LIBNUMA
+	cpu = sched_getcpu();
+
+	if (cpu < 0)
+		elog(ERROR, "sched_getcpu failed: %m");
+
+	node = numa_node_of_cpu(cpu);
+#else
+	cpu = MyProcPid;
+	node = 0;
+#endif
+
+	Assert(StrategyControl->num_partitions ==
+		   (StrategyControl->num_nodes * StrategyControl->num_partitions_per_node));
+
+	/*
+	 * XXX We should't get nodes that we haven't considered while building the
+	 * partitions. Maybe if we allow this (e.g. due to support adjusting the
+	 * NUMA stuff at runtime), we should just do our best to minimize the
+	 * conflicts somehow. But it'll make the mapping harder, so for now we
+	 * ignore it.
+	 */
+	if (node > StrategyControl->num_nodes)
+		elog(ERROR, "node out of range: %d > %u", cpu, StrategyControl->num_nodes);
+
+	/*
+	 * Find the partition. If we have a single partition per node, we can
+	 * calculate the index directly from node. Otherwise we need to do two
+	 * steps, using node and then cpu.
+	 */
+	if (StrategyControl->num_partitions_per_node == 1)
+	{
+		/* fast-path */
+		index = (node % StrategyControl->num_partitions);
+	}
+	else
+	{
+		int			index_group,
+					index_part;
+
+		/* two steps - calculate group from node, partition from cpu */
+		index_group = (node % StrategyControl->num_nodes);
+		index_part = (cpu % StrategyControl->num_partitions_per_node);
+
+		index = (index_group * StrategyControl->num_partitions_per_node)
+			+ index_part;
+	}
+
+	return index;
 }
 
 /*
@@ -564,7 +622,9 @@ StrategyCtlShmemInit(void *arg)
 	SpinLockInit(&StrategyControl->buffer_strategy_lock);
 
 	/* Remember the number of partitions */
-	StrategyControl->num_partitions = BufferPartitionCount();
+	BufferPartitionsParams(&StrategyControl->num_nodes,
+						   &StrategyControl->num_partitions,
+						   &StrategyControl->num_partitions_per_node);
 
 	/* Initialize the clock sweep pointers (for all partitions) */
 	for (int i = 0; i < StrategyControl->num_partitions; i++)
@@ -579,7 +639,8 @@ StrategyCtlShmemInit(void *arg)
 		pg_atomic_init_u32(&StrategyControl->sweeps[i].nextVictimBuffer, 0);
 
 		/* get info about the buffer partition */
-		BufferPartitionGet(i, &node, &num_buffers, &first_buffer, &last_buffer);
+		BufferPartitionGet(i, &node, &num_buffers,
+						   &first_buffer, &last_buffer);
 
 		/*
 		 * FIXME This may not quite right, because if NBuffers is not a

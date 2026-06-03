@@ -546,7 +546,7 @@ StrategyCtlShmemRequest(void *arg)
 	int			num_partitions;
 
 	/* get the number of buffer partitions */
-	BufferPartitionsParams(NULL, &num_partitions, NULL);
+	BufferPartitionsCalculate(NULL, &num_partitions, NULL);
 
 	ShmemRequestStruct(.name = "Buffer Strategy Status",
 					   .size = offsetof(BufferStrategyControl, sweeps) +

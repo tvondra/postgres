@@ -27,6 +27,10 @@
 #include <sys/shm.h>
 #include <sys/stat.h>
 
+#ifdef USE_LIBNUMA
+#include <numa.h>
+#endif
+
 #include "miscadmin.h"
 #include "port/pg_bitutils.h"
 #include "portability/mem.h"
@@ -97,6 +101,10 @@ void	   *UsedShmemSegAddr = NULL;
 
 static Size AnonymousShmemSize;
 static void *AnonymousShmem = NULL;
+
+/* GUCs */
+bool shmem_populate = false;
+bool shmem_interleave = false;
 
 static void *InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size);
 static void IpcMemoryDetach(int status, Datum shmaddr);
@@ -604,6 +612,20 @@ CreateAnonymousSegment(Size *size)
 	int			mmap_errno = 0;
 	int			mmap_flags = MAP_SHARED | MAP_ANONYMOUS | MAP_HASSEMAPHORE;
 
+	/* If requested, populate the shared memory by MAP_POPULATE. */
+	if (shmem_populate)
+		mmap_flags |= MAP_POPULATE;
+
+#ifdef USE_LIBNUMA
+	/*
+	 * If requested, make sure the memory is interleaved by specifying memory
+	 * policy before calling mmap(). This likely matters only with MAP_POPULATE,
+	 * but it also costs nothing, so just do that.
+	 */
+	if (shmem_interleave)
+		numa_set_membind(numa_all_nodes_ptr);
+#endif
+
 #ifndef MAP_HUGETLB
 	/* PGSharedMemoryCreate should have dealt with this case */
 	Assert(huge_pages != HUGE_PAGES_ON);
@@ -664,6 +686,29 @@ CreateAnonymousSegment(Size *size)
 						 "\"max_connections\".",
 						 allocsize) : 0));
 	}
+
+#ifdef USE_LIBNUMA
+	/*
+	 * If we requested interleaving by numa_set_membind(), undo it now.
+	 *
+	 * Set interleaving for the allocated (but not yet faulted) shared memory,
+	 * so that memory not located explicitly gets evenly distributed.
+	 *
+	 * This matters especially with huge pages, where it's possible to run out
+	 * of huge pages on some nodes and then crash.
+	 *
+	 * With MAP_POPULATE all memory is already faulted, and so is interleaved
+	 * thanks to numa_set_membind().
+	 */
+	if (shmem_interleave)
+	{
+		/* undo the policy set by numa_set_membind() earlier */
+		numa_set_localalloc();
+
+		/* set interleaving policy for not yet faulted memory */
+		numa_interleave_memory(ptr, allocsize, numa_all_nodes_ptr);
+	}
+#endif
 
 	*size = allocsize;
 	return ptr;

@@ -3890,10 +3890,14 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 
 	/* calculate the number of joins to explore for this join list */
 	{
+		int cnt;
 		root->initial_rels = initial_rels;
+		cnt = standard_join_count(root, levels_needed, initial_rels);
+/*
 		elog(WARNING, "standard_join_count rels %d levels_needed %d count %d",
 			 list_length(initial_rels), levels_needed,
 			 standard_join_count(root, levels_needed, initial_rels));
+*/
 	}
 
 	if (levels_needed == 1)

@@ -35,14 +35,15 @@ static int make_rels_by_clauseless_joins(PlannerInfo *root,
 										 RelOptInfo *old_rel,
 										 List *other_rels,
 										 bool populate);
-static bool has_join_restriction(PlannerInfo *root, RelOptInfo *rel);
-static bool has_legal_joinclause(PlannerInfo *root, RelOptInfo *rel);
+static bool has_join_restriction(PlannerInfo *root, RelOptInfo *rel, bool populate);
+static bool has_legal_joinclause(PlannerInfo *root, RelOptInfo *rel, bool populate);
 static bool restriction_is_constant_false(List *restrictlist,
 										  RelOptInfo *joinrel,
 										  bool only_pushed_down);
 static void make_grouped_join_rel(PlannerInfo *root, RelOptInfo *rel1,
 								  RelOptInfo *rel2, RelOptInfo *joinrel,
-								  SpecialJoinInfo *sjinfo, List *restrictlist);
+								  SpecialJoinInfo *sjinfo, List *restrictlist,
+								  bool populate);
 static void populate_joinrel_with_paths(PlannerInfo *root, RelOptInfo *rel1,
 										RelOptInfo *rel2, RelOptInfo *joinrel,
 										SpecialJoinInfo *sjinfo, List *restrictlist);
@@ -105,7 +106,7 @@ join_search_one_level(PlannerInfo *root, int level)
 		RelOptInfo *old_rel = (RelOptInfo *) lfirst(r);
 
 		if (old_rel->joininfo != NIL || old_rel->has_eclass_joins ||
-			has_join_restriction(root, old_rel))
+			has_join_restriction(root, old_rel, true))
 		{
 			int			first_rel;
 
@@ -182,7 +183,7 @@ join_search_one_level(PlannerInfo *root, int level)
 			 * to force a bushy join plan.
 			 */
 			if (old_rel->joininfo == NIL && !old_rel->has_eclass_joins &&
-				!has_join_restriction(root, old_rel))
+				!has_join_restriction(root, old_rel, true))
 				continue;
 
 			if (k == other_level)	/* only consider remaining rels */
@@ -202,7 +203,7 @@ join_search_one_level(PlannerInfo *root, int level)
 					 * join clause or join order restriction.
 					 */
 					if (have_relevant_joinclause(root, old_rel, new_rel) ||
-						have_join_order_restriction(root, old_rel, new_rel))
+						have_join_order_restriction(root, old_rel, new_rel, true))
 					{
 						(void) make_join_rel(root, old_rel, new_rel);
 					}
@@ -306,7 +307,7 @@ join_count_one_level(PlannerInfo *root, int level)
 		RelOptInfo *old_rel = (RelOptInfo *) lfirst(r);
 
 		if (old_rel->joininfo != NIL || old_rel->has_eclass_joins ||
-			has_join_restriction(root, old_rel))
+			has_join_restriction(root, old_rel, false))
 		{
 			int			first_rel;
 
@@ -384,7 +385,7 @@ join_count_one_level(PlannerInfo *root, int level)
 			 * to force a bushy join plan.
 			 */
 			if (old_rel->joininfo == NIL && !old_rel->has_eclass_joins &&
-				!has_join_restriction(root, old_rel))
+				!has_join_restriction(root, old_rel, false))
 				continue;
 
 			if (k == other_level)	/* only consider remaining rels */
@@ -404,7 +405,7 @@ join_count_one_level(PlannerInfo *root, int level)
 					 * join clause or join order restriction.
 					 */
 					if (have_relevant_joinclause(root, old_rel, new_rel) ||
-						have_join_order_restriction(root, old_rel, new_rel))
+						have_join_order_restriction(root, old_rel, new_rel, false))
 					{
 						if (make_join_rel_internal(root, old_rel, new_rel, false) != NULL)
 							cnt++;
@@ -512,7 +513,7 @@ make_rels_by_clause_joins(PlannerInfo *root,
 
 		if (!bms_overlap(old_rel->relids, other_rel->relids) &&
 			(have_relevant_joinclause(root, old_rel, other_rel) ||
-			 have_join_order_restriction(root, old_rel, other_rel)))
+			 have_join_order_restriction(root, old_rel, other_rel, populate)))
 		{
 			if (make_join_rel_internal(root, old_rel, other_rel, populate) != NULL)
 				cnt++;
@@ -578,7 +579,7 @@ make_rels_by_clauseless_joins(PlannerInfo *root,
  */
 static bool
 join_is_legal(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
-			  Relids joinrelids,
+			  Relids joinrelids, bool populate,
 			  SpecialJoinInfo **sjinfo_p, bool *reversed_p)
 {
 	SpecialJoinInfo *match_sjinfo;
@@ -674,7 +675,7 @@ join_is_legal(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
 		}
 		else if (sjinfo->jointype == JOIN_SEMI &&
 				 bms_equal(sjinfo->syn_righthand, rel2->relids) &&
-				 create_unique_paths(root, rel2, sjinfo) != NULL)
+				 (populate && (create_unique_paths(root, rel2, sjinfo) != NULL)))
 		{
 			/*----------
 			 * For a semijoin, we can join the RHS to anything else by
@@ -706,7 +707,7 @@ join_is_legal(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
 		}
 		else if (sjinfo->jointype == JOIN_SEMI &&
 				 bms_equal(sjinfo->syn_righthand, rel1->relids) &&
-				 create_unique_paths(root, rel1, sjinfo) != NULL)
+				 (populate && (create_unique_paths(root, rel1, sjinfo) != NULL)))
 		{
 			/* Reversed semijoin case */
 			if (match_sjinfo)
@@ -939,7 +940,7 @@ make_join_rel_internal(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
 	joinrelids = bms_union(rel1->relids, rel2->relids);
 
 	/* Check validity and determine join type. */
-	if (!join_is_legal(root, rel1, rel2, joinrelids,
+	if (!join_is_legal(root, rel1, rel2, joinrelids, populate,
 					   &sjinfo, &reversed))
 	{
 		/* invalid join path */
@@ -994,7 +995,7 @@ make_join_rel_internal(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
 
 	/* Build a grouped join relation for 'joinrel' if possible. */
 	make_grouped_join_rel(root, rel1, rel2, joinrel, sjinfo,
-						  restrictlist);
+						  restrictlist, populate);
 
 	/* Add paths to the join relation. */
 	if (populate)
@@ -1148,7 +1149,8 @@ add_outer_joins_to_relids(PlannerInfo *root, Relids input_relids,
 static void
 make_grouped_join_rel(PlannerInfo *root, RelOptInfo *rel1,
 					  RelOptInfo *rel2, RelOptInfo *joinrel,
-					  SpecialJoinInfo *sjinfo, List *restrictlist)
+					  SpecialJoinInfo *sjinfo, List *restrictlist,
+					  bool populate)
 {
 	RelOptInfo *grouped_rel;
 	RelOptInfo *grouped_rel1;
@@ -1286,12 +1288,13 @@ make_grouped_join_rel(PlannerInfo *root, RelOptInfo *rel1,
 	}
 
 	/* Make paths for the grouped join relation. */
-	populate_joinrel_with_paths(root,
-								rel1_empty ? rel1 : grouped_rel1,
-								rel2_empty ? rel2 : grouped_rel2,
-								grouped_rel,
-								sjinfo,
-								restrictlist);
+	if (populate)
+		populate_joinrel_with_paths(root,
+									rel1_empty ? rel1 : grouped_rel1,
+									rel2_empty ? rel2 : grouped_rel2,
+									grouped_rel,
+									sjinfo,
+									restrictlist);
 }
 
 /*
@@ -1485,7 +1488,8 @@ populate_joinrel_with_paths(PlannerInfo *root, RelOptInfo *rel1,
  */
 bool
 have_join_order_restriction(PlannerInfo *root,
-							RelOptInfo *rel1, RelOptInfo *rel2)
+							RelOptInfo *rel1, RelOptInfo *rel2,
+							bool populate)
 {
 	bool		result = false;
 	ListCell   *l;
@@ -1576,8 +1580,8 @@ have_join_order_restriction(PlannerInfo *root,
 	 */
 	if (result)
 	{
-		if (has_legal_joinclause(root, rel1) ||
-			has_legal_joinclause(root, rel2))
+		if (has_legal_joinclause(root, rel1, populate) ||
+			has_legal_joinclause(root, rel2, populate))
 			result = false;
 	}
 
@@ -1597,7 +1601,7 @@ have_join_order_restriction(PlannerInfo *root,
  * expensive has_legal_joinclause test.)
  */
 static bool
-has_join_restriction(PlannerInfo *root, RelOptInfo *rel)
+has_join_restriction(PlannerInfo *root, RelOptInfo *rel, bool populate)
 {
 	ListCell   *l;
 
@@ -1653,7 +1657,7 @@ has_join_restriction(PlannerInfo *root, RelOptInfo *rel)
  * there are join clauses linking to other parts of the query.)
  */
 static bool
-has_legal_joinclause(PlannerInfo *root, RelOptInfo *rel)
+has_legal_joinclause(PlannerInfo *root, RelOptInfo *rel, bool populate)
 {
 	ListCell   *lc;
 
@@ -1674,7 +1678,7 @@ has_legal_joinclause(PlannerInfo *root, RelOptInfo *rel)
 			/* join_is_legal needs relids of the union */
 			joinrelids = bms_union(rel->relids, rel2->relids);
 
-			if (join_is_legal(root, rel, rel2, joinrelids,
+			if (join_is_legal(root, rel, rel2, joinrelids, populate,
 							  &sjinfo, &reversed))
 			{
 				/* Yes, this will work */
@@ -2040,7 +2044,7 @@ try_partitionwise_join(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
 		/* Build a grouped join relation for 'child_joinrel' if possible */
 		make_grouped_join_rel(root, child_rel1, child_rel2,
 							  child_joinrel, child_sjinfo,
-							  child_restrictlist);
+							  child_restrictlist, true);
 
 		/* And make paths for the child join */
 		populate_joinrel_with_paths(root, child_rel1, child_rel2,

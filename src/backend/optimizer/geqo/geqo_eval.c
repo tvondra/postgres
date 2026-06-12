@@ -349,7 +349,7 @@ desirable_join(PlannerInfo *root,
 	 * restriction forcing these rels to be joined.
 	 */
 	if (have_relevant_joinclause(root, outer_rel, inner_rel) ||
-		have_join_order_restriction(root, outer_rel, inner_rel))
+		have_join_order_restriction(root, outer_rel, inner_rel, true))
 		return true;
 
 	/* Otherwise postpone the join till later. */

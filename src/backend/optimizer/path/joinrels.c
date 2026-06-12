@@ -23,15 +23,18 @@
 #include "optimizer/planner.h"
 #include "partitioning/partbounds.h"
 #include "utils/memutils.h"
+#include "utils/timestamp.h"
 
 
-static void make_rels_by_clause_joins(PlannerInfo *root,
-									  RelOptInfo *old_rel,
-									  List *other_rels,
-									  int first_rel_idx);
-static void make_rels_by_clauseless_joins(PlannerInfo *root,
-										  RelOptInfo *old_rel,
-										  List *other_rels);
+static int make_rels_by_clause_joins(PlannerInfo *root,
+									 RelOptInfo *old_rel,
+									 List *other_rels,
+									 int first_rel_idx,
+									 bool populate);
+static int make_rels_by_clauseless_joins(PlannerInfo *root,
+										 RelOptInfo *old_rel,
+										 List *other_rels,
+										 bool populate);
 static bool has_join_restriction(PlannerInfo *root, RelOptInfo *rel);
 static bool has_legal_joinclause(PlannerInfo *root, RelOptInfo *rel);
 static bool restriction_is_constant_false(List *restrictlist,
@@ -60,6 +63,10 @@ static void get_matching_part_pairs(PlannerInfo *root, RelOptInfo *joinrel,
 									RelOptInfo *rel1, RelOptInfo *rel2,
 									List **parts1, List **parts2);
 
+static RelOptInfo *make_join_rel_internal(PlannerInfo *root,
+										  RelOptInfo *rel1, RelOptInfo *rel2,
+										  bool populate);
+static int join_count_one_level(PlannerInfo *root, int level);
 
 /*
  * join_search_one_level
@@ -80,8 +87,26 @@ join_search_one_level(PlannerInfo *root, int level)
 	List	  **joinrels = root->join_rel_level;
 	ListCell   *r;
 	int			k;
+	TimestampTz	s, e;
+			int64 delta = 0;
+	static		int64 sum_time = 0;
+	static		int64 sum_cnt = 0;
 
 	Assert(joinrels[level] == NIL);
+
+	if (level == 2)
+	{
+		sum_cnt = 0;
+		sum_time = 0;
+	}
+
+	s = GetCurrentTimestamp();
+	sum_cnt += join_count_one_level(root, level);
+	e = GetCurrentTimestamp();
+	delta = TimestampDifferenceMilliseconds(s, e);
+	sum_time += delta;
+
+	elog(WARNING, "join_count_one_level %d %ld time %ld count %ld", level, delta, sum_time, sum_cnt);
 
 	/* Set join_cur_level so that new joinrels are added to proper list */
 	root->join_cur_level = level;
@@ -120,7 +145,8 @@ join_search_one_level(PlannerInfo *root, int level)
 			else
 				first_rel = 0;
 
-			make_rels_by_clause_joins(root, old_rel, joinrels[1], first_rel);
+			make_rels_by_clause_joins(root, old_rel, joinrels[1], first_rel,
+									  true);
 		}
 		else
 		{
@@ -138,7 +164,8 @@ join_search_one_level(PlannerInfo *root, int level)
 			 */
 			make_rels_by_clauseless_joins(root,
 										  old_rel,
-										  joinrels[1]);
+										  joinrels[1],
+										  true);
 		}
 	}
 
@@ -233,7 +260,8 @@ join_search_one_level(PlannerInfo *root, int level)
 
 			make_rels_by_clauseless_joins(root,
 										  old_rel,
-										  joinrels[1]);
+										  joinrels[1],
+										  true);
 		}
 
 		/*----------
@@ -262,6 +290,211 @@ join_search_one_level(PlannerInfo *root, int level)
 }
 
 /*
+ * join_count_one_level
+ *     a simplified version of join_search_one_level for the purpose of
+ *     counting join orders
+ *
+ * level: level of rels we want to make this time
+ * root->join_rel_level[j], 1 <= j < level, is a list of rels containing j items
+ *
+ * The result is returned in root->join_rel_level[level].
+ */
+static int
+join_count_one_level(PlannerInfo *root, int level)
+{
+	List	  **joinrels = root->join_rel_level;
+	ListCell   *r;
+	int			k;
+	int			cnt = 0;
+
+	Assert(joinrels[level] == NIL);
+
+	/* Set join_cur_level so that new joinrels are added to proper list */
+	root->join_cur_level = level;
+
+	/*
+	 * First, consider left-sided and right-sided plans, in which rels of
+	 * exactly level-1 member relations are joined against initial relations.
+	 * We prefer to join using join clauses, but if we find a rel of level-1
+	 * members that has no join clauses, we will generate Cartesian-product
+	 * joins against all initial rels not already contained in it.
+	 */
+	foreach(r, joinrels[level - 1])
+	{
+		RelOptInfo *old_rel = (RelOptInfo *) lfirst(r);
+
+		if (old_rel->joininfo != NIL || old_rel->has_eclass_joins ||
+			has_join_restriction(root, old_rel))
+		{
+			int			first_rel;
+
+			/*
+			 * There are join clauses or join order restrictions relevant to
+			 * this rel, so consider joins between this rel and (only) those
+			 * initial rels it is linked to by a clause or restriction.
+			 *
+			 * At level 2 this condition is symmetric, so there is no need to
+			 * look at initial rels before this one in the list; we already
+			 * considered such joins when we were at the earlier rel.  (The
+			 * mirror-image joins are handled automatically by make_join_rel.)
+			 * In later passes (level > 2), we join rels of the previous level
+			 * to each initial rel they don't already include but have a join
+			 * clause or restriction with.
+			 */
+			if (level == 2)		/* consider remaining initial rels */
+				first_rel = foreach_current_index(r) + 1;
+			else
+				first_rel = 0;
+
+			cnt += make_rels_by_clause_joins(root, old_rel,
+											 joinrels[1], first_rel,
+											 false);
+		}
+		else
+		{
+			/*
+			 * Oops, we have a relation that is not joined to any other
+			 * relation, either directly or by join-order restrictions.
+			 * Cartesian product time.
+			 *
+			 * We consider a cartesian product with each not-already-included
+			 * initial rel, whether it has other join clauses or not.  At
+			 * level 2, if there are two or more clauseless initial rels, we
+			 * will redundantly consider joining them in both directions; but
+			 * such cases aren't common enough to justify adding complexity to
+			 * avoid the duplicated effort.
+			 */
+			cnt += make_rels_by_clauseless_joins(root,
+												 old_rel,
+												 joinrels[1],
+												 false);
+		}
+	}
+
+	/*
+	 * Now, consider "bushy plans" in which relations of k initial rels are
+	 * joined to relations of level-k initial rels, for 2 <= k <= level-2.
+	 *
+	 * We only consider bushy-plan joins for pairs of rels where there is a
+	 * suitable join clause (or join order restriction), in order to avoid
+	 * unreasonable growth of planning time.
+	 */
+	for (k = 2;; k++)
+	{
+		int			other_level = level - k;
+
+		/*
+		 * Since make_join_rel(x, y) handles both x,y and y,x cases, we only
+		 * need to go as far as the halfway point.
+		 */
+		if (k > other_level)
+			break;
+
+		foreach(r, joinrels[k])
+		{
+			RelOptInfo *old_rel = (RelOptInfo *) lfirst(r);
+			int			first_rel;
+			ListCell   *r2;
+
+			/*
+			 * We can ignore relations without join clauses here, unless they
+			 * participate in join-order restrictions --- then we might have
+			 * to force a bushy join plan.
+			 */
+			if (old_rel->joininfo == NIL && !old_rel->has_eclass_joins &&
+				!has_join_restriction(root, old_rel))
+				continue;
+
+			if (k == other_level)	/* only consider remaining rels */
+				first_rel = foreach_current_index(r) + 1;
+			else
+				first_rel = 0;
+
+			for_each_from(r2, joinrels[other_level], first_rel)
+			{
+				RelOptInfo *new_rel = (RelOptInfo *) lfirst(r2);
+
+				if (!bms_overlap(old_rel->relids, new_rel->relids))
+				{
+					/*
+					 * OK, we can build a rel of the right level from this
+					 * pair of rels.  Do so if there is at least one relevant
+					 * join clause or join order restriction.
+					 */
+					if (have_relevant_joinclause(root, old_rel, new_rel) ||
+						have_join_order_restriction(root, old_rel, new_rel))
+					{
+						if (make_join_rel_internal(root, old_rel, new_rel, false) != NULL)
+							cnt++;
+					}
+				}
+			}
+		}
+	}
+
+	/*----------
+	 * Last-ditch effort: if we failed to find any usable joins so far, force
+	 * a set of cartesian-product joins to be generated.  This handles the
+	 * special case where all the available rels have join clauses but we
+	 * cannot use any of those clauses yet.  This can only happen when we are
+	 * considering a join sub-problem (a sub-joinlist) and all the rels in the
+	 * sub-problem have only join clauses with rels outside the sub-problem.
+	 * An example is
+	 *
+	 *		SELECT ... FROM a INNER JOIN b ON TRUE, c, d, ...
+	 *		WHERE a.w = c.x and b.y = d.z;
+	 *
+	 * If the "a INNER JOIN b" sub-problem does not get flattened into the
+	 * upper level, we must be willing to make a cartesian join of a and b;
+	 * but the code above will not have done so, because it thought that both
+	 * a and b have joinclauses.  We consider only left-sided and right-sided
+	 * cartesian joins in this case (no bushy).
+	 *----------
+	 */
+	if (joinrels[level] == NIL)
+	{
+		/*
+		 * This loop is just like the first one, except we always call
+		 * make_rels_by_clauseless_joins().
+		 */
+		foreach(r, joinrels[level - 1])
+		{
+			RelOptInfo *old_rel = (RelOptInfo *) lfirst(r);
+
+			cnt += make_rels_by_clauseless_joins(root,
+												 old_rel,
+												 joinrels[1],
+												 false);
+		}
+
+		/*----------
+		 * When special joins are involved, there may be no legal way
+		 * to make an N-way join for some values of N.  For example consider
+		 *
+		 * SELECT ... FROM t1 WHERE
+		 *	 x IN (SELECT ... FROM t2,t3 WHERE ...) AND
+		 *	 y IN (SELECT ... FROM t4,t5 WHERE ...)
+		 *
+		 * We will flatten this query to a 5-way join problem, but there are
+		 * no 4-way joins that join_is_legal() will consider legal.  We have
+		 * to accept failure at level 4 and go on to discover a workable
+		 * bushy plan at level 5.
+		 *
+		 * However, if there are no special joins and no lateral references
+		 * then join_is_legal() should never fail, and so the following sanity
+		 * check is useful.
+		 *----------
+		 */
+		if (joinrels[level] == NIL &&
+			root->join_info_list == NIL &&
+			!root->hasLateralRTEs)
+			elog(ERROR, "failed to build any %d-way joins", level);
+	}
+
+	return cnt;
+}
+
+/*
  * make_rels_by_clause_joins
  *	  Build joins between the given relation 'old_rel' and other relations
  *	  that participate in join clauses that 'old_rel' also participates in
@@ -281,12 +514,14 @@ join_search_one_level(PlannerInfo *root, int level)
  * Currently, this is only used with initial rels in other_rels, but it
  * will work for joining to joinrels too.
  */
-static void
+static int
 make_rels_by_clause_joins(PlannerInfo *root,
 						  RelOptInfo *old_rel,
 						  List *other_rels,
-						  int first_rel_idx)
+						  int first_rel_idx,
+						  bool populate)
 {
+	int		cnt = 0;
 	ListCell   *l;
 
 	for_each_from(l, other_rels, first_rel_idx)
@@ -297,9 +532,12 @@ make_rels_by_clause_joins(PlannerInfo *root,
 			(have_relevant_joinclause(root, old_rel, other_rel) ||
 			 have_join_order_restriction(root, old_rel, other_rel)))
 		{
-			(void) make_join_rel(root, old_rel, other_rel);
+			if (make_join_rel_internal(root, old_rel, other_rel, populate) != NULL)
+				cnt++;
 		}
 	}
+
+	return cnt;
 }
 
 /*
@@ -315,11 +553,13 @@ make_rels_by_clause_joins(PlannerInfo *root,
  * Currently, this is only used with initial rels in other_rels, but it would
  * work for joining to joinrels too.
  */
-static void
+static int
 make_rels_by_clauseless_joins(PlannerInfo *root,
 							  RelOptInfo *old_rel,
-							  List *other_rels)
+							  List *other_rels,
+							  bool populate)
 {
+	int		cnt = 0;
 	ListCell   *l;
 
 	foreach(l, other_rels)
@@ -328,9 +568,12 @@ make_rels_by_clauseless_joins(PlannerInfo *root,
 
 		if (!bms_overlap(other_rel->relids, old_rel->relids))
 		{
-			(void) make_join_rel(root, old_rel, other_rel);
+			if (make_join_rel_internal(root, old_rel, other_rel, populate) != NULL)
+				cnt++;
 		}
 	}
+
+	return cnt;
 }
 
 
@@ -695,8 +938,9 @@ init_dummy_sjinfo(SpecialJoinInfo *sjinfo, Relids left_relids,
  * when working with outer joins, or with IN or EXISTS clauses that have been
  * turned into joins.
  */
-RelOptInfo *
-make_join_rel(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
+static RelOptInfo *
+make_join_rel_internal(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
+					   bool populate)
 {
 	Relids		joinrelids;
 	SpecialJoinInfo *sjinfo;
@@ -771,12 +1015,19 @@ make_join_rel(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
 						  restrictlist);
 
 	/* Add paths to the join relation. */
-	populate_joinrel_with_paths(root, rel1, rel2, joinrel, sjinfo,
-								restrictlist);
+	if (populate)
+		populate_joinrel_with_paths(root, rel1, rel2, joinrel, sjinfo,
+									restrictlist);
 
 	bms_free(joinrelids);
 
 	return joinrel;
+}
+
+RelOptInfo *
+make_join_rel(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
+{
+	return make_join_rel_internal(root, rel1, rel2, false);
 }
 
 /*

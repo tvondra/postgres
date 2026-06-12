@@ -2556,10 +2556,10 @@ regression_main(int argc, char *argv[],
 		 * Start the temp postmaster
 		 */
 		snprintf(buf, sizeof(buf),
-				 "\"%s%spostgres\" -D \"%s/data\" -F%s "
+				 "valgrind --quiet --trace-children=yes --track-origins=yes --read-var-info=yes --num-callers=20 --leak-check=no --gen-suppressions=all --suppressions=/home/user/work/postgres/src/tools/valgrind.supp --error-limit=no --log-file=/tmp/valgrind.%d.log \"%s%spostgres\" -D \"%s/data\" -F%s "
 				 "-c \"listen_addresses=%s\" -k \"%s\" "
 				 "> \"%s/log/postmaster.log\" 2>&1",
-				 bindir ? bindir : "",
+				 getpid(), bindir ? bindir : "",
 				 bindir ? "/" : "",
 				 temp_instance, debug ? " -d 5" : "",
 				 hostname ? hostname : "", sockdir ? sockdir : "",

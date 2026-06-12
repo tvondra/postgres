@@ -44,11 +44,13 @@
 #include "access/tableam.h"
 #include "common/int.h"
 #include "lib/qunique.h"
+#include "utils/memdebug.h"
 
 static void release_and_unguard_batch(IndexScanDesc scan, IndexScanBatch batch,
 									  bool allow_cache);
 static inline bool batch_cache_store(IndexScanDesc scan, IndexScanBatch batch);
 static int	batch_compare_int(const void *va, const void *vb);
+static size_t indexam_util_batch_size(IndexScanDesc scan, size_t *base_sz_p, size_t *opaque_sz_p);
 
 /*
  * Reset ring buffer and related positional state used during an amgetbatch
@@ -104,6 +106,14 @@ tableam_util_batchscan_end(IndexScanDesc scan)
 
 		if (cached == NULL)
 			continue;
+
+		/* mark the whole batch as accessible but undefined */
+		VALGRIND_MAKE_MEM_UNDEFINED(cached,
+						indexam_util_batch_size(scan, NULL, NULL));
+
+		/* except for the header fields, which are defined */
+		VALGRIND_MAKE_MEM_DEFINED(cached,
+								  offsetof(IndexScanBatchData, items));
 
 		if (cached->deadItems)
 			pfree(cached->deadItems);
@@ -553,6 +563,98 @@ indexam_util_unlock_batch(IndexScanDesc scan, IndexScanBatch batch, Buffer buf)
 	}
 }
 
+static size_t
+indexam_util_batch_size(IndexScanDesc scan, size_t *base_sz_p, size_t *opaque_sz_p)
+{
+	size_t		opaque_areas_prefix_sz,
+				base_sz,
+				ios_total_trailing_sz,
+				allocsz;
+
+	/*
+	 * Lazily compute batch_base_offset on first call here for scan.
+	 *
+	 * This combines the table AM opaque area (its fixed-size header plus
+	 * any per-item area used during index-only scans) and the index AM's
+	 * opaque areas (static plus the optional dynamic) into a single
+	 * offset used to find the true allocation base from the batch
+	 * pointer.  (This is also where the fixed-size table AM opaque area
+	 * can be found.)
+	 */
+	if (scan->batch_base_offset == 0)
+	{
+		Size		table_area = 0;
+		Size		index_dyn_area;
+
+		/*
+		 * The table AM opaque area is a single contiguous block: a
+		 * fixed-size header (batch_opaque_size bytes) immediately
+		 * followed by a per-item area (batch_per_item_size bytes per
+		 * batch item).
+		 *
+		 * We deliberately MAXALIGN only the combined size, never the
+		 * header or the per-item area individually.  This lets the table
+		 * AM lay out the whole area as a single C struct with a flexible
+		 * array member for its per-item data.  It also allows table AMs
+		 * to not use a per-item area at all, but still use a fixed-size
+		 * struct.
+		 */
+		if (scan->usebatchring)
+			table_area = MAXALIGN(scan->batch_opaque_size +
+								  (Size) scan->batch_per_item_size *
+								  scan->maxitemsbatch);
+
+		/*
+		 * The optional dynamic index AM opaque area
+		 * (batch_index_opaque_dyn bytes) sits between the table AM area
+		 * and the static index AM opaque area
+		 */
+		index_dyn_area = MAXALIGN(scan->batch_index_opaque_dyn);
+
+		/*
+		 * index_dyn_area is allowed to be very large, so we're careful to
+		 * not let it overflow
+		 */
+		scan->batch_base_offset = table_area + index_dyn_area +
+			scan->batch_index_opaque_static;
+	}
+
+	/*
+	 * Subtotal #1: the size of both AM opaque areas (the table AM's
+	 * header plus its per-item area, and the index AM's area) located
+	 * before the start of IndexScanBatchData
+	 */
+	opaque_areas_prefix_sz = scan->batch_base_offset;
+	Assert(opaque_areas_prefix_sz == MAXALIGN(opaque_areas_prefix_sz));
+
+	/* Subtotal #2: IndexScanBatchData and its items[maxitemsbatch] */
+	base_sz = MAXALIGN(offsetof(IndexScanBatchData, items) +
+					   sizeof(BatchMatchingItem) * scan->maxitemsbatch);
+
+	/*
+	 * Subtotal #3: the currTuples workspace that comes after items[],
+	 * where the index AM stores index tuples during index-only scans
+	 */
+	ios_total_trailing_sz = 0;
+	if (scan->xs_want_itup)
+	{
+		ios_total_trailing_sz = scan->batch_tuples_workspace;
+		pg_assume(ios_total_trailing_sz > 0);
+		Assert(ios_total_trailing_sz == MAXALIGN(ios_total_trailing_sz));
+	}
+
+	/* Total batch allocation size is the sum of our three subtotals */
+	allocsz = opaque_areas_prefix_sz + base_sz + ios_total_trailing_sz;
+
+	if (base_sz_p)
+		*base_sz_p = base_sz;
+
+	if (opaque_sz_p)
+		*opaque_sz_p = opaque_areas_prefix_sz;
+
+	return allocsz;
+}
+
 /*
  * Allocate a new batch
  *
@@ -594,6 +696,15 @@ indexam_util_alloc_batch(IndexScanDesc scan)
 				/* Return cached unreferenced batch */
 				batch = scan->batchcache[i];
 				scan->batchcache[i] = NULL;
+
+				/* mark the whole batch as accessible but undefined */
+				VALGRIND_MAKE_MEM_UNDEFINED(batch,
+								indexam_util_batch_size(scan, NULL, NULL));
+
+				/* except for the header fields, which are defined */
+				VALGRIND_MAKE_MEM_DEFINED(batch,
+										  offsetof(IndexScanBatchData, items));
+
 				break;
 			}
 		}
@@ -606,97 +717,33 @@ indexam_util_alloc_batch(IndexScanDesc scan)
 		 */
 		batch = scan->batchcache[0];
 		scan->batchcache[0] = NULL;
+
+		/* mark the whole batch as accessible but undefined */
+		VALGRIND_MAKE_MEM_UNDEFINED(batch,
+						indexam_util_batch_size(scan, NULL, NULL));
+
+		/* except for the header fields, which are defined */
+		VALGRIND_MAKE_MEM_DEFINED(batch,
+								  offsetof(IndexScanBatchData, items));
 	}
 
 	if (!batch)
 	{
 		size_t		opaque_areas_prefix_sz,
 					base_sz,
-					ios_total_trailing_sz,
 					allocsz;
 		char	   *raw_batch_alloc;
 
-		/*
-		 * Lazily compute batch_base_offset on first call here for scan.
-		 *
-		 * This combines the table AM opaque area (its fixed-size header plus
-		 * any per-item area used during index-only scans) and the index AM's
-		 * opaque areas (static plus the optional dynamic) into a single
-		 * offset used to find the true allocation base from the batch
-		 * pointer.  (This is also where the fixed-size table AM opaque area
-		 * can be found.)
-		 */
-		if (scan->batch_base_offset == 0)
-		{
-			Size		table_area = 0;
-			Size		index_dyn_area;
+		allocsz
+			= indexam_util_batch_size(scan, &base_sz, &opaque_areas_prefix_sz);
 
-			/*
-			 * The table AM opaque area is a single contiguous block: a
-			 * fixed-size header (batch_opaque_size bytes) immediately
-			 * followed by a per-item area (batch_per_item_size bytes per
-			 * batch item).
-			 *
-			 * We deliberately MAXALIGN only the combined size, never the
-			 * header or the per-item area individually.  This lets the table
-			 * AM lay out the whole area as a single C struct with a flexible
-			 * array member for its per-item data.  It also allows table AMs
-			 * to not use a per-item area at all, but still use a fixed-size
-			 * struct.
-			 */
-			if (scan->usebatchring)
-				table_area = MAXALIGN(scan->batch_opaque_size +
-									  (Size) scan->batch_per_item_size *
-									  scan->maxitemsbatch);
-
-			/*
-			 * The optional dynamic index AM opaque area
-			 * (batch_index_opaque_dyn bytes) sits between the table AM area
-			 * and the static index AM opaque area
-			 */
-			index_dyn_area = MAXALIGN(scan->batch_index_opaque_dyn);
-
-			/*
-			 * index_dyn_area is allowed to be very large, so we're careful to
-			 * not let it overflow
-			 */
-			scan->batch_base_offset = table_area + index_dyn_area +
-				scan->batch_index_opaque_static;
-		}
-
-		/*
-		 * Subtotal #1: the size of both AM opaque areas (the table AM's
-		 * header plus its per-item area, and the index AM's area) located
-		 * before the start of IndexScanBatchData
-		 */
-		opaque_areas_prefix_sz = scan->batch_base_offset;
-		Assert(opaque_areas_prefix_sz == MAXALIGN(opaque_areas_prefix_sz));
-
-		/* Subtotal #2: IndexScanBatchData and its items[maxitemsbatch] */
-		base_sz = MAXALIGN(offsetof(IndexScanBatchData, items) +
-						   sizeof(BatchMatchingItem) * scan->maxitemsbatch);
-
-		/*
-		 * Subtotal #3: the currTuples workspace that comes after items[],
-		 * where the index AM stores index tuples during index-only scans
-		 */
-		ios_total_trailing_sz = 0;
-		if (scan->xs_want_itup)
-		{
-			ios_total_trailing_sz = scan->batch_tuples_workspace;
-			pg_assume(ios_total_trailing_sz > 0);
-			Assert(ios_total_trailing_sz == MAXALIGN(ios_total_trailing_sz));
-		}
-
-		/* Total batch allocation size is the sum of our three subtotals */
-		allocsz = opaque_areas_prefix_sz + base_sz + ios_total_trailing_sz;
 		raw_batch_alloc = palloc(allocsz);
 		batch = (IndexScanBatch) (raw_batch_alloc + opaque_areas_prefix_sz);
 		Assert(index_scan_batch_base(scan, batch) == raw_batch_alloc);
 
 		/* currTuples (if any) is directly after items[] */
 		batch->currTuples = NULL;
-		if (ios_total_trailing_sz)
+		if (scan->xs_want_itup)
 			batch->currTuples = (char *) batch + base_sz;
 		Assert(!scan->xs_want_itup || batch->currTuples != NULL);
 
@@ -768,6 +815,11 @@ indexam_util_release_batch(IndexScanDesc scan, IndexScanBatch batch)
 		Assert(batch->currTuples == NULL);
 
 		scan->batchcache[0] = batch;
+
+		/* mark the whole batch as not accessible  */
+		VALGRIND_MAKE_MEM_NOACCESS(batch,
+								   indexam_util_batch_size(scan, NULL, NULL));
+
 		return;
 	}
 
@@ -800,6 +852,11 @@ batch_cache_store(IndexScanDesc scan, IndexScanBatch batch)
 		if (scan->batchcache[i] == NULL)
 		{
 			scan->batchcache[i] = batch;
+
+			/* mark the whole batch as not accessible  */
+			VALGRIND_MAKE_MEM_NOACCESS(batch,
+									   indexam_util_batch_size(scan, NULL, NULL));
+
 			return true;
 		}
 	}

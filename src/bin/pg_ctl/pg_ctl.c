@@ -488,12 +488,12 @@ start_postmaster(void)
 	 * has the same PID as the current child process.
 	 */
 	if (log_file != NULL)
-		cmd = psprintf("exec \"%s\" %s%s < \"%s\" >> \"%s\" 2>&1",
-					   exec_path, pgdata_opt, post_opts,
+		cmd = psprintf("exec valgrind --quiet --trace-children=yes --track-origins=yes --read-var-info=yes --num-callers=20 --leak-check=no --gen-suppressions=all --suppressions=/home/user/work/postgres/src/tools/valgrind.supp --error-limit=no --log-file=/tmp/valgrind.%d.log \"%s\" %s%s < \"%s\" >> \"%s\" 2>&1",
+					   getpid(), exec_path, pgdata_opt, post_opts,
 					   DEVNULL, log_file);
 	else
-		cmd = psprintf("exec \"%s\" %s%s < \"%s\" 2>&1",
-					   exec_path, pgdata_opt, post_opts, DEVNULL);
+		cmd = psprintf("exec valgrind --quiet --trace-children=yes --track-origins=yes --read-var-info=yes --num-callers=20 --leak-check=no --gen-suppressions=all --suppressions=/home/user/work/postgres/src/tools/valgrind.supp --error-limit=no --log-file=/tmp/valgrind.%d.log \"%s\" %s%s < \"%s\" 2>&1",
+					   getpid(), exec_path, pgdata_opt, post_opts, DEVNULL);
 
 	(void) execl("/bin/sh", "/bin/sh", "-c", cmd, (char *) NULL);
 

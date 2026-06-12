@@ -3888,6 +3888,14 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 		initial_rels = lappend(initial_rels, thisrel);
 	}
 
+	/* calculate the number of joins to explore for this join list */
+	{
+		root->initial_rels = initial_rels;
+		elog(WARNING, "standard_join_count rels %d levels_needed %d count %d",
+			 list_length(initial_rels), levels_needed,
+			 standard_join_count(root, levels_needed, initial_rels));
+	}
+
 	if (levels_needed == 1)
 	{
 		/*
@@ -4053,6 +4061,58 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 	root->join_rel_level = NULL;
 
 	return rel;
+}
+
+/*
+ * standard_join_count
+ *	  count join orderdings to explore for a given join problem
+ *
+ * XXX See standard_join_search for details.
+ */
+int
+standard_join_count(PlannerInfo *root, int levels_needed, List *initial_rels)
+{
+	int			lev;
+	int			cnt = 0;
+
+	/*
+	 * This function cannot be invoked recursively within any one planning
+	 * problem, so join_rel_level[] can't be in use already.
+	 */
+	Assert(root->join_rel_level == NULL);
+
+	/*
+	 * We employ a simple "dynamic programming" algorithm: we first find all
+	 * ways to build joins of two jointree items, then all ways to build joins
+	 * of three items (from two-item joins and single items), then four-item
+	 * joins, and so on until we have considered all ways to join all the
+	 * items into one rel.
+	 *
+	 * root->join_rel_level[j] is a list of all the j-item rels.  Initially we
+	 * set root->join_rel_level[1] to represent all the single-jointree-item
+	 * relations.
+	 */
+	root->join_rel_level = (List **) palloc0((levels_needed + 1) * sizeof(List *));
+
+	root->join_rel_level[1] = initial_rels;
+
+	for (lev = 2; lev <= levels_needed; lev++)
+	{
+		/*
+		 * Determine all possible pairs of relations to be joined at this
+		 * level, and build paths for making each one from every available
+		 * pair of lower-level relations.
+		 */
+		cnt += join_count_one_level(root, lev);
+	}
+
+	/*
+	 * XXX Maybe we could keep the build lists, so that standard_join_search
+	 * does not need to rebuild them? At least when we're within the limit?
+	 */
+	root->join_rel_level = NULL;
+
+	return cnt;
 }
 
 /*****************************************************************************

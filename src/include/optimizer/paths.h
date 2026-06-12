@@ -61,6 +61,8 @@ extern PGDLLIMPORT join_search_hook_type join_search_hook;
 extern RelOptInfo *make_one_rel(PlannerInfo *root, List *joinlist);
 extern RelOptInfo *standard_join_search(PlannerInfo *root, int levels_needed,
 										List *initial_rels);
+extern int standard_join_count(PlannerInfo *root, int levels_needed,
+							   List *initial_rels);
 
 extern void generate_gather_paths(PlannerInfo *root, RelOptInfo *rel,
 								  bool override_rows);
@@ -109,6 +111,7 @@ extern void add_paths_to_joinrel(PlannerInfo *root, RelOptInfo *joinrel,
  * joinrels.c
  *	  routines to determine which relations to join
  */
+extern int join_count_one_level(PlannerInfo *root, int level);
 extern void join_search_one_level(PlannerInfo *root, int level);
 extern RelOptInfo *make_join_rel(PlannerInfo *root,
 								 RelOptInfo *rel1, RelOptInfo *rel2);

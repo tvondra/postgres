@@ -823,6 +823,25 @@ build_join_rel(PlannerInfo *root,
 														   outer_rel,
 														   inner_rel,
 														   sjinfo);
+
+		/*
+		 * XXX we may be redoing the join order search (after one to get the
+		 * count), in which case we need to make sure the joinrel is already in
+		 * the list (because we reset the lists after the count, but keep the
+		 * reloptinfos).
+		 *
+		 * FIXME we should keep the lists - at least when the count is low enough
+		 * to not need to split the join into smaller subproblems.
+		 */
+		if (root->join_rel_level &&
+			!list_member_ptr(root->join_rel_level[root->join_cur_level], joinrel))
+		{
+			Assert(root->join_cur_level > 0);
+			Assert(root->join_cur_level <= bms_num_members(joinrel->relids));
+			root->join_rel_level[root->join_cur_level] =
+				lappend(root->join_rel_level[root->join_cur_level], joinrel);
+		}
+
 		return joinrel;
 	}
 

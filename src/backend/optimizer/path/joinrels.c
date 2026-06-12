@@ -66,7 +66,7 @@ static void get_matching_part_pairs(PlannerInfo *root, RelOptInfo *joinrel,
 static RelOptInfo *make_join_rel_internal(PlannerInfo *root,
 										  RelOptInfo *rel1, RelOptInfo *rel2,
 										  bool populate);
-static int join_count_one_level(PlannerInfo *root, int level);
+
 
 /*
  * join_search_one_level
@@ -87,26 +87,8 @@ join_search_one_level(PlannerInfo *root, int level)
 	List	  **joinrels = root->join_rel_level;
 	ListCell   *r;
 	int			k;
-	TimestampTz	s, e;
-			int64 delta = 0;
-	static		int64 sum_time = 0;
-	static		int64 sum_cnt = 0;
 
 	Assert(joinrels[level] == NIL);
-
-	if (level == 2)
-	{
-		sum_cnt = 0;
-		sum_time = 0;
-	}
-
-	s = GetCurrentTimestamp();
-	sum_cnt += join_count_one_level(root, level);
-	e = GetCurrentTimestamp();
-	delta = TimestampDifferenceMilliseconds(s, e);
-	sum_time += delta;
-
-	elog(WARNING, "join_count_one_level %d %ld time %ld count %ld", level, delta, sum_time, sum_cnt);
 
 	/* Set join_cur_level so that new joinrels are added to proper list */
 	root->join_cur_level = level;
@@ -299,7 +281,7 @@ join_search_one_level(PlannerInfo *root, int level)
  *
  * The result is returned in root->join_rel_level[level].
  */
-static int
+int
 join_count_one_level(PlannerInfo *root, int level)
 {
 	List	  **joinrels = root->join_rel_level;

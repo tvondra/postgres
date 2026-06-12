@@ -3888,7 +3888,14 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 		initial_rels = lappend(initial_rels, thisrel);
 	}
 
-	/* calculate the number of joins to explore for this join list */
+	/* calculate the number of joins to explore for this join list
+	 *
+	 * XXX don't do this before qeqo(), because that happens to crash. It
+	 * seems to not work due to the MemoryContextDelete(mycontext) at the
+	 * end of geqo_eval(). It seems to invalidate the pathlist in the join
+	 * reloptinfo.
+	 */
+	if (!(enable_geqo && levels_needed >= geqo_threshold))
 	{
 		int cnt;
 		root->initial_rels = initial_rels;

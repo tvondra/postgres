@@ -1010,7 +1010,7 @@ make_join_rel_internal(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
 RelOptInfo *
 make_join_rel(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
 {
-	return make_join_rel_internal(root, rel1, rel2, false);
+	return make_join_rel_internal(root, rel1, rel2, true);
 }
 
 /*

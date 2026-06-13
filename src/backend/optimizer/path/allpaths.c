@@ -3898,8 +3898,105 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 	if (!(enable_geqo && levels_needed >= geqo_threshold))
 	{
 		int cnt;
+
 		root->initial_rels = initial_rels;
 		cnt = standard_join_count(root, levels_needed, initial_rels);
+
+		elog(WARNING, "join of %d rels difficulty %d",
+			 list_length(initial_rels), cnt);
+
+		/*
+		 * if the join order search is expected to be too expensive, split
+		 * the join order search into smaller subprobles below the limit
+		 *
+		 * XXX arbitrary limit of 10k join orders
+		 *
+		 * This is not quite right, the subproblem may fail to find a valid
+		 * join order, e.g. in the presence of right joins. For example this
+		 * works fine:
+		 * 
+		 * EXPLAIN SELECT * FROM t_0
+		 *    JOIN t_1 ON ((t_1.c_1_19 = t_0.c_0_23) AND (t_1.c_1_11 = t_0.c_0_17) AND (t_1.c_1_1 = t_0.c_0_15))
+		 *    JOIN t_2 ON ((t_2.c_2_16 = t_1.c_1_20) AND (t_2.c_2_8 = t_1.c_1_3) AND (t_2.c_2_12 = t_0.c_0_9))
+		 *    JOIN t_3 ON ((t_3.c_3_7 = t_2.c_2_4) AND (t_3.c_3_26 = t_1.c_1_5))
+		 *    JOIN t_4 ON ((t_4.c_4_26 = t_1.c_1_21) AND (t_4.c_4_27 = t_0.c_0_23) AND (t_4.c_4_22 = t_0.c_0_3))
+		 *    JOIN t_5 ON ((t_5.c_5_0 = t_4.c_4_25) AND (t_5.c_5_7 = t_1.c_1_13))
+		 *    RIGHT JOIN t_6 ON ((t_6.c_6_3 = t_2.c_2_17) AND (t_6.c_6_17 = t_0.c_0_12) AND (t_6.c_6_8 = t_5.c_5_16))
+		 *    JOIN t_7 ON ((t_7.c_7_10 = t_2.c_2_21) AND (t_7.c_7_17 = t_0.c_0_21))
+		 *    JOIN t_8 ON ((t_8.c_8_1 = t_5.c_5_29))
+		 *    JOIN t_9 ON ((t_9.c_9_12 = t_0.c_0_19) AND (t_9.c_9_4 = t_4.c_4_31))
+		 *    JOIN t_10 ON ((t_10.c_10_8 = t_9.c_9_25) AND (t_10.c_10_25 = t_7.c_7_11) AND (t_10.c_10_16 = t_3.c_3_9))
+		 *    JOIN t_11 ON ((t_11.c_11_19 = t_0.c_0_20));
+		 *
+		 * but this fails to find a valid 8-way join:
+		 *
+		 * EXPLAIN SELECT * FROM t_0
+		 *    JOIN t_1 ON ((t_1.c_1_19 = t_0.c_0_23) AND (t_1.c_1_11 = t_0.c_0_17) AND (t_1.c_1_1 = t_0.c_0_15))
+		 *    JOIN t_2 ON ((t_2.c_2_16 = t_1.c_1_20) AND (t_2.c_2_8 = t_1.c_1_3) AND (t_2.c_2_12 = t_0.c_0_9))
+		 *    JOIN t_3 ON ((t_3.c_3_7 = t_2.c_2_4) AND (t_3.c_3_26 = t_1.c_1_5))
+		 *    JOIN t_4 ON ((t_4.c_4_26 = t_1.c_1_21) AND (t_4.c_4_27 = t_0.c_0_23) AND (t_4.c_4_22 = t_0.c_0_3))
+		 *    JOIN t_5 ON ((t_5.c_5_0 = t_4.c_4_25) AND (t_5.c_5_7 = t_1.c_1_13))
+		 *    JOIN t_6 ON ((t_6.c_6_3 = t_2.c_2_17) AND (t_6.c_6_17 = t_0.c_0_12) AND (t_6.c_6_8 = t_5.c_5_16))
+		 *    JOIN t_7 ON ((t_7.c_7_10 = t_2.c_2_21) AND (t_7.c_7_17 = t_0.c_0_21))
+		 *    JOIN t_8 ON ((t_8.c_8_1 = t_5.c_5_29))
+		 *    JOIN t_9 ON ((t_9.c_9_12 = t_0.c_0_19) AND (t_9.c_9_4 = t_4.c_4_31))
+		 *    JOIN t_10 ON ((t_10.c_10_8 = t_9.c_9_25) AND (t_10.c_10_25 = t_7.c_7_11) AND (t_10.c_10_16 = t_3.c_3_9))
+		 *    RIGHT JOIN t_11 ON ((t_11.c_11_19 = t_0.c_0_20));
+		 *
+		 * not sure why.
+		 */
+		if (cnt > 1000)
+		{
+			ListCell *lc;
+			List	*new_initial_rels = NIL;
+
+			elog(WARNING, "splitting join into smaller problems");
+
+			/* */
+			foreach (lc, initial_rels)
+			{
+				List *tmp;
+				RelOptInfo *rel = (RelOptInfo *) lfirst(lc);
+
+				/* new temporary list */
+				tmp = list_copy(new_initial_rels);
+				tmp = lappend(tmp, rel);
+
+				/* just accept small lists */
+				if (list_length(tmp) <= 3)
+					new_initial_rels = tmp;
+				else
+				{
+					/* longer lists, count the join orders */
+					root->initial_rels = tmp;
+					cnt = standard_join_count(root, list_length(tmp), tmp);
+
+					if (cnt <= 1000)
+					{
+						new_initial_rels = tmp;
+					}
+					else
+					{
+						RelOptInfo *joinrel;
+
+						elog(WARNING, "solving subproblem %d rels", list_length(new_initial_rels));
+
+						/* do the join search for the subproblem */
+						root->initial_rels = new_initial_rels;
+						joinrel = standard_join_search(root, list_length(new_initial_rels), new_initial_rels);
+
+						Assert(IsA(joinrel, RelOptInfo));
+
+						new_initial_rels = list_make2(joinrel, rel);
+					}
+				}
+			}
+
+			initial_rels = new_initial_rels;
+			levels_needed = list_length(new_initial_rels);
+
+			elog(WARNING, "new join problem %d rels", list_length(new_initial_rels));
+		}
 /*
 		elog(WARNING, "standard_join_count rels %d levels_needed %d count %d",
 			 list_length(initial_rels), levels_needed,

@@ -3985,9 +3985,6 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 		root->initial_rels = initial_rels;
 		cnt = standard_join_count(root, levels_needed, initial_rels);
 
-		elog(WARNING, "join of %d rels difficulty %d",
-			 list_length(initial_rels), cnt);
-
 		/*
 		 * if the join order search is expected to be too expensive, split
 		 * the join order search into smaller subprobles below the limit
@@ -4030,6 +4027,8 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 		 */
 		if (cnt > join_collapse_difficulty)
 		{
+			List   *remaining_rels = NIL;
+
 			/*
 			 * try removing rels from the join one by one, see if the remaining
 			 * rels are still joinable
@@ -4052,7 +4051,6 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 			while (true)
 			{
 				List   *new_initial_rels = initial_rels;
-				List   *remaining_rels = NIL;
 				bool	removed = false;
 
 				for (int i = 0; i < list_length(new_initial_rels); i++)
@@ -4089,8 +4087,6 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 						{
 							RelOptInfo *joinrel;
 
-							elog(WARNING, "planning subproblem %d rels", list_length(new_initial_rels));
-
 							/* do the join search for the subproblem */
 							root->initial_rels = new_initial_rels;
 							joinrel = standard_join_search(root, list_length(new_initial_rels), new_initial_rels);
@@ -4109,7 +4105,26 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 
 				/* failed to find a removable rel */
 				if (!removed)
+				{
+					/* we can't do betterm so plan with the current split */
+					if (remaining_rels != NIL)
+					{
+						RelOptInfo *joinrel;
+
+						/* do the join search for the subproblem */
+						root->initial_rels = new_initial_rels;
+						joinrel = standard_join_search(root, list_length(new_initial_rels), new_initial_rels);
+
+						Assert(IsA(joinrel, RelOptInfo));
+
+						/* replace the problem with the reduced one */
+						new_initial_rels = list_make1(joinrel);
+						new_initial_rels = list_concat(new_initial_rels, remaining_rels);
+						remaining_rels = NIL;
+					}
+
 					break;
+				}
 
 				/* how difficult is the new problem */
 				initial_rels = new_initial_rels;

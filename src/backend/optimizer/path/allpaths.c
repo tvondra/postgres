@@ -4014,7 +4014,11 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 			 *
 			 * XXX Alternative idea - deconstruct the jointree as if there
 			 * was join_collapse_limit=1, and only combine the subproblems now,
-			 * once we have all the basic RelOptInfo stuff built.
+			 * once we have all the basic RelOptInfo stuff built. We'd need
+			 * to keep track of which "splits" were forced by JOIN_FULL (and
+			 * we counldn't merge those), and what just by the limit=1. We
+			 * coult keep a list of relids matching the full joins, maybe?
+			 * See deconstruct_recurse.
 			 */
 			while (true)
 			{

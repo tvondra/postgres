@@ -4020,6 +4020,15 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 			 * we counldn't merge those), and what just by the limit=1. We
 			 * coult keep a list of relids matching the full joins, maybe?
 			 * See deconstruct_recurse.
+			 *
+			 * XXX If we knew about starjoin clusters (or other information
+			 * that reduces the join search complexity, we should consider
+			 * it here - e.g. we might prefer not to remove parts of the
+			 * starjoin cluster, because that has very little impact on the
+			 * complexity, assuming we know about the canonical order). Or
+			 * maybe we should postpone that? In any case, the starjoin
+			 * cluster should not increase the difficulty very much, if we
+			 * enforce the canonical order (per the other patch).
 			 */
 			while (true)
 			{
@@ -4286,7 +4295,13 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
  * standard_join_count
  *	  count join orderdings to explore for a given join problem
  *
- * XXX See standard_join_search for details.
+ * XXX See standard_join_search for details. This is a modified copy of
+ * that function, it has similar requirements (incl. setting initial_rels
+ * and all that). It's a bit strange, it could be called in a much simpler
+ * way (and set the levels_needed / initial_rels internally.
+ *
+ * XXX This should consider starjoin canonical join order (when combined
+ * with the other patch), which substantially reduces the complexity.
  */
 static bool
 standard_join_check_difficulty(PlannerInfo *root,
@@ -4323,6 +4338,9 @@ standard_join_check_difficulty(PlannerInfo *root,
 		 * Determine all possible pairs of relations to be joined at this
 		 * level, and build paths for making each one from every available
 		 * pair of lower-level relations.
+		 *
+		 * XXX We could pass the max difficulty, so that the call aborts
+		 * as soon as we exceed it.
 		 */
 		cnt += join_count_one_level(root, lev);
 

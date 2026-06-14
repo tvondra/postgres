@@ -3970,7 +3970,8 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 		initial_rels = lappend(initial_rels, thisrel);
 	}
 
-	/* calculate the number of joins to explore for this join list
+	/*
+	 * calculate the number of joins to explore for this join list
 	 *
 	 * XXX don't do this before qeqo(), because that happens to crash. It
 	 * seems to not work due to the MemoryContextDelete(mycontext) at the
@@ -3988,42 +3989,6 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 		/*
 		 * if the join order search is expected to be too expensive, split
 		 * the join order search into smaller subprobles below the limit
-		 *
-		 * XXX arbitrary limit of 10k join orders
-		 *
-		 * This is not quite right, the subproblem may fail to find a valid
-		 * join order, e.g. in the presence of right joins. For example this
-		 * works fine:
-		 * 
-		 * EXPLAIN SELECT * FROM t_0
-		 *    JOIN t_1 ON ((t_1.c_1_19 = t_0.c_0_23) AND (t_1.c_1_11 = t_0.c_0_17) AND (t_1.c_1_1 = t_0.c_0_15))
-		 *    JOIN t_2 ON ((t_2.c_2_16 = t_1.c_1_20) AND (t_2.c_2_8 = t_1.c_1_3) AND (t_2.c_2_12 = t_0.c_0_9))
-		 *    JOIN t_3 ON ((t_3.c_3_7 = t_2.c_2_4) AND (t_3.c_3_26 = t_1.c_1_5))
-		 *    JOIN t_4 ON ((t_4.c_4_26 = t_1.c_1_21) AND (t_4.c_4_27 = t_0.c_0_23) AND (t_4.c_4_22 = t_0.c_0_3))
-		 *    JOIN t_5 ON ((t_5.c_5_0 = t_4.c_4_25) AND (t_5.c_5_7 = t_1.c_1_13))
-		 *    RIGHT JOIN t_6 ON ((t_6.c_6_3 = t_2.c_2_17) AND (t_6.c_6_17 = t_0.c_0_12) AND (t_6.c_6_8 = t_5.c_5_16))
-		 *    JOIN t_7 ON ((t_7.c_7_10 = t_2.c_2_21) AND (t_7.c_7_17 = t_0.c_0_21))
-		 *    JOIN t_8 ON ((t_8.c_8_1 = t_5.c_5_29))
-		 *    JOIN t_9 ON ((t_9.c_9_12 = t_0.c_0_19) AND (t_9.c_9_4 = t_4.c_4_31))
-		 *    JOIN t_10 ON ((t_10.c_10_8 = t_9.c_9_25) AND (t_10.c_10_25 = t_7.c_7_11) AND (t_10.c_10_16 = t_3.c_3_9))
-		 *    JOIN t_11 ON ((t_11.c_11_19 = t_0.c_0_20));
-		 *
-		 * but this fails to find a valid 8-way join:
-		 *
-		 * EXPLAIN SELECT * FROM t_0
-		 *    JOIN t_1 ON ((t_1.c_1_19 = t_0.c_0_23) AND (t_1.c_1_11 = t_0.c_0_17) AND (t_1.c_1_1 = t_0.c_0_15))
-		 *    JOIN t_2 ON ((t_2.c_2_16 = t_1.c_1_20) AND (t_2.c_2_8 = t_1.c_1_3) AND (t_2.c_2_12 = t_0.c_0_9))
-		 *    JOIN t_3 ON ((t_3.c_3_7 = t_2.c_2_4) AND (t_3.c_3_26 = t_1.c_1_5))
-		 *    JOIN t_4 ON ((t_4.c_4_26 = t_1.c_1_21) AND (t_4.c_4_27 = t_0.c_0_23) AND (t_4.c_4_22 = t_0.c_0_3))
-		 *    JOIN t_5 ON ((t_5.c_5_0 = t_4.c_4_25) AND (t_5.c_5_7 = t_1.c_1_13))
-		 *    JOIN t_6 ON ((t_6.c_6_3 = t_2.c_2_17) AND (t_6.c_6_17 = t_0.c_0_12) AND (t_6.c_6_8 = t_5.c_5_16))
-		 *    JOIN t_7 ON ((t_7.c_7_10 = t_2.c_2_21) AND (t_7.c_7_17 = t_0.c_0_21))
-		 *    JOIN t_8 ON ((t_8.c_8_1 = t_5.c_5_29))
-		 *    JOIN t_9 ON ((t_9.c_9_12 = t_0.c_0_19) AND (t_9.c_9_4 = t_4.c_4_31))
-		 *    JOIN t_10 ON ((t_10.c_10_8 = t_9.c_9_25) AND (t_10.c_10_25 = t_7.c_7_11) AND (t_10.c_10_16 = t_3.c_3_9))
-		 *    RIGHT JOIN t_11 ON ((t_11.c_11_19 = t_0.c_0_20));
-		 *
-		 * not sure why.
 		 */
 		if (cnt > join_collapse_difficulty)
 		{
@@ -4043,6 +4008,9 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 			 * XXX I'm not sure this is guaranteed to work. The rels may not be
 			 * removable one by one, there may be two subproblems, and only the
 			 * whole subproblem can be removed.
+			 *
+			 * XXX But we're always joining two rels, so maybe we could try
+			 * splitting the list in a random place, and plan the "prefix"?
 			 *
 			 * XXX Alternative idea - deconstruct the jointree as if there
 			 * was join_collapse_limit=1, and only combine the subproblems now,
@@ -4137,11 +4105,6 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 					break;
 			}
 		}
-/*
-		elog(WARNING, "standard_join_count rels %d levels_needed %d count %d",
-			 list_length(initial_rels), levels_needed,
-			 standard_join_count(root, levels_needed, initial_rels));
-*/
 	}
 
 	if (levels_needed == 1)

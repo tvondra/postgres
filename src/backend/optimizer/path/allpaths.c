@@ -4038,6 +4038,14 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 			 * XXX we might also prefer removing rels that reduce the difficulty
 			 * the most, but maybe we don't want to evaluate the difficulty (the
 			 * _count aborts right after exceeding the limit, to keep it fast).
+			 *
+			 * XXX I'm not sure this is guaranteed to work. The rels may not be
+			 * removable one by one, there may be two subproblems, and only the
+			 * whole subproblem can be removed.
+			 *
+			 * XXX Alternative idea - deconstruct the jointree as if there
+			 * was join_collapse_limit=1, and only combine the subproblems now,
+			 * once we have all the basic RelOptInfo stuff built.
 			 */
 			while (true)
 			{

@@ -170,6 +170,10 @@ static void recurse_push_qual(Node *setOp, Query *topquery,
 static void remove_unused_subquery_outputs(Query *subquery, RelOptInfo *rel,
 										   Bitmapset *extra_used_attrs);
 
+/* check join search difficulty does not exceed max value */
+static bool standard_join_check_difficulty(PlannerInfo *root,
+										   int levels_needed, List *initial_rels,
+										   int max_difficulty);
 
 /*
  * make_one_rel
@@ -3981,16 +3985,13 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 	if ((join_collapse_difficulty > 0) &&
 		!(enable_geqo && levels_needed >= geqo_threshold))
 	{
-		int cnt;
-
-		root->initial_rels = initial_rels;
-		cnt = standard_join_count(root, levels_needed, initial_rels);
-
 		/*
 		 * if the join order search is expected to be too expensive, split
 		 * the join order search into smaller subprobles below the limit
 		 */
-		if (cnt > join_collapse_difficulty)
+		root->initial_rels = initial_rels;
+		if (!standard_join_check_difficulty(root, levels_needed, initial_rels,
+											join_collapse_difficulty))
 		{
 			List   *remaining_rels = NIL;
 
@@ -4051,11 +4052,12 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 					 */
 					if (list_length(new_initial_rels) > 3)
 					{
-						root->initial_rels = new_initial_rels;
-						cnt = standard_join_count(root, list_length(new_initial_rels), new_initial_rels);
-
 						/* found a sufficiently simple subproblem, try it */
-						if (cnt <= join_collapse_difficulty)
+						root->initial_rels = new_initial_rels;
+						if (standard_join_check_difficulty(root,
+														   list_length(new_initial_rels),
+														   new_initial_rels,
+														   join_collapse_difficulty))
 						{
 							RelOptInfo *joinrel;
 
@@ -4102,10 +4104,12 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 				initial_rels = new_initial_rels;
 				levels_needed = list_length(initial_rels);
 
+				/* the remaining problem is sufficiently simple, we're done */
 				root->initial_rels = initial_rels;
-				cnt = standard_join_count(root, levels_needed, initial_rels);
-
-				if (cnt <= join_collapse_difficulty)
+				if (standard_join_check_difficulty(root,
+												   levels_needed,
+												   initial_rels,
+												   join_collapse_difficulty))
 					break;
 			}
 		}
@@ -4284,8 +4288,10 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
  *
  * XXX See standard_join_search for details.
  */
-int
-standard_join_count(PlannerInfo *root, int levels_needed, List *initial_rels)
+static bool
+standard_join_check_difficulty(PlannerInfo *root,
+							   int levels_needed, List *initial_rels,
+							   int max_difficulty)
 {
 	int			lev;
 	int			cnt = 0;
@@ -4319,6 +4325,9 @@ standard_join_count(PlannerInfo *root, int levels_needed, List *initial_rels)
 		 * pair of lower-level relations.
 		 */
 		cnt += join_count_one_level(root, lev);
+
+		if (cnt > max_difficulty)
+			break;
 	}
 
 	/*
@@ -4327,7 +4336,7 @@ standard_join_count(PlannerInfo *root, int levels_needed, List *initial_rels)
 	 */
 	root->join_rel_level = NULL;
 
-	return cnt;
+	return (cnt <= max_difficulty);
 }
 
 /*****************************************************************************

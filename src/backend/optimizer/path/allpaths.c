@@ -3833,6 +3833,87 @@ generate_grouped_paths(PlannerInfo *root, RelOptInfo *grouped_rel,
 }
 
 /*
+ * subproblem_is_joinable
+ *	Can the given list of rels be joined into a single relation on its own?
+ *
+ * When make_rel_from_joinlist() splits a large join problem into smaller
+ * subproblems, each subproblem is solved independently with
+ * standard_join_search().  That only works if the subproblem's relations can
+ * actually be combined into a single join relation.  Inner joins place no
+ * restriction on this, but an outer join does: its relations must be joined
+ * in a particular order, so a relation set that includes one side of the
+ * outer join together with only part of the other side cannot be joined by
+ * itself.  Attempting to do so makes standard_join_search() fail with
+ * "failed to build any N-way joins".
+ *
+ * Return true only if, for every outer/special join, the set of relids in
+ * "rels" is "closed": if it touches both syntactic sides of the join it must
+ * contain the whole join.  Sets that stay entirely on one side of a join (or
+ * fully contain it) are fine.  In addition, every relation's LATERAL
+ * dependencies must be satisfied within the set, since a laterally-dependent
+ * relation likewise cannot be joined before the relations it references.
+ */
+static bool
+subproblem_is_joinable(PlannerInfo *root, List *rels)
+{
+	Relids	  relids = NULL;
+	ListCell   *lc;
+
+	foreach(lc, rels)
+	{
+		RelOptInfo *rel = (RelOptInfo *) lfirst(lc);
+
+		relids = bms_add_members(relids, rel->relids);
+	}
+
+	/*
+	* Every LATERAL reference of a relation in the set must point to another
+	* relation in the set, otherwise the dependency cannot be satisfied while
+	* joining the subproblem on its own.
+	*/
+	foreach(lc, rels)
+	{
+		RelOptInfo *rel = (RelOptInfo *) lfirst(lc);
+
+		if (!bms_is_subset(rel->lateral_relids, relids))
+		{
+			 bms_free(relids);
+			 return false;
+		}
+	}
+
+	foreach(lc, root->join_info_list)
+	{
+		SpecialJoinInfo *sjinfo = (SpecialJoinInfo *) lfirst(lc);
+		Relids	  ojspan;
+
+		/* full syntactic span of this join, including its own relid */
+		ojspan = bms_union(sjinfo->syn_lefthand, sjinfo->syn_righthand);
+		if (sjinfo->ojrelid != 0)
+			 ojspan = bms_add_member(ojspan, sjinfo->ojrelid);
+
+		/*
+		 * If the candidate set touches both sides of this join but does not
+		 * contain all of it, the join cannot be formed within the subproblem,
+		 * and so the relations cannot be joined into a single relation.
+		 */
+		if (bms_overlap(relids, sjinfo->syn_lefthand) &&
+			 bms_overlap(relids, sjinfo->syn_righthand) &&
+			 !bms_is_subset(ojspan, relids))
+		{
+			 bms_free(ojspan);
+			 bms_free(relids);
+			 return false;
+		}
+
+		bms_free(ojspan);
+	}
+
+	bms_free(relids);
+	return true;
+}
+
+/*
  * make_rel_from_joinlist
  *	  Build access paths using a "joinlist" to guide the join path search.
  *
@@ -3947,55 +4028,87 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 		 */
 		if (cnt > 1000)
 		{
-			ListCell *lc;
-			List	*new_initial_rels = NIL;
-
-			elog(WARNING, "splitting join into smaller problems");
-
-			/* */
-			foreach (lc, initial_rels)
+			/*
+			 * try removing rels from the join one by one, see if the remaining
+			 * rels are still joinable
+			 *
+			 * do this as long as we're over the limit, but break once we fail
+			 * to find a removable rel
+			 *
+			 * XXX we might also prefer removing rels that reduce the difficulty
+			 * the most, but maybe we don't want to evaluate the difficulty (the
+			 * _count aborts right after exceeding the limit, to keep it fast).
+			 */
+			while (true)
 			{
-				List *tmp;
-				RelOptInfo *rel = (RelOptInfo *) lfirst(lc);
+				List   *new_initial_rels = initial_rels;
+				List   *remaining_rels = NIL;
+				bool	removed = false;
 
-				/* new temporary list */
-				tmp = list_copy(new_initial_rels);
-				tmp = lappend(tmp, rel);
-
-				/* just accept small lists */
-				if (list_length(tmp) <= 3)
-					new_initial_rels = tmp;
-				else
+				for (int i = 0; i < list_length(new_initial_rels); i++)
 				{
-					/* longer lists, count the join orders */
-					root->initial_rels = tmp;
-					cnt = standard_join_count(root, list_length(tmp), tmp);
+					RelOptInfo *rel = list_nth(new_initial_rels, i);
+					List *tmp_initial_rels = list_copy(new_initial_rels);
 
-					if (cnt <= 1000)
+					Assert(IsA(rel, RelOptInfo));
+
+					/* create a copy with the i-th rel removed */
+					tmp_initial_rels = list_delete_nth_cell(tmp_initial_rels, i);
+
+					root->initial_rels = tmp_initial_rels;
+					if (!subproblem_is_joinable(root, tmp_initial_rels))
+						continue;
+
+					/* we have a new subproblem */
+					new_initial_rels = tmp_initial_rels;
+					remaining_rels = lappend(remaining_rels, rel);
+					removed = true;
+
+					/*
+					 * is the problem simple enough now? small problems (with
+					 * less than 3 tables) are automatically OK, for larger
+					 * ones we re-calculate the difficulty
+					 */
+					if (list_length(new_initial_rels) > 3)
 					{
-						new_initial_rels = tmp;
-					}
-					else
-					{
-						RelOptInfo *joinrel;
-
-						elog(WARNING, "solving subproblem %d rels", list_length(new_initial_rels));
-
-						/* do the join search for the subproblem */
 						root->initial_rels = new_initial_rels;
-						joinrel = standard_join_search(root, list_length(new_initial_rels), new_initial_rels);
+						cnt = standard_join_count(root, list_length(new_initial_rels), new_initial_rels);
 
-						Assert(IsA(joinrel, RelOptInfo));
+						/* found a sufficiently simple subproblem, try it */
+						if (cnt <= 1000)
+						{
+							RelOptInfo *joinrel;
 
-						new_initial_rels = list_make2(joinrel, rel);
+							/* do the join search for the subproblem */
+							root->initial_rels = new_initial_rels;
+							joinrel = standard_join_search(root, list_length(new_initial_rels), new_initial_rels);
+
+							Assert(IsA(joinrel, RelOptInfo));
+
+							/* replace the problem with the reduced one */
+							new_initial_rels = list_make1(joinrel);
+							new_initial_rels = list_concat(new_initial_rels, remaining_rels);
+							remaining_rels = NIL;
+
+							break;
+						}
 					}
 				}
+
+				/* failed to find a removable rel */
+				if (!removed)
+					break;
+
+				/* how difficult is the new problem */
+				initial_rels = new_initial_rels;
+				levels_needed = list_length(initial_rels);
+
+				root->initial_rels = initial_rels;
+				cnt = standard_join_count(root, levels_needed, initial_rels);
+
+				if (cnt <= 1000)
+					break;
 			}
-
-			initial_rels = new_initial_rels;
-			levels_needed = list_length(new_initial_rels);
-
-			elog(WARNING, "new join problem %d rels", list_length(new_initial_rels));
 		}
 /*
 		elog(WARNING, "standard_join_count rels %d levels_needed %d count %d",

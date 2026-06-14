@@ -39,6 +39,7 @@
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/plancat.h"
+#include "optimizer/planmain.h"
 #include "optimizer/planner.h"
 #include "optimizer/prep.h"
 #include "optimizer/tlist.h"
@@ -3976,7 +3977,8 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 	 * end of geqo_eval(). It seems to invalidate the pathlist in the join
 	 * reloptinfo.
 	 */
-	if (!(enable_geqo && levels_needed >= geqo_threshold))
+	if ((join_collapse_difficulty > 0) &&
+		!(enable_geqo && levels_needed >= geqo_threshold))
 	{
 		int cnt;
 
@@ -4026,7 +4028,7 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 		 *
 		 * not sure why.
 		 */
-		if (cnt > 1000)
+		if (cnt > join_collapse_difficulty)
 		{
 			/*
 			 * try removing rels from the join one by one, see if the remaining
@@ -4083,9 +4085,11 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 						cnt = standard_join_count(root, list_length(new_initial_rels), new_initial_rels);
 
 						/* found a sufficiently simple subproblem, try it */
-						if (cnt <= 1000)
+						if (cnt <= join_collapse_difficulty)
 						{
 							RelOptInfo *joinrel;
+
+							elog(WARNING, "planning subproblem %d rels", list_length(new_initial_rels));
 
 							/* do the join search for the subproblem */
 							root->initial_rels = new_initial_rels;
@@ -4114,7 +4118,7 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 				root->initial_rels = initial_rels;
 				cnt = standard_join_count(root, levels_needed, initial_rels);
 
-				if (cnt <= 1000)
+				if (cnt <= join_collapse_difficulty)
 					break;
 			}
 		}

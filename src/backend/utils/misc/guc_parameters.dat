@@ -1527,6 +1527,16 @@
   boot_val => 'true',
 },
 
+{ name => 'join_collapse_difficulty', type => 'int', context => 'PGC_USERSET', group => 'QUERY_TUNING_OTHER',
+  short_desc => 'limit the difficulty of a join search problem',
+  long_desc => 'limit the difficulty of a join search problem',
+  flags => 'GUC_EXPLAIN',
+  variable => 'join_collapse_difficulty',
+  boot_val => '1000',
+  min => '0',
+  max => 'INT_MAX',
+},
+
 { name => 'join_collapse_limit', type => 'int', context => 'PGC_USERSET', group => 'QUERY_TUNING_OTHER',
   short_desc => 'Sets the FROM-list size beyond which JOIN constructs are not flattened.',
   long_desc => 'The planner will flatten explicit JOIN constructs into lists of FROM items whenever a list of no more than this many items would result.',

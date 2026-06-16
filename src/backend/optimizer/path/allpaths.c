@@ -4513,6 +4513,9 @@ join_graph_in_chain(int len, int *chain, int val)
 	return false;
 }
 
+static void
+debug_print_array(char *label, int k, int *a);
+
 /*
  * Maximum chain length has all vertices with 2 edges, plus 2 nodes at
  * the end. But a cycle may not have any end nodes, and the whole graph
@@ -4598,7 +4601,7 @@ join_graph_build_chain(int nrels, int *matrix, int *count, int *len)
 					if (r == k)
 						continue;
 
-					/* no edge between (j, k) */
+					/* no edge between (r, k) */
 					if (EDGE(matrix, nrels, r, k) == 0)
 						continue;
 
@@ -4658,6 +4661,8 @@ join_graph_remove_clique(int nrels, int *matrix, int k, int *clique)
 		}
 	}
 }
+
+// #define DEBUG_DIFFICULTY
 
 static void
 debug_print_array(char *label, int k, int *a)
@@ -4735,15 +4740,27 @@ standard_join_estimate_difficulty(PlannerInfo *root, List *rels)
 	 *
 	 * finding chains is relatively cheap, so do that first
 	 */
+	while (true)
 	{
 		int len;
 		int *chain = join_graph_build_chain(nrels, edges, edge_count, &len);
 
-		if (chain)
-		{
-			debug_print_array("chain", len, chain);
-			difficulty *= powf(len, 3.0);
-		}
+		/* no chain found, so continue with cliques */
+		if (!chain)
+			break;
+
+		debug_print_array("chain", len, chain);
+		debug_print_matrix("chain", nrels, edges);
+
+		difficulty *= powf(len, 3.0);
+
+		/* XXX misleading function name, but it works for chains too */
+		join_graph_remove_clique(nrels, edges, len, chain);
+
+		debug_print_matrix("chain (removed)", nrels, edges);
+
+		/* recalculate the edge counts */
+		edge_count = join_graph_count_edges(nrels, edges);
 	}
 
 	/*

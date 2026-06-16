@@ -35,6 +35,7 @@
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
 #include "optimizer/geqo.h"
+#include "optimizer/joininfo.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
@@ -174,6 +175,8 @@ static void remove_unused_subquery_outputs(Query *subquery, RelOptInfo *rel,
 static bool standard_join_check_difficulty(PlannerInfo *root,
 										   int levels_needed, List *initial_rels,
 										   int max_difficulty);
+static void standard_join_estimate_difficulty(PlannerInfo *root,
+											  List *rels);
 
 /*
  * make_one_rel
@@ -3974,6 +3977,8 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 		initial_rels = lappend(initial_rels, thisrel);
 	}
 
+	standard_join_estimate_difficulty(root, initial_rels);
+
 	/*
 	 * calculate the number of joins to explore for this join list
 	 *
@@ -4291,6 +4296,358 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 	return rel;
 }
 
+#define EDGE_COUNT(a, i) (a)[i]
+#define EDGE(a, n, i, j) (a)[(i) * (n) + (j)]
+
+/*
+ * build incidence matrix for the join graph, i.e. (nrels x nrels) matrix
+ * with 1 for each pair of rels "connected" by a join clause
+ */
+static int *
+join_graph_incidence_matrix(PlannerInfo *root, List *rels)
+{
+	ListCell *lc;
+	int		nrels = list_length(rels);
+	int	   *matrix = palloc0_array(int, nrels * nrels);
+	int		i,
+			j;
+
+	/* build a graph for this join problem - each rel is a vertex, and
+	 * track has edge for each rel with a join clause */
+	 i = 0;
+	foreach (lc, rels)
+	{
+		ListCell *lc2;
+		RelOptInfo *rel = (RelOptInfo *) lfirst(lc);
+
+		j = -1;
+		foreach (lc2, rels)
+		{
+			RelOptInfo *rel2 = (RelOptInfo *) lfirst(lc2);
+
+			j++;
+
+			if (rel == rel2)
+				continue;
+
+			if (have_relevant_joinclause(root, rel, rel2) ||
+				have_join_order_restriction(root, rel, rel2, false))
+
+			EDGE(matrix, nrels, i, j) = 1;
+		}
+
+		i++;
+	}
+
+	return matrix;
+}
+
+/*
+ * calculate edge count for each rel (number of 1s in the matrix)
+ */
+static int *
+join_graph_count_edges(int nrels, int *matrix)
+{
+	int	   *count = palloc0_array(int, nrels);
+
+	for (int i = 0; i < nrels; i++)
+	{
+		for (int j = 0; j < nrels; j++)
+		{
+			EDGE_COUNT(count, i) += EDGE(matrix, nrels, i, j);
+		}
+	}
+
+	return count;
+}
+
+/* count rels with minimum edge count */
+static int
+join_graph_min_edge_count(int nrels, int *edge_count, int min_count)
+{
+	int c = 0;
+
+	for (int i = 0; i < nrels; i++)
+	{
+		if (EDGE_COUNT(edge_count, i) >= min_count)
+			c++;
+	}
+
+	return c;
+}
+
+/* return indexes of the clique candidates */
+static int *
+join_graph_clique_candidates(int nrels, int *edge_count, int min_count)
+{
+	int *candidates = palloc0_array(int, nrels);
+	int	idx = 0;
+
+	for (int i = 0; i < nrels; i++)
+	{
+		if (EDGE_COUNT(edge_count, i) >= min_count)
+		{
+			candidates[idx++] = i;
+		}
+	}
+
+	return candidates;
+}
+
+typedef struct combination_generator_t
+{
+	int		n;		/* how many values to choose from */
+	int		k;		/* how many values to choose */
+	int		curr[FLEXIBLE_ARRAY_MEMBER];	/* current combination */
+} combination_generator_t;
+
+static combination_generator_t *
+join_graph_combinator_generator_init(int n, int k)
+{
+	combination_generator_t *gen
+		= palloc(offsetof(combination_generator_t, curr) +
+				 sizeof(int) * k);
+
+	gen->n = n;
+	gen->k = k;
+
+	for (int i = 0; i < k; i++)
+		gen->curr[i] = -1;
+
+	return gen;
+}
+
+static int *
+join_graph_combinator_generator_next(combination_generator_t *gen)
+{
+	int		idx;
+
+	/* if the first call, just initialize the first combination */
+	if (gen->curr[0] == -1)
+	{
+		for (int i = 0; i < gen->k; i++)
+			gen->curr[i] = i;
+
+		return gen->curr;
+	}
+
+	/*
+	 * advance to the next combination, if possible - start with advancing
+	 * the last entry in the array, and move up/down as needed
+	 */
+	idx = (gen->k - 1);
+
+	while (true)
+	{
+		/*
+		 * try to advance the entry
+		 *
+		 * if we just descended from above, start at the value immediately
+		 * following the one above us
+		 */
+		if (gen->curr[idx] == -1)
+			gen->curr[idx] = (gen->curr[idx - 1] + 1);
+		else
+			gen->curr[idx]++;
+
+		/* can't advance - got out of range, so move up and advance those */
+		if (gen->curr[idx] >= gen->n)
+		{
+			/* can't move up, we've generated the last combination */
+			if (idx == 0)
+				return NULL;
+
+			gen->curr[idx] = -1;
+			idx--;
+			continue;
+		}
+
+		/*
+		 * we're within range
+		 *
+		 * XXX if we filled-in the last entry, we're done - return the next
+		 * combination, otherwise move down and update those
+		 */
+		if (idx == (gen->k - 1))
+			return gen->curr;
+
+		/* otherwise descend */
+		idx++;
+	}
+
+	return NULL;
+}
+
+static bool
+join_graph_is_clique(int nrels, int *matrix, int k, int *clique)
+{
+	for (int i = 0; i < k; i++)
+	{
+		for (int j = 0; j < k; j++)
+		{
+			if (i == j)
+				continue;
+
+			if (EDGE(matrix, nrels, clique[i], clique[j]) != 1)
+				return false;
+		}
+	}
+
+	return true;
+}
+
+/*
+ * remove the clique edges from the incidence matrix
+ *
+ * XXX the vertices (rels) remain, and if they have other edges, it can
+ * be part of other clique(s)
+ */
+static void
+join_graph_remove_clique(int nrels, int *matrix, int k, int *clique)
+{
+	for (int i = 0; i < k; i++)
+	{
+		for (int j = 0; j < k; j++)
+		{
+			EDGE(matrix, nrels, clique[i], clique[j]) = 0;
+		}
+	}
+}
+
+static void
+debug_print_array(char *label, int k, int *a)
+{
+#ifdef DEBUG_DIFFICULTY
+	StringInfoData	str;
+	initStringInfo(&str);
+
+	appendStringInfoString(&str, "[");
+	for (int i = 0; i < k; i++)
+	{
+		if (i > 0)
+			appendStringInfoString(&str, ", ");
+
+		appendStringInfo(&str, "%d", a[i]);
+	}
+	appendStringInfoString(&str, "]");
+
+	elog(WARNING, "%s %s", label, str.data);
+	pfree(str.data);
+#endif
+}
+
+static void
+debug_print_matrix(char *label, int k, int *m)
+{
+#ifdef DEBUG_DIFFICULTY
+	StringInfoData	str;
+	initStringInfo(&str);
+
+	for (int i = 0; i < k; i++)
+	{
+		for (int j = 0; j < k; j++)
+		{
+			if (j > 0)
+				appendStringInfoString(&str, ", ");
+
+			appendStringInfo(&str, "%d", EDGE(m, k, i, j));
+		}
+		appendStringInfoString(&str, "\n");
+	}
+
+	elog(WARNING, "%s\n%s", label, str.data);
+	pfree(str.data);
+#endif
+}
+
+static void
+standard_join_estimate_difficulty(PlannerInfo *root, List *rels)
+{
+	int	   *edges;
+	int	   *edge_count;
+	int		nrels = list_length(rels);
+	double	difficulty = 1.0;
+
+	elog(WARNING, "standard_join_estimate_difficulty len %d", list_length(rels));
+
+	/* calculate information about the join graph */
+	edges = join_graph_incidence_matrix(root, rels);
+	edge_count = join_graph_count_edges(nrels, edges);
+
+	/*
+	 * look for cliques from the largest - there can't be very many of
+	 * them, and removing them will make further search simpler.
+	 *
+	 * We don't care about tiny cliques, those should not be hard to plan
+	 * (at least I think so).
+	 */
+	for (int k = nrels; k > 2; k--)
+	{
+		int		*candidates;
+		combination_generator_t *gen;
+		int		*clique;
+
+		/*
+		 * Trying to find a clique of size K. For that to even be possible,
+		 * there need to be enough vertices with this at least (K-1) edges,
+		 * so count how many of those exist.
+		 */
+		int cnt = join_graph_min_edge_count(nrels, edge_count, (k - 1));
+
+		/*
+		 * If there are fewer than K rels, a clique can't exist, try looking
+		 * for a smaller one.
+		 */
+		if (cnt < k)
+			continue;
+
+		/* get the candidate rels for the clique */
+		candidates = join_graph_clique_candidates(nrels, edge_count, (k - 1));
+
+		/* initialize the generator for K-combinations of cnt candidates */
+		gen = join_graph_combinator_generator_init(cnt, k);
+
+		while ((clique = join_graph_combinator_generator_next(gen)) != NULL)
+		{
+			int *tmp = palloc_array(int, k);
+
+			/* translate candidate to indexes in the indicence matrix */
+			for (int i = 0; i < k; i++)
+				tmp[i] = candidates[clique[i]];
+
+			/* nope, not a clique, try the next one */
+			if (!join_graph_is_clique(nrels, edges, k, tmp))
+				continue;
+
+			debug_print_array("clique", k, tmp);
+			debug_print_matrix("clique", nrels, edges);
+
+			/*
+			 * cliques have O(3^n) complexity to plan, and in Postgres it's
+			 * pretty much exactly 3^n, especially for larger n values (and
+			 * who cares about small N values?)
+			 *
+			 * XXX should we multiply of add the difficulties?
+			 */
+			elog(WARNING, "clique difficulty %f", powf(3.0, k));
+			difficulty *= powf(3.0, k);
+
+			/*
+			 * cool, found a clique, remove the edges from the graph and
+			 * continue looking for more cliques
+			 */
+			join_graph_remove_clique(nrels, edges, k, tmp);
+
+			debug_print_matrix("clique (removed)", nrels, edges);
+
+			/* recalculate the edge count */
+			edge_count = join_graph_count_edges(nrels, edges);
+		}
+	}
+
+	elog(WARNING, "difficulty = %f", difficulty);
+}
+
 /*
  * standard_join_count
  *	  count join orderdings to explore for a given join problem
@@ -4344,6 +4701,8 @@ standard_join_check_difficulty(PlannerInfo *root,
 		 */
 		cnt += join_count_one_level(root, lev);
 
+		elog(WARNING, "standard_join_check_difficulty %d level %d", cnt, lev);
+
 		if (cnt > max_difficulty)
 			break;
 	}
@@ -4353,6 +4712,8 @@ standard_join_check_difficulty(PlannerInfo *root,
 	 * does not need to rebuild them? At least when we're within the limit?
 	 */
 	root->join_rel_level = NULL;
+
+	elog(WARNING, "standard_join_check_difficulty %d", cnt);
 
 	return (cnt <= max_difficulty);
 }

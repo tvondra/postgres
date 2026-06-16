@@ -4497,6 +4497,151 @@ join_graph_is_clique(int nrels, int *matrix, int k, int *clique)
 }
 
 /*
+ * check if value is in chain
+ *
+ * XXX linear search, not great for large chains
+ */
+static bool
+join_graph_in_chain(int len, int *chain, int val)
+{
+	for (int i = 0; i < len; i++)
+	{
+		if (chain[i] == val)
+			return true;
+	}
+
+	return false;
+}
+
+/*
+ * Maximum chain length has all vertices with 2 edges, plus 2 nodes at
+ * the end. But a cycle may not have any end nodes, and the whole graph
+ * can be just a chain.
+ */
+static int
+join_graph_max_chain_len(int nrels, int *count)
+{
+	int cnt = 0;
+	for (int i = 0; i < nrels; i++)
+	{
+		if (EDGE_COUNT(count, i) == 2)
+			cnt++;
+	}
+
+	cnt += 2;
+
+	return Min(cnt, nrels);
+}
+
+/* try to find the longest chain of rels with 1 or 2 edges */
+static int *
+join_graph_build_chain(int nrels, int *matrix, int *count, int *len)
+{
+	/* the longest possible chain */
+	int *chain = NULL;
+	int	maxlen = join_graph_max_chain_len(nrels, count);
+
+	*len = 0;
+
+	/*
+	 * Consider every vertex (rel) to be somewhere in the middle of a chain.
+	 *
+	 * To be in the middle of a chain, it needs to have exactly two edges.
+	 * The end of a chain has either a single edge (how we get there), or
+	 * many other edges (i.e. it can even be part of a clique).
+	 */
+	for (int i = 0; i < nrels; i++)
+	{
+		int *tmp = NULL;
+		int	l = 0;
+
+		/* number of most recent nodes to follow */
+		int	expand = 0;
+
+		/* can't be in the middle of an edge */
+		if (EDGE_COUNT(count, i) != 2)
+			continue;
+
+		tmp = palloc_array(int, nrels);
+
+		/* add the current element */
+		tmp[l++] = i;
+		expand = 1;
+
+		/*
+		 * expand the chain in either direction, until we find a vertex
+		 * with "wrong" number of edges (or we happen to cycle back to the
+		 * starting node)
+		 */
+		while (expand > 0)
+		{
+			int new_expand = 0;
+			int	start = l - expand;
+			int	end = l; 
+
+			for (int j = start; j < end; j++)
+			{
+				int r = tmp[j];
+
+				/*
+				 * if the node does not have exactly 2 edges, we're done
+				 * either it has only the node we used to get to it, or it
+				 * has multiple output edges (and the chain ends here).
+				 */
+				if (EDGE_COUNT(count, r) != 2)
+					continue;
+
+				/* gotta find the other edge */
+				for (int k = 0; k < nrels; k++)
+				{
+					/* no point to look at the same vertex twice */
+					if (r == k)
+						continue;
+
+					/* no edge between (j, k) */
+					if (EDGE(matrix, nrels, r, k) == 0)
+						continue;
+
+					/* nope, K is already in chain */
+					if (join_graph_in_chain(l, tmp, k))
+						continue;
+
+					/* ok, K is the next element in the chain */
+					tmp[l++] = k;
+					new_expand++;
+				}
+			}
+
+			/* expand nodes added in this cycle */
+			expand = new_expand;
+		}
+
+		/* maybe keep the current chain */
+		if (chain == NULL)
+		{
+			chain = tmp;
+			*len = l;
+		}
+		else if (*len < l)
+		{
+			pfree(chain);
+			chain = tmp;
+			*len = l;
+		}
+		else
+		{
+			pfree(tmp);
+		}
+
+		/* early exit: found the longest possible chain, we're done */
+		if (*len == maxlen)
+			break;
+	}
+
+	return chain;
+}
+
+/*
  * remove the clique edges from the incidence matrix
  *
  * XXX the vertices (rels) remain, and if they have other edges, it can
@@ -4560,6 +4705,17 @@ debug_print_matrix(char *label, int k, int *m)
 #endif
 }
 
+/*
+ * try to decompose the graph into components with a known complexity
+ *
+ * chain - O(n^3)
+ * clique - O(3^n)
+ *
+ * XXX should work iteratively, i.e. remove chains -> remove cliques,
+ * and then again -> remove chains -> remove cliques
+ *
+ * removal of a clique can "uncover" new chains
+ */
 static void
 standard_join_estimate_difficulty(PlannerInfo *root, List *rels)
 {
@@ -4575,6 +4731,22 @@ standard_join_estimate_difficulty(PlannerInfo *root, List *rels)
 	edge_count = join_graph_count_edges(nrels, edges);
 
 	/*
+	 * first, eliminate any chains, before we start looking for cliques
+	 *
+	 * finding chains is relatively cheap, so do that first
+	 */
+	{
+		int len;
+		int *chain = join_graph_build_chain(nrels, edges, edge_count, &len);
+
+		if (chain)
+		{
+			debug_print_array("chain", len, chain);
+			difficulty *= powf(len, 3.0);
+		}
+	}
+
+	/*
 	 * look for cliques from the largest - there can't be very many of
 	 * them, and removing them will make further search simpler.
 	 *
@@ -4583,8 +4755,8 @@ standard_join_estimate_difficulty(PlannerInfo *root, List *rels)
 	 */
 	for (int k = nrels; k > 2; k--)
 	{
-		int		*candidates;
 		combination_generator_t *gen;
+		int		*candidates;
 		int		*clique;
 
 		/*
@@ -4648,8 +4820,19 @@ standard_join_estimate_difficulty(PlannerInfo *root, List *rels)
 
 			/* recalculate the edge count */
 			edge_count = join_graph_count_edges(nrels, edges);
+
+			/*
+			 * XXX It's probably better to start the clique search from
+			 * the beginning at this point, because this might have
+			 * massively reduced the list of candidates. But next time we
+			 * can skip looking for larger cliques, we've eliminated the
+			 * existence of any larger one - so start at K again.
+			 */
 		}
 	}
+
+	/* FIXME do something to estimate difficulty of the remaining join
+	 * problem */
 
 	elog(WARNING, "difficulty = %f", difficulty);
 }

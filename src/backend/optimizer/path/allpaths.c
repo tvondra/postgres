@@ -4627,7 +4627,13 @@ standard_join_estimate_difficulty(PlannerInfo *root, List *rels)
 			 * pretty much exactly 3^n, especially for larger n values (and
 			 * who cares about small N values?)
 			 *
-			 * XXX should we multiply of add the difficulties?
+			 * XXX should we multiply of add the difficulties? Multiplying
+			 * may inflate the difficulty a bit, because removing an edge
+			 * may split a clique into multiple smaller but overlapping
+			 * cliques, in which case the difficulty gets *larger* than
+			 * for the original clique. Which is a bit strange? So maybe
+			 * we should add up the difficulties, or combine them in some
+			 * other way?
 			 */
 			elog(WARNING, "clique difficulty %f", powf(3.0, k));
 			difficulty *= powf(3.0, k);

@@ -177,6 +177,9 @@ static bool standard_join_check_difficulty(PlannerInfo *root,
 										   int max_difficulty);
 static void standard_join_estimate_difficulty(PlannerInfo *root,
 											  List *rels);
+static int *join_graph_incidence_matrix(PlannerInfo *root, List *rels);
+static int *join_graph_count_edges(int nrels, int *matrix);
+static int64 join_graph_count_walks(int nrels, int *edges);
 
 /*
  * make_one_rel
@@ -3979,6 +3982,20 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 
 	standard_join_estimate_difficulty(root, initial_rels);
 
+	{
+		int	   *edges;
+		int		nrels = list_length(initial_rels);
+		int64	nwalks;
+
+	// elog(WARNING, "standard_join_estimate_difficulty len %d", list_length(rels));
+
+	/* calculate information about the join graph */
+		edges = join_graph_incidence_matrix(root, initial_rels);
+
+		nwalks = join_graph_count_walks(nrels, edges);
+		elog(WARNING, "nwalks = %ld", nwalks);
+	}
+
 	/*
 	 * calculate the number of joins to explore for this join list
 	 *
@@ -4710,13 +4727,13 @@ debug_print_matrix(char *label, int k, int *m)
 #endif
 }
 
-static void
+static int64
 join_graph_count_walks(int nrels, int *edges)
 {
 	int *walk = palloc_array(int, nrels);
-	int *counts = palloc0_array(int, nrels + 1);
-	int	cnt = 0;
-return;
+	int64  *counts = palloc0_array(int64, nrels + 1);
+	int64	cnt = 0;
+
 	for (int i = 0; i < nrels; i++)
 	{
 		walk[i] = -1;
@@ -4766,10 +4783,6 @@ return;
 				/* cool, has edge, is not in the walk already */
 				Assert(l < nrels);
 				walk[l++] = s;
-				counts[l]++;
-				cnt++;
-				if (cnt % 100000 == 0)
-					elog(WARNING, "cnt = %d", cnt);
 				found = true;
 				break;
 			}
@@ -4777,6 +4790,7 @@ return;
 			/* did we fill the last element? */
 			if (l == nrels)
 			{
+				counts[l]++;
 				l--;
 				continue;
 			}
@@ -4785,6 +4799,7 @@ return;
 			 * so backtrack */
 			if (!found)
 			{
+				counts[l]++;
 				Assert(l > 0);
 				Assert(l < nrels);
 				walk[l--] = -1;
@@ -4793,8 +4808,18 @@ return;
 		}
 	}
 
-	for (int i = 0; i <= nrels; i++)
-		elog(WARNING, "counts[%d] = %d", i, counts[i]);
+	cnt = 0;
+	for (int i = 1; i < nrels; i++)
+	{
+		cnt += counts[i + 1] - counts[i];
+	}
+
+	for (int i = 1; i <= nrels; i++)
+	{
+		elog(WARNING, "counts[%d] = %ld", i, counts[i]);
+	}
+
+	return cnt;
 }
 
 /*
@@ -4815,14 +4840,19 @@ standard_join_estimate_difficulty(PlannerInfo *root, List *rels)
 	int	   *edge_count;
 	int		nrels = list_length(rels);
 	double	difficulty = 1.0;
+	int		nwalks;
 
-	elog(WARNING, "standard_join_estimate_difficulty len %d", list_length(rels));
+	// elog(WARNING, "standard_join_estimate_difficulty len %d", list_length(rels));
 
 	/* calculate information about the join graph */
 	edges = join_graph_incidence_matrix(root, rels);
 	edge_count = join_graph_count_edges(nrels, edges);
 
-	join_graph_count_walks(nrels, edges);
+	// nwalks = join_graph_count_walks(nrels, edges);
+
+	// elog(WARNING, "nwalks = %d", nwalks);
+
+	return;
 
 	/*
 	 * first, eliminate any chains, before we start looking for cliques
@@ -5008,7 +5038,7 @@ standard_join_check_difficulty(PlannerInfo *root,
 	 */
 	root->join_rel_level = NULL;
 
-	elog(WARNING, "standard_join_check_difficulty %d", cnt);
+	// elog(WARNING, "standard_join_check_difficulty %d", cnt);
 
 	return (cnt <= max_difficulty);
 }

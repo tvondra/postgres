@@ -4710,6 +4710,93 @@ debug_print_matrix(char *label, int k, int *m)
 #endif
 }
 
+static void
+join_graph_count_walks(int nrels, int *edges)
+{
+	int *walk = palloc_array(int, nrels);
+	int *counts = palloc0_array(int, nrels + 1);
+	int	cnt = 0;
+return;
+	for (int i = 0; i < nrels; i++)
+	{
+		walk[i] = -1;
+	}
+
+	debug_print_matrix("matrix", nrels, edges);
+
+	for (int i = 0; i < nrels; i++)
+	{
+		int	l = 0;		/* mutated level */
+		Assert(l < nrels);
+		walk[l++] = i;
+
+		while (l > 0)
+		{
+			int s = walk[l] + 1;
+			bool	found = false;
+
+			while (s < nrels)
+			{
+				bool	in_walk = false;
+
+				/* no edge, try the next one */
+				if (EDGE(edges, nrels, walk[l - 1], s) == 0)
+				{
+					s++;
+					continue;
+				}
+
+				/* got edge, but maybe it's the walk already? */
+				for (int j = 0; j < l; j++)
+				{
+					if (walk[j] == s)
+					{
+						in_walk = true;
+						break;
+					}
+				}
+
+				/* already in walk, try next one */
+				if (in_walk)
+				{
+					s++;
+					continue;
+				}
+
+				/* cool, has edge, is not in the walk already */
+				Assert(l < nrels);
+				walk[l++] = s;
+				counts[l]++;
+				cnt++;
+				if (cnt % 100000 == 0)
+					elog(WARNING, "cnt = %d", cnt);
+				found = true;
+				break;
+			}
+
+			/* did we fill the last element? */
+			if (l == nrels)
+			{
+				l--;
+				continue;
+			}
+
+			/* haven't found the next step, or we filled the last entry,
+			 * so backtrack */
+			if (!found)
+			{
+				Assert(l > 0);
+				Assert(l < nrels);
+				walk[l--] = -1;
+				continue;
+			}
+		}
+	}
+
+	for (int i = 0; i <= nrels; i++)
+		elog(WARNING, "counts[%d] = %d", i, counts[i]);
+}
+
 /*
  * try to decompose the graph into components with a known complexity
  *
@@ -4734,6 +4821,8 @@ standard_join_estimate_difficulty(PlannerInfo *root, List *rels)
 	/* calculate information about the join graph */
 	edges = join_graph_incidence_matrix(root, rels);
 	edge_count = join_graph_count_edges(nrels, edges);
+
+	join_graph_count_walks(nrels, edges);
 
 	/*
 	 * first, eliminate any chains, before we start looking for cliques

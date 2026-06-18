@@ -876,7 +876,7 @@ get_memoize_path(PlannerInfo *root, RelOptInfo *innerrel,
  *	  Consider a nestloop join path; if it appears useful, push it into
  *	  the joinrel's pathlist via add_path().
  */
-static void
+static bool
 try_nestloop_path(PlannerInfo *root,
 				  RelOptInfo *joinrel,
 				  Path *outer_path,
@@ -904,7 +904,7 @@ try_nestloop_path(PlannerInfo *root,
 	if (extra->sjinfo->ojrelid != 0 &&
 		(bms_is_member(extra->sjinfo->ojrelid, inner_paramrels) ||
 		 bms_is_member(extra->sjinfo->ojrelid, outer_paramrels)))
-		return;
+		return false;
 
 	/*
 	 * Any parameterization of the input paths refers to topmost parents of
@@ -936,7 +936,7 @@ try_nestloop_path(PlannerInfo *root,
 	{
 		/* Waste no memory when we reject a path here */
 		bms_free(required_outer);
-		return;
+		return false;
 	}
 
 	/* If we got past that, we shouldn't have any unsafe outer-join refs */
@@ -953,7 +953,7 @@ try_nestloop_path(PlannerInfo *root,
 		!path_is_reparameterizable_by_child(inner_path, outer_path->parent))
 	{
 		bms_free(required_outer);
-		return;
+		return false;
 	}
 
 	/*
@@ -973,8 +973,8 @@ try_nestloop_path(PlannerInfo *root,
 						  workspace.startup_cost, workspace.total_cost,
 						  pathkeys, required_outer))
 	{
-		add_path(joinrel, (Path *)
-				 create_nestloop_path(root,
+		return add_path(joinrel, (Path *)
+						create_nestloop_path(root,
 									  joinrel,
 									  jointype,
 									  &workspace,
@@ -990,6 +990,8 @@ try_nestloop_path(PlannerInfo *root,
 		/* Waste no memory when we reject a path here */
 		bms_free(required_outer);
 	}
+
+	return false;
 }
 
 /*
@@ -1858,6 +1860,7 @@ match_unsorted_outer(PlannerInfo *root,
 	bool		useallclauses;
 	Path	   *inner_cheapest_total = innerrel->cheapest_total_path;
 	Path	   *matpath = NULL;
+	bool		matused = false;
 	ListCell   *lc1;
 
 	/*
@@ -1987,26 +1990,32 @@ match_unsorted_outer(PlannerInfo *root,
 										 innerpath, outerpath, jointype,
 										 extra);
 				if (mpath != NULL)
-					try_nestloop_path(root,
-									  joinrel,
-									  outerpath,
-									  mpath,
-									  merge_pathkeys,
-									  jointype,
-									  PGS_NESTLOOP_MEMOIZE,
-									  extra);
+				{
+					if (!try_nestloop_path(root,
+										   joinrel,
+										   outerpath,
+										   mpath,
+										   merge_pathkeys,
+										   jointype,
+										   PGS_NESTLOOP_MEMOIZE,
+										   extra))
+						pfree(mpath);
+				}
 			}
 
 			/* Also consider materialized form of the cheapest inner path */
 			if (matpath != NULL)
-				try_nestloop_path(root,
-								  joinrel,
-								  outerpath,
-								  matpath,
-								  merge_pathkeys,
-								  jointype,
-								  PGS_NESTLOOP_MATERIALIZE,
-								  extra);
+			{
+				if (try_nestloop_path(root,
+									  joinrel,
+									  outerpath,
+									  matpath,
+									  merge_pathkeys,
+									  jointype,
+									  PGS_NESTLOOP_MATERIALIZE,
+									  extra))
+					matused = true;
+			}
 		}
 
 		/* Can't do anything else if inner rel is parameterized by outer */
@@ -2019,6 +2028,9 @@ match_unsorted_outer(PlannerInfo *root,
 								 inner_cheapest_total, merge_pathkeys,
 								 false);
 	}
+
+	if ((matpath != NULL) && !matused)
+		pfree(matpath);
 
 	/*
 	 * Consider partial nestloop and mergejoin plan if outerrel has any

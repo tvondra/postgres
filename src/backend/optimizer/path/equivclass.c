@@ -1639,6 +1639,8 @@ generate_join_implied_equalities(PlannerInfo *root,
 		list_free(sublist);
 	}
 
+	bms_free(matching_ecs);
+
 	return result;
 }
 

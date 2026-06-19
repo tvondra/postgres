@@ -4170,6 +4170,10 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 		 *
 		 * We put the initial_rels list into a PlannerInfo field because
 		 * has_legal_joinclause() needs to look at it (ugly :-().
+		 *
+		 * XXX This will call join_search_too_hard() again, even if it was
+		 * called above, and so will do the estimate twice. We should not
+		 * do that, it's wasteful.
 		 */
 		root->initial_rels = initial_rels;
 

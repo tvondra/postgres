@@ -4164,9 +4164,9 @@ estimate_multivariate_bucketsize(PlannerInfo *root, RelOptInfo *inner,
 								 List *hashclauses,
 								 Selectivity *innerbucketsize)
 {
-	List	   *clauses;
 	List	   *otherclauses;
 	double		ndistinct;
+	Bitmapset  *clauses_done = NULL;
 
 	if (list_length(hashclauses) <= 1)
 	{
@@ -4176,14 +4176,12 @@ estimate_multivariate_bucketsize(PlannerInfo *root, RelOptInfo *inner,
 		 */
 		return hashclauses;
 	}
-
-	/* "clauses" is the list of hashclauses we've not dealt with yet */
-	clauses = list_copy(hashclauses);
+	
 	/* "otherclauses" holds clauses we are going to return to caller */
 	otherclauses = NIL;
 	/* current estimate of ndistinct */
 	ndistinct = 1.0;
-	while (clauses != NIL)
+	while (bms_num_members(clauses_done) != list_length(hashclauses))
 	{
 		ListCell   *lc;
 		int			relid = -1;
@@ -4195,6 +4193,7 @@ estimate_multivariate_bucketsize(PlannerInfo *root, RelOptInfo *inner,
 		RelOptInfo *group_rel = NULL;
 		ListCell   *lc1,
 				   *lc2;
+		int			idx = -1;
 
 		/*
 		 * Find clauses, referencing the same single base relation and try to
@@ -4202,12 +4201,18 @@ estimate_multivariate_bucketsize(PlannerInfo *root, RelOptInfo *inner,
 		 * an approved clause, push it to otherclauses, if it can't be
 		 * estimated here or ignore to process at the next iteration.
 		 */
-		foreach(lc, clauses)
+		foreach(lc, hashclauses)
 		{
 			RestrictInfo *rinfo = lfirst_node(RestrictInfo, lc);
 			Node	   *expr;
 			Relids		relids;
 			GroupVarInfo *varinfo;
+
+			idx++;
+
+			/* skip already processed clauses */
+			if (bms_is_member(idx, clauses_done))
+				continue;
 
 			/*
 			 * Find the inner side of the join, which we need to estimate the
@@ -4239,7 +4244,7 @@ estimate_multivariate_bucketsize(PlannerInfo *root, RelOptInfo *inner,
 					{
 						/* Extended statistics can't exist in principle */
 						otherclauses = lappend(otherclauses, rinfo);
-						clauses = foreach_delete_current(clauses, lc);
+						clauses_done = bms_add_member(clauses_done, idx);
 						continue;
 					}
 
@@ -4324,7 +4329,7 @@ estimate_multivariate_bucketsize(PlannerInfo *root, RelOptInfo *inner,
 				otherclauses = lappend(otherclauses, rinfo);
 			}
 
-			clauses = foreach_delete_current(clauses, lc);
+			clauses_done = bms_add_member(clauses_done, idx);
 		}
 
 		if (list_length(varinfos) < 2)
@@ -4379,7 +4384,7 @@ estimate_multivariate_bucketsize(PlannerInfo *root, RelOptInfo *inner,
 		}
 	}
 
-	list_free(clauses);
+	bms_free(clauses_done);
 
 	*innerbucketsize = 1.0 / ndistinct;
 	return otherclauses;

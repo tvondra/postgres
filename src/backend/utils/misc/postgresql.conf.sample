@@ -484,6 +484,7 @@
 #join_search_estimate = off             # estimate join-search effort from
                                         # the join graph shape to decide when
                                         # to use GEQO
+#join_search_split = off                # split joins based on hardness
 #join_search_effort_limit = 100000      # estimated relation pairs beyond
                                         # which GEQO is used (when
                                         # join_search_estimate is on)

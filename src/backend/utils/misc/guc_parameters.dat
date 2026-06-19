@@ -1554,6 +1554,14 @@
   boot_val => 'false',
 },
 
+{ name => 'join_search_split', type => 'bool', context => 'PGC_USERSET', group => 'QUERY_TUNING_GEQO',
+  short_desc => 'consider splitting a join problem based on hardness estimate.',
+  long_desc => '...',
+  flags => 'GUC_EXPLAIN',
+  variable => 'enable_join_search_split',
+  boot_val => 'false',
+},
+
 { name => 'krb_caseins_users', type => 'bool', context => 'PGC_SIGHUP', group => 'CONN_AUTH_AUTH',
   short_desc => 'Sets whether Kerberos and GSSAPI user names should be treated as case-insensitive.',
   variable => 'pg_krb_caseins_users',

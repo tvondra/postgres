@@ -2081,6 +2081,9 @@ get_joinrel_parampathinfo(PlannerInfo *root, RelOptInfo *joinrel,
 		list_free(eclauses);
 	}
 
+	bms_free(inner_and_req);
+	bms_free(outer_and_req);
+
 	/* If we already have a PPI for this parameterization, just return it */
 	if ((ppi = find_param_path_info(joinrel, required_outer)))
 	{

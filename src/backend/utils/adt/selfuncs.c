@@ -4380,6 +4380,8 @@ estimate_multivariate_bucketsize(PlannerInfo *root, RelOptInfo *inner,
 		}
 	}
 
+	list_free(clauses);
+
 	*innerbucketsize = 1.0 / ndistinct;
 	return otherclauses;
 }

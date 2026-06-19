@@ -631,11 +631,24 @@ add_path(RelOptInfo *parent_rel, Path *new_path)
 				list_free(mjpath->innersortkeys);
 				list_free(mjpath->outersortkeys);
 				list_free(mjpath->jpath.path.pathkeys);
+
+				release_param_path_info(mjpath->jpath.path.parent,
+										mjpath->jpath.path.param_info);
 			}
 			else if (IsA(old_path, HashPath))
 			{
 				HashPath  *hjpath = (HashPath *) old_path;
 				list_free(hjpath->path_hashclauses);
+
+				release_param_path_info(hjpath->jpath.path.parent,
+										hjpath->jpath.path.param_info);
+			}
+			else if (IsA(old_path, NestPath))
+			{
+				NestPath  *npath = (NestPath *) old_path;
+
+				release_param_path_info(npath->jpath.path.parent,
+										npath->jpath.path.param_info);
 			}
 			/*
 			 * Delete the data pointed-to by the deleted cell, if possible
@@ -679,11 +692,24 @@ add_path(RelOptInfo *parent_rel, Path *new_path)
 			list_free(mjpath->innersortkeys);
 			list_free(mjpath->outersortkeys);
 			list_free(mjpath->jpath.path.pathkeys);
+
+			release_param_path_info(mjpath->jpath.path.parent,
+									mjpath->jpath.path.param_info);
 		}
 		else if (IsA(new_path, HashPath))
 		{
 			HashPath  *hjpath = (HashPath *) new_path;
 			list_free(hjpath->path_hashclauses);
+
+			release_param_path_info(hjpath->jpath.path.parent,
+									hjpath->jpath.path.param_info);
+		}
+		else if (IsA(new_path, NestPath))
+		{
+			NestPath  *npath = (NestPath *) new_path;
+
+			release_param_path_info(npath->jpath.path.parent,
+									npath->jpath.path.param_info);
 		}
 
 		/* Reject and recycle the new path */
@@ -900,11 +926,24 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path)
 				list_free(mjpath->innersortkeys);
 				list_free(mjpath->outersortkeys);
 				list_free(mjpath->jpath.path.pathkeys);
+
+				release_param_path_info(mjpath->jpath.path.parent,
+										mjpath->jpath.path.param_info);
 			}
 			else if (IsA(old_path, HashPath))
 			{
 				HashPath  *hjpath = (HashPath *) old_path;
 				list_free(hjpath->path_hashclauses);
+
+				release_param_path_info(hjpath->jpath.path.parent,
+										hjpath->jpath.path.param_info);
+			}
+			else if (IsA(old_path, NestPath))
+			{
+				NestPath  *npath = (NestPath *) old_path;
+
+				release_param_path_info(npath->jpath.path.parent,
+										npath->jpath.path.param_info);
 			}
 
 			pfree(old_path);
@@ -946,11 +985,24 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path)
 			list_free(mjpath->innersortkeys);
 			list_free(mjpath->outersortkeys);
 			list_free(mjpath->jpath.path.pathkeys);
+
+			release_param_path_info(mjpath->jpath.path.parent,
+									mjpath->jpath.path.param_info);
 		}
 		else if (IsA(new_path, HashPath))
 		{
 			HashPath  *hjpath = (HashPath *) new_path;
 			list_free(hjpath->path_hashclauses);
+
+			release_param_path_info(hjpath->jpath.path.parent,
+									hjpath->jpath.path.param_info);
+		}
+		else if (IsA(new_path, NestPath))
+		{
+			NestPath  *npath = (NestPath *) new_path;
+
+			release_param_path_info(npath->jpath.path.parent,
+									npath->jpath.path.param_info);
 		}
 
 		pfree(new_path);

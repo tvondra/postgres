@@ -6,6 +6,7 @@ backend_sources += files(
   'costsize.c',
   'equivclass.c',
   'indxpath.c',
+  'joinhardness.c',
   'joinpath.c',
   'joinrels.c',
   'pathkeys.c',

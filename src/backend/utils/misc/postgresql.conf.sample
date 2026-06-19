@@ -481,6 +481,12 @@
 #geqo_generations = 0                   # selects default based on effort
 #geqo_selection_bias = 2.0              # range 1.5-2.0
 #geqo_seed = 0.0                        # range 0.0-1.0
+#join_search_estimate = off             # estimate join-search effort from
+                                        # the join graph shape to decide when
+                                        # to use GEQO
+#join_search_effort_limit = 100000      # estimated relation pairs beyond
+                                        # which GEQO is used (when
+                                        # join_search_estimate is on)
 
 # - Other Planner Options -
 

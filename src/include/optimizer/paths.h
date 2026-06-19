@@ -27,6 +27,8 @@ extern PGDLLIMPORT double min_eager_agg_group_size;
 extern PGDLLIMPORT int min_parallel_table_scan_size;
 extern PGDLLIMPORT int min_parallel_index_scan_size;
 extern PGDLLIMPORT bool enable_group_by_reordering;
+extern PGDLLIMPORT bool enable_join_search_estimate;
+extern PGDLLIMPORT int join_search_effort_limit;
 
 /* Hooks for plugins to get control in set_rel_pathlist() */
 typedef void (*join_path_setup_hook_type) (PlannerInfo *root,
@@ -61,6 +63,9 @@ extern PGDLLIMPORT join_search_hook_type join_search_hook;
 extern RelOptInfo *make_one_rel(PlannerInfo *root, List *joinlist);
 extern RelOptInfo *standard_join_search(PlannerInfo *root, int levels_needed,
 										List *initial_rels);
+extern int64 estimate_join_search_effort(PlannerInfo *root,
+										 List *initial_rels,
+										 int64 budget);
 
 extern void generate_gather_paths(PlannerInfo *root, RelOptInfo *rel,
 								  bool override_rows);

@@ -81,6 +81,8 @@ typedef enum pushdown_safe_type
 bool		enable_geqo = false;	/* just in case GUC doesn't set it */
 bool		enable_eager_aggregate = true;
 int			geqo_threshold;
+bool		enable_join_search_estimate = false;
+int			join_search_effort_limit;
 double		min_eager_agg_group_size;
 int			min_parallel_table_scan_size;
 int			min_parallel_index_scan_size;
@@ -3887,6 +3889,9 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 
 		initial_rels = lappend(initial_rels, thisrel);
 	}
+
+	if (enable_join_search_estimate)
+		estimate_join_search_effort(root, initial_rels, 0);
 
 	if (levels_needed == 1)
 	{

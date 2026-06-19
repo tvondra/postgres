@@ -18,6 +18,7 @@ OBJS = \
 	costsize.o \
 	equivclass.o \
 	indxpath.o \
+	joinhardness.o \
 	joinpath.o \
 	joinrels.o \
 	pathkeys.o \

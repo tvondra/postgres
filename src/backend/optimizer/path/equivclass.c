@@ -3664,6 +3664,7 @@ get_common_eclass_indexes(PlannerInfo *root, Relids relids1, Relids relids2)
 	Bitmapset  *rel1ecs;
 	Bitmapset  *rel2ecs;
 	int			relid;
+	bool		do_free = false;
 
 	rel1ecs = get_eclass_indexes_for_relids(root, relids1);
 
@@ -3674,10 +3675,18 @@ get_common_eclass_indexes(PlannerInfo *root, Relids relids1, Relids relids2)
 	if (bms_get_singleton_member(relids2, &relid))
 		rel2ecs = root->simple_rel_array[relid]->eclass_indexes;
 	else
+	{
 		rel2ecs = get_eclass_indexes_for_relids(root, relids2);
+		do_free = true;
+	}
 
 	/* Calculate and return the common EC indexes, recycling the left input. */
-	return bms_int_members(rel1ecs, rel2ecs);
+	rel1ecs = bms_int_members(rel1ecs, rel2ecs);
+
+	if (do_free)
+		bms_free(rel2ecs);
+
+	return rel1ecs;
 }
 
 /*

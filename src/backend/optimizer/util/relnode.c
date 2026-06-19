@@ -1781,6 +1781,7 @@ get_baserel_parampathinfo(PlannerInfo *root, RelOptInfo *baserel,
 	ppi->ppi_rows = rows;
 	ppi->ppi_clauses = pclauses;
 	ppi->ppi_serials = pserials;
+	ppi->ppi_refcount = 1;
 	baserel->ppilist = lappend(baserel->ppilist, ppi);
 
 	return ppi;
@@ -1971,16 +1972,19 @@ get_joinrel_parampathinfo(PlannerInfo *root, RelOptInfo *joinrel,
 		list_free(eclauses);
 	}
 
+	/* If we already have a PPI for this parameterization, just return it */
+	if ((ppi = find_param_path_info(joinrel, required_outer)))
+	{
+		list_free(pclauses);
+		return ppi;
+	}
+
 	/*
 	 * Now, attach the identified moved-down clauses to the caller's
 	 * restrict_clauses list.  By using list_concat in this order, we leave
 	 * the original list structure of restrict_clauses undamaged.
 	 */
 	*restrict_clauses = list_concat(pclauses, *restrict_clauses);
-
-	/* If we already have a PPI for this parameterization, just return it */
-	if ((ppi = find_param_path_info(joinrel, required_outer)))
-		return ppi;
 
 	/* Estimate the number of rows returned by the parameterized join */
 	rows = get_parameterized_joinrel_size(root, joinrel,
@@ -2001,6 +2005,7 @@ get_joinrel_parampathinfo(PlannerInfo *root, RelOptInfo *joinrel,
 	ppi->ppi_rows = rows;
 	ppi->ppi_clauses = NIL;
 	ppi->ppi_serials = NULL;
+	ppi->ppi_refcount = 1;
 	joinrel->ppilist = lappend(joinrel->ppilist, ppi);
 
 	return ppi;
@@ -2040,6 +2045,7 @@ get_appendrel_parampathinfo(RelOptInfo *appendrel, Relids required_outer)
 	ppi->ppi_rows = 0;
 	ppi->ppi_clauses = NIL;
 	ppi->ppi_serials = NULL;
+	ppi->ppi_refcount = 1;
 	appendrel->ppilist = lappend(appendrel->ppilist, ppi);
 
 	return ppi;
@@ -2059,10 +2065,31 @@ find_param_path_info(RelOptInfo *rel, Relids required_outer)
 		ParamPathInfo *ppi = (ParamPathInfo *) lfirst(lc);
 
 		if (bms_equal(ppi->ppi_req_outer, required_outer))
+		{
+			ppi->ppi_refcount++;
 			return ppi;
+		}
 	}
 
 	return NULL;
+}
+
+void
+release_param_path_info(RelOptInfo *rel, ParamPathInfo *ppi)
+{
+	if (ppi == NULL)
+		return;
+
+	ppi->ppi_refcount--;
+
+	if (ppi->ppi_refcount != 0)
+		return;
+
+	rel->ppilist = list_delete_ptr(rel->ppilist, ppi);
+	list_free(ppi->ppi_clauses);
+	bms_free(ppi->ppi_serials);
+
+	pfree(ppi);
 }
 
 /*

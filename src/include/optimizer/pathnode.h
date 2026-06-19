@@ -378,6 +378,7 @@ extern ParamPathInfo *get_appendrel_parampathinfo(RelOptInfo *appendrel,
 												  Relids required_outer);
 extern ParamPathInfo *find_param_path_info(RelOptInfo *rel,
 										   Relids required_outer);
+void release_param_path_info(RelOptInfo *rel, ParamPathInfo *ppi);
 extern Bitmapset *get_param_path_clause_serials(Path *path);
 extern RelOptInfo *build_child_join_rel(PlannerInfo *root,
 										RelOptInfo *outer_rel, RelOptInfo *inner_rel,

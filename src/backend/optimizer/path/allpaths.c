@@ -83,6 +83,7 @@ bool		enable_eager_aggregate = true;
 int			geqo_threshold;
 bool		enable_join_search_estimate = false;
 bool		enable_join_search_split = false;
+bool		enable_join_search_fast = false;
 int			join_search_effort_limit;
 double		min_eager_agg_group_size;
 int			min_parallel_table_scan_size;

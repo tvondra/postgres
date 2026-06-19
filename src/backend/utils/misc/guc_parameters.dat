@@ -1554,6 +1554,14 @@
   boot_val => 'false',
 },
 
+{ name => 'join_search_fast', type => 'bool', context => 'PGC_USERSET', group => 'QUERY_TUNING_GEQO',
+  short_desc => 'allow fast-path for small joins',
+  long_desc => '...',
+  flags => 'GUC_EXPLAIN',
+  variable => 'enable_join_search_fast',
+  boot_val => 'false',
+},
+
 { name => 'join_search_split', type => 'bool', context => 'PGC_USERSET', group => 'QUERY_TUNING_GEQO',
   short_desc => 'consider splitting a join problem based on hardness estimate.',
   long_desc => '...',

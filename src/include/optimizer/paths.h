@@ -29,6 +29,7 @@ extern PGDLLIMPORT int min_parallel_index_scan_size;
 extern PGDLLIMPORT bool enable_group_by_reordering;
 extern PGDLLIMPORT bool enable_join_search_estimate;
 extern PGDLLIMPORT bool enable_join_search_split;
+extern PGDLLIMPORT bool enable_join_search_fast;
 extern PGDLLIMPORT int join_search_effort_limit;
 
 /* Hooks for plugins to get control in set_rel_pathlist() */

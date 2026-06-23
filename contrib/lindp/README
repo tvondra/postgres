@@ -1,0 +1,90 @@
+lindp -- linearized (IKKBZ + LinDP) join search
+================================================
+
+This test module is a prototype replacement for GEQO that performs join-order
+optimization via search-space linearization rather than a genetic algorithm.
+It installs a `join_search_hook` and, for join problems with at least
+`lindp.threshold` relations, optimizes them as follows:
+
+1. joingraph.c - builds the join graph over the initial relations: per-relation
+   cardinalities, adjacency (via have_relevant_joinclause and
+   have_join_order_restriction), and surrogate per-edge selectivities (via
+   clauselist_selectivity, used only for seeding), plus a connectivity check.
+
+2. ikkbz.c - IKKBZ linearization, computing a good left-deep linear order.
+   Builds a precedence forest (spanning tree) per candidate root (so
+   disconnected/cross-product graphs still linearize), computes ASI
+   ranks under a C_out surrogate cost, and emits the provably-optimal linear
+   extension by greedily selecting the free node (parent already emitted)
+   with the smallest ASI rank. Tries multiple roots (gated by lindp.effort)
+   and keeps the cheapest order.
+
+3. lindp.c - runs LinDP: an exact O(n^3) interval DP over the contiguous
+   sub-ranges of the linear order.  Every DP cell is built with the real
+   make_join_rel(), so the resulting plan uses PostgreSQL's true cost model
+   and full set of paths (hash/merge/nestloop, parameterized, partitionwise,
+   parallel, etc). This explores bushy plans within the linearized neighbourhood
+   at O(n^3) make_join_rel() calls. Finalizes each range exactly like
+   standard_join_search (partitionwise/gather/grouped/set_cheapest, with
+   the top-rel exception).
+
+Unlike GEQO, the result is deterministic.
+
+If the join problem is too large (`lindp.max_relations`), the module is
+disabled (`lindp.enabled = off`), or the linearization fails to find a legal
+complete order (e.g. due to strong outer-join/LATERAL constraints), the module
+falls back to the default join search (standard_join_search, or a previously
+installed hook).
+
+GUCs
+----
+
+    lindp.enabled        (bool, default on)
+    lindp.fallback       (bool, default off)
+    lindp.min_threshold  (int,  default 12)  -- min relations to use LinDP
+    lindp.max_threshold  (int,  default 100) -- max relations to optimize
+    lindp.effort         (int,  default -1)  -- higher tries more IKKBZ roots
+
+Glosary
+-------
+
+- C_out - A simplified join cost metric used widely in join‑ordering theory.
+  For a join order, C_out is the sum of the cardinalities (row counts) of all
+  intermediate join results. It ignores per‑algorithm costs (hash vs. merge
+  vs. nested loop, I/O, CPU) and just measures how big do the intermediate
+  results get. Computed by order_cost() - it walks the linear order, multiplies
+  in each relation's cardinality and the selectivities of its join edges to
+  track the running intermediate size, and accumulates it into the total.
+
+  It's a stand‑in cost, not the real PostgreSQL cost model. IKKBZ needs a
+  cheap, analytically tractable cost function to find a provably optimal
+  left‑deep order. C_out is that proxy. Note the resulting order is only
+  a seed: LinDP re‑costs it with the real PostgreSQL cost model, so the
+  surrogate need not match reality exactly.
+
+  So C_out is a surrogate for the true cost.
+
+- ASI‑conforming" - ASI stands for the "Adjacent Sequence Interchange property",
+  evaluating if swapping two adjacent elements in a sequence improves a cost
+  function, allowing algorithms to efficiently sort data or determine optimal
+  scheduling without checking every possible combination. A cost function is
+  ASI‑conforming if you can assign each node a rank such that the optimal
+  sequence is found by ordering nodes by that rank - meaning swapping two
+  adjacent subsequences improves cost iff their ranks are out of order.
+
+  This is what makes IKKBZ work: the algorithm builds a precedence (spanning)
+  tree and greedily emits the free node with the smallest ASI rank to get the
+  optimal linear extension (ikkbz.c:86–159). The C_out cost is ASI‑conforming,
+  with the rank (see asi_rank) defined as
+
+     rank = (T - 1) / T
+
+  where T = selectivity(parent, node) * card(node)
+
+  Putting it together: "ASI‑conforming C_out surrogate" = a proxy cost
+  function (C_out - the sum of intermediate join cardinalities) that has the
+  ASI / adjacent‑sequence‑interchange property, so IKKBZ can compute a
+  provably optimal left‑deep join order under it via rank‑based ordering.
+
+  It's deliberately approximate because LinDP later re‑evaluates the candidate
+  order with PostgreSQL's actual cost model.

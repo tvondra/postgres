@@ -1,0 +1,91 @@
+select setseed(0.19061431322820033);
+DROP TABLE IF EXISTS t_0;
+CREATE TABLE t_0 (c_0_0 int, c_0_1 int, c_0_2 int, c_0_3 int, c_0_4 int, c_0_5 int, c_0_6 int, c_0_7 int, c_0_8 int, c_0_9 int, c_0_10 int, c_0_11 int, c_0_12 int, c_0_13 int, c_0_14 int, c_0_15 int, c_0_16 int, c_0_17 int, c_0_18 int, c_0_19 int, c_0_20 int, c_0_21 int, c_0_22 int, c_0_23 int, c_0_24 int, c_0_25 int, c_0_26 int, c_0_27 int, c_0_28 int, c_0_29 int, c_0_30 int, c_0_31 int);
+DROP TABLE IF EXISTS t_1;
+CREATE TABLE t_1 (c_1_0 int, c_1_1 int, c_1_2 int, c_1_3 int, c_1_4 int, c_1_5 int, c_1_6 int, c_1_7 int, c_1_8 int, c_1_9 int, c_1_10 int, c_1_11 int, c_1_12 int, c_1_13 int, c_1_14 int, c_1_15 int, c_1_16 int, c_1_17 int, c_1_18 int, c_1_19 int, c_1_20 int, c_1_21 int, c_1_22 int, c_1_23 int, c_1_24 int, c_1_25 int, c_1_26 int, c_1_27 int, c_1_28 int, c_1_29 int, c_1_30 int, c_1_31 int);
+DROP TABLE IF EXISTS t_2;
+CREATE TABLE t_2 (c_2_0 int, c_2_1 int, c_2_2 int, c_2_3 int, c_2_4 int, c_2_5 int, c_2_6 int, c_2_7 int, c_2_8 int, c_2_9 int, c_2_10 int, c_2_11 int, c_2_12 int, c_2_13 int, c_2_14 int, c_2_15 int, c_2_16 int, c_2_17 int, c_2_18 int, c_2_19 int, c_2_20 int, c_2_21 int, c_2_22 int, c_2_23 int, c_2_24 int, c_2_25 int, c_2_26 int, c_2_27 int, c_2_28 int, c_2_29 int, c_2_30 int, c_2_31 int);
+DROP TABLE IF EXISTS t_3;
+CREATE TABLE t_3 (c_3_0 int, c_3_1 int, c_3_2 int, c_3_3 int, c_3_4 int, c_3_5 int, c_3_6 int, c_3_7 int, c_3_8 int, c_3_9 int, c_3_10 int, c_3_11 int, c_3_12 int, c_3_13 int, c_3_14 int, c_3_15 int, c_3_16 int, c_3_17 int, c_3_18 int, c_3_19 int, c_3_20 int, c_3_21 int, c_3_22 int, c_3_23 int, c_3_24 int, c_3_25 int, c_3_26 int, c_3_27 int, c_3_28 int, c_3_29 int, c_3_30 int, c_3_31 int);
+INSERT INTO t_0 SELECT mod(i,437810), mod(i,225082), mod(i,656851), mod(i,285053), mod(i,181595), mod(i,184579), mod(i,415984), mod(i,501193), mod(i,140344), mod(i,755527), mod(i,977964), mod(i,136972), mod(i,771360), mod(i,1492), mod(i,520365), mod(i,830537), mod(i,73006), mod(i,2440), mod(i,33617), mod(i,376709), mod(i,566608), mod(i,865705), mod(i,201373), mod(i,947685), mod(i,556984), mod(i,781703), mod(i,523512), mod(i,226645), mod(i,210729), mod(i,853082), mod(i,217200), mod(i,573978) FROM generate_series(1, 591469.7274291392) s(i);
+INSERT INTO t_1 SELECT mod(i,636948), mod(i,573636), mod(i,772540), mod(i,992188), mod(i,689672), mod(i,560190), mod(i,531655), mod(i,256106), mod(i,9333), mod(i,873284), mod(i,204795), mod(i,299723), mod(i,499313), mod(i,716923), mod(i,157691), mod(i,423739), mod(i,21592), mod(i,651952), mod(i,129450), mod(i,848785), mod(i,164124), mod(i,241967), mod(i,806925), mod(i,606501), mod(i,500937), mod(i,216213), mod(i,796462), mod(i,648350), mod(i,485554), mod(i,864811), mod(i,800571), mod(i,400066) FROM generate_series(1, 119.13957681955696) s(i);
+INSERT INTO t_2 SELECT mod(i,810219), mod(i,619189), mod(i,583675), mod(i,438149), mod(i,631577), mod(i,965954), mod(i,519004), mod(i,170571), mod(i,527327), mod(i,208209), mod(i,389458), mod(i,195723), mod(i,48164), mod(i,444280), mod(i,483762), mod(i,569085), mod(i,888624), mod(i,932925), mod(i,931059), mod(i,603892), mod(i,699338), mod(i,174503), mod(i,368970), mod(i,637123), mod(i,453883), mod(i,233076), mod(i,120121), mod(i,592838), mod(i,300054), mod(i,466602), mod(i,816741), mod(i,137239) FROM generate_series(1, 428721.56200898514) s(i);
+INSERT INTO t_3 SELECT mod(i,487730), mod(i,80910), mod(i,429359), mod(i,373977), mod(i,278997), mod(i,748175), mod(i,762507), mod(i,689722), mod(i,54354), mod(i,673632), mod(i,239935), mod(i,102410), mod(i,570041), mod(i,430759), mod(i,547072), mod(i,452878), mod(i,473615), mod(i,199725), mod(i,670055), mod(i,985591), mod(i,600589), mod(i,730926), mod(i,409279), mod(i,498524), mod(i,478400), mod(i,245050), mod(i,528556), mod(i,298109), mod(i,653596), mod(i,736479), mod(i,110359), mod(i,451594) FROM generate_series(1, 31163.424595363813) s(i);
+CREATE INDEX ON t_0 (c_0_20);
+CREATE INDEX ON t_0 (c_0_7);
+CREATE INDEX ON t_0 (c_0_13);
+CREATE INDEX ON t_0 (c_0_31);
+CREATE INDEX ON t_0 (c_0_4);
+CREATE INDEX ON t_0 (c_0_30);
+CREATE INDEX ON t_0 (c_0_16);
+CREATE INDEX ON t_0 (c_0_11);
+CREATE INDEX ON t_0 (c_0_9);
+CREATE INDEX ON t_0 (c_0_15);
+CREATE INDEX ON t_0 (c_0_25);
+CREATE INDEX ON t_0 (c_0_24);
+CREATE INDEX ON t_0 (c_0_5);
+CREATE INDEX ON t_0 (c_0_8);
+CREATE INDEX ON t_0 (c_0_22);
+CREATE INDEX ON t_0 (c_0_18);
+CREATE INDEX ON t_1 (c_1_3);
+CREATE INDEX ON t_1 (c_1_31);
+CREATE INDEX ON t_1 (c_1_30);
+CREATE INDEX ON t_1 (c_1_0);
+CREATE INDEX ON t_1 (c_1_5);
+CREATE INDEX ON t_1 (c_1_27);
+CREATE INDEX ON t_1 (c_1_6);
+CREATE INDEX ON t_1 (c_1_1);
+CREATE INDEX ON t_1 (c_1_17);
+CREATE INDEX ON t_1 (c_1_8);
+CREATE INDEX ON t_1 (c_1_9);
+CREATE INDEX ON t_1 (c_1_19);
+CREATE INDEX ON t_1 (c_1_24);
+CREATE INDEX ON t_1 (c_1_22);
+CREATE INDEX ON t_1 (c_1_28);
+CREATE INDEX ON t_1 (c_1_13);
+CREATE INDEX ON t_2 (c_2_19);
+CREATE INDEX ON t_2 (c_2_9);
+CREATE INDEX ON t_2 (c_2_7);
+CREATE INDEX ON t_2 (c_2_13);
+CREATE INDEX ON t_2 (c_2_17);
+CREATE INDEX ON t_2 (c_2_29);
+CREATE INDEX ON t_2 (c_2_31);
+CREATE INDEX ON t_2 (c_2_11);
+CREATE INDEX ON t_2 (c_2_15);
+CREATE INDEX ON t_2 (c_2_8);
+CREATE INDEX ON t_2 (c_2_21);
+CREATE INDEX ON t_2 (c_2_3);
+CREATE INDEX ON t_2 (c_2_20);
+CREATE INDEX ON t_2 (c_2_12);
+CREATE INDEX ON t_2 (c_2_1);
+CREATE INDEX ON t_2 (c_2_30);
+CREATE INDEX ON t_3 (c_3_11);
+CREATE INDEX ON t_3 (c_3_0);
+CREATE INDEX ON t_3 (c_3_14);
+CREATE INDEX ON t_3 (c_3_28);
+CREATE INDEX ON t_3 (c_3_9);
+CREATE INDEX ON t_3 (c_3_8);
+CREATE INDEX ON t_3 (c_3_2);
+CREATE INDEX ON t_3 (c_3_3);
+CREATE INDEX ON t_3 (c_3_20);
+CREATE INDEX ON t_3 (c_3_21);
+CREATE INDEX ON t_3 (c_3_4);
+CREATE INDEX ON t_3 (c_3_16);
+CREATE INDEX ON t_3 (c_3_1);
+CREATE INDEX ON t_3 (c_3_26);
+CREATE INDEX ON t_3 (c_3_15);
+CREATE INDEX ON t_3 (c_3_23);
+
+SET default_statistics_target = 10000;
+
+VACUUM ANALYZE;
+
+load 'lindp';
+
+EXPLAIN (COSTS OFF)
+SELECT * FROM   t_0
+  FULL JOIN (
+    t_1
+    RIGHT JOIN t_3 ON ((c_1_11 = c_3_18))
+  ) ON ((c_0_15 = c_1_8))
+  RIGHT JOIN t_2 ON ((c_3_14 = c_2_1) AND (c_1_15 = c_2_16));

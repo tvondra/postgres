@@ -1,0 +1,31 @@
+-- This demonstrates that when building hyperedges for outer joins, it's
+-- correct to use syn_righthand/syn_lefthand (and not just min_righthand
+-- and min_lefthand). If lindp_build_hypergraph gets modified to use the
+-- min_ fields, this query fails to find a valid linearization.
+
+LOAD 'lindp';
+SET lindp.enabled = on;
+SET lindp.min_relations = 2;
+SET lindp.max_relations = 100;
+SET lindp.seeds = 0;
+SET lindp.fallback = off;
+
+CREATE TABLE t1 (a int, b int);   -- non-nullable LHS of the lower left join
+CREATE TABLE t2 (a int, b int);   -- nullable RHS of the lower left join
+CREATE TABLE t4 (a int, b int);   -- inner-joined to t1
+CREATE TABLE t3 (a int, b int);   -- nullable RHS of the upper left join
+
+INSERT INTO t1 SELECT g, g FROM generate_series(1, 50) g;
+INSERT INTO t2 SELECT g, g FROM generate_series(1, 50) g;
+INSERT INTO t3 SELECT g, g FROM generate_series(1, 50) g;
+INSERT INTO t4 SELECT g, g FROM generate_series(1, 50) g;
+ANALYZE;
+
+EXPLAIN (COSTS OFF)
+SELECT *
+FROM t1
+     LEFT JOIN t2 ON t1.a = t2.b
+     JOIN      t4 ON t1.a = t4.a
+     LEFT JOIN t3 ON t4.b = t3.a AND t2.b = t3.b;
+
+DROP TABLE t1, t2, t3, t4;

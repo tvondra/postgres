@@ -1,0 +1,49 @@
+# Copyright (c) 2022-2026, PostgreSQL Global Development Group
+
+lindp_sources = files(
+  'lindp.c',
+)
+
+if host_system == 'windows'
+  lindp_sources += rc_lib_gen.process(win32ver_rc, extra_args: [
+    '--NAME', 'LinDP',
+    '--FILEDESC', 'LinDP - LinDP++ join-order search (search-space linearization)',])
+endif
+
+lindp = shared_module('lindp',
+  lindp_sources,
+  kwargs: contrib_mod_args,
+)
+contrib_targets += lindp
+
+tests += {
+  'name': 'lindp',
+  'sd': meson.current_source_dir(),
+  'bd': meson.current_build_dir(),
+  'regress': {
+    'sql': [
+      'lindp_basic',
+      'lindp_lateral_joins_failure',
+      'lindp_outer_joins_failure',
+      'lindp_fail_outer_joins',
+      'lindp_failure',
+      'lindp_fail_full_outer',
+      'lindp_fail_lateral',
+      'lindp_antijoin',
+      'lindp_lateral',
+      'lindp_lateral_nested',
+      'lindp2_fail_lateral',
+      'lindp2_fail_nested_outer',
+      'lindp2_fail_outer_joins',
+      'lindp2_ex1_outer_joins',
+      'lindp2_ex2_nested_outer',
+      'lindp2_ex3_lateral',
+      'lindp2_ex4_right_outer',
+      'lindp2_ex5_lateral_outer',
+      'lindp3_lateral_fail',
+      'lindp3_linearization_fail',
+      'plan_cost_regress_1',
+      'plan_cost_regress_2'
+    ],
+  },
+}

@@ -1,0 +1,75 @@
+--
+-- Self-contained reproducer: a query whose IKKBZ *linearization* admits no
+-- legal contiguous decomposition, this time involving a LATERAL join, so
+-- contrib/lindp transparently falls back to the in-core standard_join_search().
+--
+-- Why it fails:
+--   The derived table "s" is on the nullable side of a LEFT JOIN LATERAL and
+--   its body references *two* outer relations, lat1 and lat3.  That creates a
+--   lateral dependency: s may only be joined once both lat1 and lat3 are
+--   present, and (being the RHS of the outer join) it must come strictly after
+--   them in any left-deep order.  lat2, however, is the relation that connects
+--   lat1 and lat3 in the inner join graph (lat1.id = lat2.id = lat3.id), so a
+--   selectivity-driven IKKBZ linearization naturally places lat2 between lat1
+--   and lat3.  For the resulting order no contiguous split [a..k][k+1..b] is
+--   accepted by make_join_rel(): any interval that contains s but omits one of
+--   lat1/lat3 violates the lateral requirement, and any interval that keeps
+--   lat1, lat3 and s contiguous splits across lat2.  build_interval() therefore
+--   returns NULL for the full set and lindp falls back.
+--
+-- The result is still correct (the fallback guarantees it); this script just
+-- demonstrates that the linearization step itself cannot solve the query.
+-- With lindp.debug = on a NOTICE is emitted on the fallback.
+--
+LOAD 'lindp';
+
+SET lindp.enabled        = on;
+SET lindp.fallback       = off;  -- error out if linearization failed
+SET lindp.min_relations  = 3;    -- low, so a 6-way join uses LinDP (not GEQO/DP)
+SET lindp.seeds          = 1;    -- try every IKKBZ root
+SET geqo                       = off;
+SET join_collapse_limit        = 100;   -- keep the whole join flat (one search problem)
+SET from_collapse_limit        = 100;
+
+CREATE TABLE lat1 (id int, val int);
+CREATE TABLE lat2 (id int, val int);
+CREATE TABLE lat3 (id int, val int);
+CREATE TABLE lat4 (id int, val int);
+
+INSERT INTO lat1 SELECT g, g % 10 FROM generate_series(1, 1000) g;
+INSERT INTO lat2 SELECT g, g % 10 FROM generate_series(1,  100) g;
+INSERT INTO lat3 SELECT g, g % 10 FROM generate_series(1,   50) g;
+INSERT INTO lat4 SELECT g, g % 10 FROM generate_series(1,   20) g;
+
+CREATE INDEX lat1_id ON lat1 (id);
+CREATE INDEX lat2_id ON lat2 (id);
+CREATE INDEX lat3_id ON lat3 (id);
+CREATE INDEX lat4_id ON lat4 (id);
+
+ANALYZE lat1, lat2, lat3, lat4;
+
+-- The failing query.  Expect a NOTICE: "lindp: linearization failed ...".
+-- The LATERAL body references both lat1 and lat3, which are separated by lat2
+-- in the inner join graph.
+SELECT count(*) AS lindp_rows
+  FROM lat1
+       JOIN lat2 ON lat1.id = lat2.id
+       JOIN lat3 ON lat2.id = lat3.id
+       LEFT JOIN LATERAL (SELECT lat4.id
+                            FROM lat4
+                           WHERE lat4.id = lat1.id
+                             AND lat4.val = lat3.val) s ON true;
+
+-- Sanity check: the in-core search produces exactly the same result, proving
+-- the fallback preserves correctness.
+SET lindp3.enabled = off;
+SELECT count(*) AS incore_rows
+  FROM lat1
+       JOIN lat2 ON lat1.id = lat2.id
+       JOIN lat3 ON lat2.id = lat3.id
+       LEFT JOIN LATERAL (SELECT lat4.id
+                            FROM lat4
+                           WHERE lat4.id = lat1.id
+                             AND lat4.val = lat3.val) s ON true;
+
+DROP TABLE lat1, lat2, lat3, lat4;

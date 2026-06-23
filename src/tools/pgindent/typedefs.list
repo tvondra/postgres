@@ -1640,6 +1640,10 @@ LimitOption
 LimitPath
 LimitState
 LimitStateCond
+LinDPHyperEdge
+LinDPHypergraph
+LinDPModule
+LinDPVertex
 List
 ListCell
 ListDictionary

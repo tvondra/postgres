@@ -1,0 +1,323 @@
+-- Shows that without full finalization / costing when selecting seeds, the
+-- full cost may invert with the approximate seed cost. The consequence is
+-- that after increasing the number of seeds, we get a more expensive plan
+-- because we pick a different seed, but the final cost is higher.
+--
+-- In this case it happens because calculating the path target etc. is done
+-- only after query_planner(), so after lindp already does all the work
+-- and picks the plan. So it can't consider that, and may pick the seed
+-- that ultimately produces a worse plan.
+--
+-- This test is rather expensive, as it needs to build a data set.
+SELECT setseed(0.7475675486127782);
+ setseed 
+---------
+ 
+(1 row)
+
+DROP TABLE IF EXISTS t_0;
+NOTICE:  table "t_0" does not exist, skipping
+CREATE TABLE t_0 (c_0_0 int, c_0_1 int, c_0_2 int, c_0_3 int, c_0_4 int, c_0_5 int, c_0_6 int, c_0_7 int, c_0_8 int, c_0_9 int, c_0_10 int, c_0_11 int, c_0_12 int, c_0_13 int, c_0_14 int, c_0_15 int, c_0_16 int, c_0_17 int, c_0_18 int, c_0_19 int, c_0_20 int, c_0_21 int, c_0_22 int, c_0_23 int, c_0_24 int, c_0_25 int, c_0_26 int, c_0_27 int, c_0_28 int, c_0_29 int, c_0_30 int, c_0_31 int);
+DROP TABLE IF EXISTS t_1;
+NOTICE:  table "t_1" does not exist, skipping
+CREATE TABLE t_1 (c_1_0 int, c_1_1 int, c_1_2 int, c_1_3 int, c_1_4 int, c_1_5 int, c_1_6 int, c_1_7 int, c_1_8 int, c_1_9 int, c_1_10 int, c_1_11 int, c_1_12 int, c_1_13 int, c_1_14 int, c_1_15 int, c_1_16 int, c_1_17 int, c_1_18 int, c_1_19 int, c_1_20 int, c_1_21 int, c_1_22 int, c_1_23 int, c_1_24 int, c_1_25 int, c_1_26 int, c_1_27 int, c_1_28 int, c_1_29 int, c_1_30 int, c_1_31 int);
+DROP TABLE IF EXISTS t_2;
+NOTICE:  table "t_2" does not exist, skipping
+CREATE TABLE t_2 (c_2_0 int, c_2_1 int, c_2_2 int, c_2_3 int, c_2_4 int, c_2_5 int, c_2_6 int, c_2_7 int, c_2_8 int, c_2_9 int, c_2_10 int, c_2_11 int, c_2_12 int, c_2_13 int, c_2_14 int, c_2_15 int, c_2_16 int, c_2_17 int, c_2_18 int, c_2_19 int, c_2_20 int, c_2_21 int, c_2_22 int, c_2_23 int, c_2_24 int, c_2_25 int, c_2_26 int, c_2_27 int, c_2_28 int, c_2_29 int, c_2_30 int, c_2_31 int);
+DROP TABLE IF EXISTS t_3;
+NOTICE:  table "t_3" does not exist, skipping
+CREATE TABLE t_3 (c_3_0 int, c_3_1 int, c_3_2 int, c_3_3 int, c_3_4 int, c_3_5 int, c_3_6 int, c_3_7 int, c_3_8 int, c_3_9 int, c_3_10 int, c_3_11 int, c_3_12 int, c_3_13 int, c_3_14 int, c_3_15 int, c_3_16 int, c_3_17 int, c_3_18 int, c_3_19 int, c_3_20 int, c_3_21 int, c_3_22 int, c_3_23 int, c_3_24 int, c_3_25 int, c_3_26 int, c_3_27 int, c_3_28 int, c_3_29 int, c_3_30 int, c_3_31 int);
+DROP TABLE IF EXISTS t_4;
+NOTICE:  table "t_4" does not exist, skipping
+CREATE TABLE t_4 (c_4_0 int, c_4_1 int, c_4_2 int, c_4_3 int, c_4_4 int, c_4_5 int, c_4_6 int, c_4_7 int, c_4_8 int, c_4_9 int, c_4_10 int, c_4_11 int, c_4_12 int, c_4_13 int, c_4_14 int, c_4_15 int, c_4_16 int, c_4_17 int, c_4_18 int, c_4_19 int, c_4_20 int, c_4_21 int, c_4_22 int, c_4_23 int, c_4_24 int, c_4_25 int, c_4_26 int, c_4_27 int, c_4_28 int, c_4_29 int, c_4_30 int, c_4_31 int);
+DROP TABLE IF EXISTS t_5;
+NOTICE:  table "t_5" does not exist, skipping
+CREATE TABLE t_5 (c_5_0 int, c_5_1 int, c_5_2 int, c_5_3 int, c_5_4 int, c_5_5 int, c_5_6 int, c_5_7 int, c_5_8 int, c_5_9 int, c_5_10 int, c_5_11 int, c_5_12 int, c_5_13 int, c_5_14 int, c_5_15 int, c_5_16 int, c_5_17 int, c_5_18 int, c_5_19 int, c_5_20 int, c_5_21 int, c_5_22 int, c_5_23 int, c_5_24 int, c_5_25 int, c_5_26 int, c_5_27 int, c_5_28 int, c_5_29 int, c_5_30 int, c_5_31 int);
+DROP TABLE IF EXISTS t_6;
+NOTICE:  table "t_6" does not exist, skipping
+CREATE TABLE t_6 (c_6_0 int, c_6_1 int, c_6_2 int, c_6_3 int, c_6_4 int, c_6_5 int, c_6_6 int, c_6_7 int, c_6_8 int, c_6_9 int, c_6_10 int, c_6_11 int, c_6_12 int, c_6_13 int, c_6_14 int, c_6_15 int, c_6_16 int, c_6_17 int, c_6_18 int, c_6_19 int, c_6_20 int, c_6_21 int, c_6_22 int, c_6_23 int, c_6_24 int, c_6_25 int, c_6_26 int, c_6_27 int, c_6_28 int, c_6_29 int, c_6_30 int, c_6_31 int);
+DROP TABLE IF EXISTS t_7;
+NOTICE:  table "t_7" does not exist, skipping
+CREATE TABLE t_7 (c_7_0 int, c_7_1 int, c_7_2 int, c_7_3 int, c_7_4 int, c_7_5 int, c_7_6 int, c_7_7 int, c_7_8 int, c_7_9 int, c_7_10 int, c_7_11 int, c_7_12 int, c_7_13 int, c_7_14 int, c_7_15 int, c_7_16 int, c_7_17 int, c_7_18 int, c_7_19 int, c_7_20 int, c_7_21 int, c_7_22 int, c_7_23 int, c_7_24 int, c_7_25 int, c_7_26 int, c_7_27 int, c_7_28 int, c_7_29 int, c_7_30 int, c_7_31 int);
+DROP TABLE IF EXISTS t_8;
+NOTICE:  table "t_8" does not exist, skipping
+CREATE TABLE t_8 (c_8_0 int, c_8_1 int, c_8_2 int, c_8_3 int, c_8_4 int, c_8_5 int, c_8_6 int, c_8_7 int, c_8_8 int, c_8_9 int, c_8_10 int, c_8_11 int, c_8_12 int, c_8_13 int, c_8_14 int, c_8_15 int, c_8_16 int, c_8_17 int, c_8_18 int, c_8_19 int, c_8_20 int, c_8_21 int, c_8_22 int, c_8_23 int, c_8_24 int, c_8_25 int, c_8_26 int, c_8_27 int, c_8_28 int, c_8_29 int, c_8_30 int, c_8_31 int);
+INSERT INTO t_0 SELECT mod(i,393414), mod(i,144226), mod(i,893198), mod(i,271362), mod(i,410686), mod(i,862574), mod(i,455005), mod(i,62635), mod(i,37540), mod(i,872599), mod(i,406424), mod(i,847440), mod(i,904712), mod(i,906234), mod(i,517406), mod(i,839029), mod(i,832701), mod(i,851616), mod(i,179639), mod(i,53745), mod(i,945225), mod(i,928591), mod(i,796849), mod(i,42816), mod(i,256516), mod(i,534265), mod(i,988157), mod(i,322184), mod(i,979385), mod(i,135328), mod(i,90693), mod(i,139172) FROM generate_series(1, 960511.4141440021) s(i);
+INSERT INTO t_1 SELECT mod(i,208687), mod(i,404473), mod(i,436538), mod(i,22372), mod(i,966792), mod(i,706875), mod(i,193958), mod(i,873971), mod(i,746909), mod(i,892843), mod(i,549460), mod(i,280765), mod(i,531052), mod(i,272216), mod(i,737587), mod(i,754124), mod(i,477090), mod(i,322385), mod(i,324043), mod(i,972356), mod(i,644699), mod(i,22132), mod(i,866701), mod(i,74956), mod(i,853731), mod(i,562309), mod(i,423474), mod(i,307252), mod(i,665216), mod(i,867629), mod(i,236204), mod(i,879050) FROM generate_series(1, 803418.2245827224) s(i);
+INSERT INTO t_2 SELECT mod(i,146692), mod(i,235429), mod(i,127694), mod(i,97006), mod(i,661556), mod(i,475701), mod(i,554406), mod(i,571418), mod(i,40527), mod(i,645573), mod(i,696053), mod(i,209005), mod(i,489943), mod(i,873326), mod(i,805708), mod(i,924028), mod(i,284747), mod(i,520901), mod(i,521068), mod(i,257976), mod(i,456115), mod(i,739125), mod(i,96218), mod(i,304371), mod(i,1443), mod(i,552268), mod(i,129384), mod(i,304429), mod(i,853160), mod(i,329160), mod(i,125085), mod(i,599653) FROM generate_series(1, 513926.7606852999) s(i);
+INSERT INTO t_3 SELECT mod(i,422621), mod(i,703694), mod(i,693053), mod(i,916344), mod(i,991418), mod(i,409872), mod(i,740583), mod(i,132125), mod(i,243712), mod(i,187346), mod(i,543421), mod(i,716100), mod(i,771296), mod(i,591552), mod(i,894093), mod(i,468382), mod(i,228435), mod(i,191442), mod(i,57610), mod(i,385592), mod(i,162533), mod(i,405325), mod(i,852914), mod(i,650690), mod(i,904989), mod(i,231480), mod(i,701113), mod(i,879261), mod(i,512394), mod(i,235433), mod(i,871768), mod(i,946724) FROM generate_series(1, 678130.9245907782) s(i);
+INSERT INTO t_4 SELECT mod(i,734215), mod(i,126907), mod(i,915891), mod(i,481387), mod(i,489898), mod(i,184202), mod(i,74309), mod(i,120057), mod(i,114687), mod(i,523206), mod(i,471418), mod(i,657253), mod(i,376210), mod(i,412302), mod(i,953905), mod(i,504175), mod(i,772308), mod(i,656082), mod(i,346559), mod(i,622248), mod(i,19852), mod(i,484402), mod(i,470123), mod(i,463742), mod(i,754994), mod(i,427597), mod(i,486211), mod(i,337263), mod(i,721877), mod(i,379525), mod(i,992238), mod(i,632504) FROM generate_series(1, 634355.0881555782) s(i);
+INSERT INTO t_5 SELECT mod(i,363448), mod(i,891656), mod(i,870072), mod(i,728758), mod(i,814864), mod(i,533049), mod(i,697564), mod(i,866386), mod(i,86188), mod(i,993822), mod(i,415583), mod(i,858268), mod(i,201677), mod(i,384730), mod(i,219120), mod(i,997551), mod(i,44154), mod(i,186916), mod(i,76185), mod(i,40320), mod(i,720608), mod(i,820589), mod(i,24576), mod(i,804299), mod(i,555060), mod(i,998), mod(i,677333), mod(i,176290), mod(i,152061), mod(i,375533), mod(i,122048), mod(i,439232) FROM generate_series(1, 13450.185460218892) s(i);
+INSERT INTO t_6 SELECT mod(i,165389), mod(i,576144), mod(i,41942), mod(i,786787), mod(i,157045), mod(i,211766), mod(i,34139), mod(i,361888), mod(i,957599), mod(i,463158), mod(i,261096), mod(i,466124), mod(i,267757), mod(i,286460), mod(i,154714), mod(i,693783), mod(i,618281), mod(i,205438), mod(i,16684), mod(i,196972), mod(i,495544), mod(i,920686), mod(i,294654), mod(i,245800), mod(i,614170), mod(i,531391), mod(i,377810), mod(i,366563), mod(i,862727), mod(i,464961), mod(i,58643), mod(i,833005) FROM generate_series(1, 1235.9918744805927) s(i);
+INSERT INTO t_7 SELECT mod(i,708097), mod(i,293846), mod(i,355937), mod(i,449433), mod(i,166546), mod(i,704511), mod(i,324466), mod(i,869277), mod(i,292940), mod(i,59906), mod(i,870541), mod(i,5042), mod(i,244076), mod(i,988052), mod(i,918339), mod(i,56270), mod(i,624778), mod(i,98630), mod(i,634333), mod(i,72739), mod(i,922499), mod(i,999684), mod(i,16916), mod(i,226433), mod(i,192632), mod(i,502438), mod(i,175273), mod(i,959556), mod(i,589438), mod(i,872325), mod(i,980127), mod(i,490769) FROM generate_series(1, 766733.8371499602) s(i);
+INSERT INTO t_8 SELECT mod(i,558478), mod(i,865466), mod(i,449397), mod(i,890130), mod(i,135628), mod(i,563932), mod(i,937147), mod(i,313580), mod(i,233444), mod(i,794170), mod(i,938447), mod(i,415267), mod(i,969016), mod(i,145598), mod(i,602153), mod(i,937631), mod(i,652022), mod(i,384062), mod(i,240285), mod(i,977237), mod(i,110558), mod(i,923983), mod(i,860837), mod(i,987389), mod(i,232712), mod(i,355749), mod(i,516070), mod(i,578244), mod(i,262153), mod(i,175175), mod(i,288139), mod(i,776528) FROM generate_series(1, 90799.07666985955) s(i);
+CREATE INDEX ON t_0 (c_0_20);
+CREATE INDEX ON t_0 (c_0_2);
+CREATE INDEX ON t_0 (c_0_16);
+CREATE INDEX ON t_0 (c_0_22);
+CREATE INDEX ON t_0 (c_0_0);
+CREATE INDEX ON t_0 (c_0_28);
+CREATE INDEX ON t_0 (c_0_4);
+CREATE INDEX ON t_0 (c_0_23);
+CREATE INDEX ON t_0 (c_0_12);
+CREATE INDEX ON t_0 (c_0_15);
+CREATE INDEX ON t_0 (c_0_30);
+CREATE INDEX ON t_0 (c_0_11);
+CREATE INDEX ON t_0 (c_0_8);
+CREATE INDEX ON t_0 (c_0_31);
+CREATE INDEX ON t_0 (c_0_19);
+CREATE INDEX ON t_0 (c_0_24);
+CREATE INDEX ON t_1 (c_1_5);
+CREATE INDEX ON t_1 (c_1_17);
+CREATE INDEX ON t_1 (c_1_2);
+CREATE INDEX ON t_1 (c_1_19);
+CREATE INDEX ON t_1 (c_1_3);
+CREATE INDEX ON t_1 (c_1_0);
+CREATE INDEX ON t_1 (c_1_7);
+CREATE INDEX ON t_1 (c_1_30);
+CREATE INDEX ON t_1 (c_1_11);
+CREATE INDEX ON t_1 (c_1_14);
+CREATE INDEX ON t_1 (c_1_9);
+CREATE INDEX ON t_1 (c_1_10);
+CREATE INDEX ON t_1 (c_1_20);
+CREATE INDEX ON t_1 (c_1_1);
+CREATE INDEX ON t_1 (c_1_16);
+CREATE INDEX ON t_1 (c_1_13);
+CREATE INDEX ON t_2 (c_2_28);
+CREATE INDEX ON t_2 (c_2_21);
+CREATE INDEX ON t_2 (c_2_2);
+CREATE INDEX ON t_2 (c_2_26);
+CREATE INDEX ON t_2 (c_2_12);
+CREATE INDEX ON t_2 (c_2_15);
+CREATE INDEX ON t_2 (c_2_31);
+CREATE INDEX ON t_2 (c_2_9);
+CREATE INDEX ON t_2 (c_2_0);
+CREATE INDEX ON t_2 (c_2_10);
+CREATE INDEX ON t_2 (c_2_30);
+CREATE INDEX ON t_2 (c_2_3);
+CREATE INDEX ON t_2 (c_2_1);
+CREATE INDEX ON t_2 (c_2_17);
+CREATE INDEX ON t_2 (c_2_13);
+CREATE INDEX ON t_2 (c_2_19);
+CREATE INDEX ON t_3 (c_3_16);
+CREATE INDEX ON t_3 (c_3_25);
+CREATE INDEX ON t_3 (c_3_3);
+CREATE INDEX ON t_3 (c_3_31);
+CREATE INDEX ON t_3 (c_3_29);
+CREATE INDEX ON t_3 (c_3_22);
+CREATE INDEX ON t_3 (c_3_10);
+CREATE INDEX ON t_3 (c_3_8);
+CREATE INDEX ON t_3 (c_3_26);
+CREATE INDEX ON t_3 (c_3_7);
+CREATE INDEX ON t_3 (c_3_9);
+CREATE INDEX ON t_3 (c_3_15);
+CREATE INDEX ON t_3 (c_3_30);
+CREATE INDEX ON t_3 (c_3_11);
+CREATE INDEX ON t_3 (c_3_19);
+CREATE INDEX ON t_3 (c_3_21);
+CREATE INDEX ON t_4 (c_4_8);
+CREATE INDEX ON t_4 (c_4_28);
+CREATE INDEX ON t_4 (c_4_21);
+CREATE INDEX ON t_4 (c_4_1);
+CREATE INDEX ON t_4 (c_4_24);
+CREATE INDEX ON t_4 (c_4_26);
+CREATE INDEX ON t_4 (c_4_31);
+CREATE INDEX ON t_4 (c_4_10);
+CREATE INDEX ON t_4 (c_4_12);
+CREATE INDEX ON t_4 (c_4_14);
+CREATE INDEX ON t_4 (c_4_5);
+CREATE INDEX ON t_4 (c_4_4);
+CREATE INDEX ON t_4 (c_4_27);
+CREATE INDEX ON t_4 (c_4_19);
+CREATE INDEX ON t_4 (c_4_23);
+CREATE INDEX ON t_4 (c_4_18);
+CREATE INDEX ON t_5 (c_5_6);
+CREATE INDEX ON t_5 (c_5_20);
+CREATE INDEX ON t_5 (c_5_17);
+CREATE INDEX ON t_5 (c_5_19);
+CREATE INDEX ON t_5 (c_5_24);
+CREATE INDEX ON t_5 (c_5_9);
+CREATE INDEX ON t_5 (c_5_13);
+CREATE INDEX ON t_5 (c_5_2);
+CREATE INDEX ON t_5 (c_5_23);
+CREATE INDEX ON t_5 (c_5_0);
+CREATE INDEX ON t_5 (c_5_18);
+CREATE INDEX ON t_5 (c_5_15);
+CREATE INDEX ON t_5 (c_5_30);
+CREATE INDEX ON t_5 (c_5_27);
+CREATE INDEX ON t_5 (c_5_11);
+CREATE INDEX ON t_5 (c_5_29);
+CREATE INDEX ON t_6 (c_6_11);
+CREATE INDEX ON t_6 (c_6_9);
+CREATE INDEX ON t_6 (c_6_5);
+CREATE INDEX ON t_6 (c_6_22);
+CREATE INDEX ON t_6 (c_6_17);
+CREATE INDEX ON t_6 (c_6_27);
+CREATE INDEX ON t_6 (c_6_29);
+CREATE INDEX ON t_6 (c_6_21);
+CREATE INDEX ON t_6 (c_6_4);
+CREATE INDEX ON t_6 (c_6_0);
+CREATE INDEX ON t_6 (c_6_2);
+CREATE INDEX ON t_6 (c_6_28);
+CREATE INDEX ON t_6 (c_6_13);
+CREATE INDEX ON t_6 (c_6_26);
+CREATE INDEX ON t_6 (c_6_3);
+CREATE INDEX ON t_6 (c_6_7);
+CREATE INDEX ON t_7 (c_7_27);
+CREATE INDEX ON t_7 (c_7_18);
+CREATE INDEX ON t_7 (c_7_3);
+CREATE INDEX ON t_7 (c_7_11);
+CREATE INDEX ON t_7 (c_7_2);
+CREATE INDEX ON t_7 (c_7_7);
+CREATE INDEX ON t_7 (c_7_28);
+CREATE INDEX ON t_7 (c_7_16);
+CREATE INDEX ON t_7 (c_7_20);
+CREATE INDEX ON t_7 (c_7_26);
+CREATE INDEX ON t_7 (c_7_22);
+CREATE INDEX ON t_7 (c_7_29);
+CREATE INDEX ON t_7 (c_7_21);
+CREATE INDEX ON t_7 (c_7_19);
+CREATE INDEX ON t_7 (c_7_23);
+CREATE INDEX ON t_7 (c_7_24);
+CREATE INDEX ON t_8 (c_8_17);
+CREATE INDEX ON t_8 (c_8_27);
+CREATE INDEX ON t_8 (c_8_19);
+CREATE INDEX ON t_8 (c_8_21);
+CREATE INDEX ON t_8 (c_8_23);
+CREATE INDEX ON t_8 (c_8_20);
+CREATE INDEX ON t_8 (c_8_7);
+CREATE INDEX ON t_8 (c_8_24);
+CREATE INDEX ON t_8 (c_8_2);
+CREATE INDEX ON t_8 (c_8_26);
+CREATE INDEX ON t_8 (c_8_28);
+CREATE INDEX ON t_8 (c_8_1);
+CREATE INDEX ON t_8 (c_8_15);
+CREATE INDEX ON t_8 (c_8_9);
+CREATE INDEX ON t_8 (c_8_16);
+CREATE INDEX ON t_8 (c_8_30);
+-- make sure the costing is stable
+SET default_statistics_target = 10000;
+VACUUM ANALYZE;
+-- single seed, this produces a parallel plan with cost 132311.06 (can change
+-- a bit due to sampling etc)
+SET join_collapse_limit = 100;
+SET from_collapse_limit = 100;
+SET geqo = off;
+LOAD 'lindp';
+SET lindp.enabled = on;
+SET lindp.min_relations = 2;
+SET lindp.max_relations = 100;
+SET lindp.seeds = 1;
+-- show just the plan shape
+EXPLAIN
+SELECT * FROM   t_0
+  JOIN t_1 ON ((c_0_1 = c_1_29) AND (c_0_28 = c_1_8) AND (c_0_23 = c_1_10))
+  LEFT JOIN t_2 ON ((c_0_29 = c_2_9))
+  JOIN t_3 ON ((c_0_29 = c_3_12) AND (c_2_8 = c_3_14))
+  RIGHT JOIN t_4 ON ((c_2_26 = c_4_0) AND (c_1_19 = c_4_23) AND (c_1_31 = c_4_5))
+  JOIN t_5 ON ((c_1_13 = c_5_22))
+  RIGHT JOIN t_6 ON ((c_0_23 = c_6_16) AND (c_2_19 = c_6_5))
+  RIGHT JOIN t_7 ON ((c_0_28 = c_7_7) AND (c_2_12 = c_7_23) AND (c_4_22 = c_7_1))
+  FULL JOIN t_8 ON ((c_1_26 = c_8_24) AND (c_3_14 = c_8_16));
+                                                                           QUERY PLAN                                                                           
+----------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Gather  (cost=31615.50..132218.64 rows=766733 width=1152)
+   Workers Planned: 2
+   ->  Parallel Hash Full Join  (cost=30615.50..54545.34 rows=319472 width=1152)
+         Hash Cond: ((t_1.c_1_26 = t_8.c_8_24) AND (t_3.c_3_14 = t_8.c_8_16))
+         ->  Parallel Hash Left Join  (cost=27533.22..49067.01 rows=319472 width=1024)
+               Hash Cond: ((t_7.c_7_7 = t_0.c_0_28) AND (t_7.c_7_23 = t_2.c_2_12) AND (t_7.c_7_1 = t_4.c_4_22))
+               ->  Parallel Seq Scan on t_7  (cost=0.00..17939.72 rows=319472 width=128)
+               ->  Parallel Hash  (cost=27533.21..27533.21 rows=1 width=896)
+                     ->  Nested Loop  (cost=8985.77..27533.21 rows=1 width=896)
+                           Join Filter: (t_1.c_1_13 = t_5.c_5_22)
+                           ->  Nested Loop  (cost=8985.77..26971.58 rows=1 width=768)
+                                 Join Filter: (t_2.c_2_26 = t_4.c_4_0)
+                                 ->  Parallel Hash Join  (cost=8985.35..26971.05 rows=1 width=640)
+                                       Hash Cond: ((t_3.c_3_12 = t_0.c_0_29) AND (t_3.c_3_14 = t_2.c_2_8))
+                                       ->  Parallel Seq Scan on t_3  (cost=0.00..15866.54 rows=282554 width=128)
+                                       ->  Parallel Hash  (cost=8985.33..8985.33 rows=1 width=512)
+                                             ->  Nested Loop  (cost=101.04..8985.33 rows=1 width=512)
+                                                   Join Filter: (t_2.c_2_19 = t_6.c_6_5)
+                                                   ->  Nested Loop  (cost=100.62..8984.83 rows=1 width=384)
+                                                         ->  Merge Join  (cost=100.19..2861.19 rows=11544 width=256)
+                                                               Merge Cond: (t_0.c_0_23 = t_6.c_6_16)
+                                                               ->  Parallel Index Scan using t_0_c_0_23_idx on t_0  (cost=0.42..86421.61 rows=400213 width=128)
+                                                               ->  Sort  (cost=99.77..102.86 rows=1235 width=128)
+                                                                     Sort Key: t_6.c_6_16
+                                                                     ->  Seq Scan on t_6  (cost=0.00..36.35 rows=1235 width=128)
+                                                         ->  Index Scan using t_1_c_1_10_idx on t_1  (cost=0.42..0.52 rows=1 width=128)
+                                                               Index Cond: (c_1_10 = t_0.c_0_23)
+                                                               Filter: ((c_1_29 = t_0.c_0_1) AND (c_1_8 = t_0.c_0_28))
+                                                   ->  Index Scan using t_2_c_2_9_idx on t_2  (cost=0.42..0.49 rows=1 width=128)
+                                                         Index Cond: (c_2_9 = t_0.c_0_29)
+                                 ->  Index Scan using t_4_c_4_23_idx on t_4  (cost=0.42..0.51 rows=1 width=128)
+                                       Index Cond: (c_4_23 = t_1.c_1_19)
+                                       Filter: (c_4_5 = t_1.c_1_31)
+                           ->  Seq Scan on t_5  (cost=0.00..393.50 rows=13450 width=128)
+         ->  Parallel Hash  (cost=2281.11..2281.11 rows=53411 width=128)
+               ->  Parallel Seq Scan on t_8  (cost=0.00..2281.11 rows=53411 width=128)
+(36 rows)
+
+-- with 9 seeds, it should produce the same plan, but without the finalization
+-- it picks a plan with cost ~268624.93
+SET lindp.seeds = 8;
+EXPLAIN
+SELECT * FROM   t_0
+  JOIN t_1 ON ((c_0_1 = c_1_29) AND (c_0_28 = c_1_8) AND (c_0_23 = c_1_10))
+  LEFT JOIN t_2 ON ((c_0_29 = c_2_9))
+  JOIN t_3 ON ((c_0_29 = c_3_12) AND (c_2_8 = c_3_14))
+  RIGHT JOIN t_4 ON ((c_2_26 = c_4_0) AND (c_1_19 = c_4_23) AND (c_1_31 = c_4_5))
+  JOIN t_5 ON ((c_1_13 = c_5_22))
+  RIGHT JOIN t_6 ON ((c_0_23 = c_6_16) AND (c_2_19 = c_6_5))
+  RIGHT JOIN t_7 ON ((c_0_28 = c_7_7) AND (c_2_12 = c_7_23) AND (c_4_22 = c_7_1))
+  FULL JOIN t_8 ON ((c_1_26 = c_8_24) AND (c_3_14 = c_8_16));
+                                                                           QUERY PLAN                                                                           
+----------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Gather  (cost=31615.50..132218.64 rows=766733 width=1152)
+   Workers Planned: 2
+   ->  Parallel Hash Full Join  (cost=30615.50..54545.34 rows=319472 width=1152)
+         Hash Cond: ((t_1.c_1_26 = t_8.c_8_24) AND (t_3.c_3_14 = t_8.c_8_16))
+         ->  Parallel Hash Left Join  (cost=27533.22..49067.01 rows=319472 width=1024)
+               Hash Cond: ((t_7.c_7_7 = t_0.c_0_28) AND (t_7.c_7_23 = t_2.c_2_12) AND (t_7.c_7_1 = t_4.c_4_22))
+               ->  Parallel Seq Scan on t_7  (cost=0.00..17939.72 rows=319472 width=128)
+               ->  Parallel Hash  (cost=27533.21..27533.21 rows=1 width=896)
+                     ->  Nested Loop  (cost=8985.77..27533.21 rows=1 width=896)
+                           Join Filter: (t_1.c_1_13 = t_5.c_5_22)
+                           ->  Nested Loop  (cost=8985.77..26971.58 rows=1 width=768)
+                                 Join Filter: (t_2.c_2_26 = t_4.c_4_0)
+                                 ->  Parallel Hash Join  (cost=8985.35..26971.05 rows=1 width=640)
+                                       Hash Cond: ((t_3.c_3_12 = t_0.c_0_29) AND (t_3.c_3_14 = t_2.c_2_8))
+                                       ->  Parallel Seq Scan on t_3  (cost=0.00..15866.54 rows=282554 width=128)
+                                       ->  Parallel Hash  (cost=8985.33..8985.33 rows=1 width=512)
+                                             ->  Nested Loop  (cost=101.04..8985.33 rows=1 width=512)
+                                                   Join Filter: (t_2.c_2_19 = t_6.c_6_5)
+                                                   ->  Nested Loop  (cost=100.62..8984.83 rows=1 width=384)
+                                                         ->  Merge Join  (cost=100.19..2861.19 rows=11544 width=256)
+                                                               Merge Cond: (t_0.c_0_23 = t_6.c_6_16)
+                                                               ->  Parallel Index Scan using t_0_c_0_23_idx on t_0  (cost=0.42..86421.61 rows=400213 width=128)
+                                                               ->  Sort  (cost=99.77..102.86 rows=1235 width=128)
+                                                                     Sort Key: t_6.c_6_16
+                                                                     ->  Seq Scan on t_6  (cost=0.00..36.35 rows=1235 width=128)
+                                                         ->  Index Scan using t_1_c_1_10_idx on t_1  (cost=0.42..0.52 rows=1 width=128)
+                                                               Index Cond: (c_1_10 = t_0.c_0_23)
+                                                               Filter: ((c_1_29 = t_0.c_0_1) AND (c_1_8 = t_0.c_0_28))
+                                                   ->  Index Scan using t_2_c_2_9_idx on t_2  (cost=0.42..0.49 rows=1 width=128)
+                                                         Index Cond: (c_2_9 = t_0.c_0_29)
+                                 ->  Index Scan using t_4_c_4_23_idx on t_4  (cost=0.42..0.51 rows=1 width=128)
+                                       Index Cond: (c_4_23 = t_1.c_1_19)
+                                       Filter: (c_4_5 = t_1.c_1_31)
+                           ->  Seq Scan on t_5  (cost=0.00..393.50 rows=13450 width=128)
+         ->  Parallel Hash  (cost=2281.11..2281.11 rows=53411 width=128)
+               ->  Parallel Seq Scan on t_8  (cost=0.00..2281.11 rows=53411 width=128)
+(36 rows)
+
+DROP TABLE IF EXISTS t_0;
+DROP TABLE IF EXISTS t_1;
+DROP TABLE IF EXISTS t_2;
+DROP TABLE IF EXISTS t_3;
+DROP TABLE IF EXISTS t_4;
+DROP TABLE IF EXISTS t_5;
+DROP TABLE IF EXISTS t_6;
+DROP TABLE IF EXISTS t_7;
+DROP TABLE IF EXISTS t_8;

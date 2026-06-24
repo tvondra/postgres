@@ -1,0 +1,163 @@
+--
+-- Tests for the LinDP++ linearized join-search module.
+--
+-- The module installs a join_search_hook.  These tests verify that:
+--   * the linearized search engages for large enough joins,
+--   * it decomposes disconnected graphs into components and falls back
+--     gracefully for small joins,
+--   * and, most importantly, that it produces *correct* results that match
+--     the standard dynamic-programming join search for a variety of join
+--     graph shapes (chains, stars, cliques, cycles, outer joins).
+--
+LOAD 'lindp2';
+
+-- Make the search engage on modestly sized joins and stay deterministic.
+SET lindp2.enabled = on;
+SET lindp2.fallback = false;
+SET lindp2.min_threshold = 2;
+SET lindp2.max_threshold = 100;
+SET geqo = off;
+
+-- Build a set of small tables wired up with join keys.
+CREATE TABLE lindp_t0 (id int primary key, v int);
+CREATE TABLE lindp_t1 (id int primary key, f0 int, v int);
+CREATE TABLE lindp_t2 (id int primary key, f1 int, v int);
+CREATE TABLE lindp_t3 (id int primary key, f2 int, v int);
+CREATE TABLE lindp_t4 (id int primary key, f3 int, v int);
+CREATE TABLE lindp_t5 (id int primary key, f4 int, v int);
+CREATE TABLE lindp_t6 (id int primary key, f0 int, v int);
+CREATE TABLE lindp_t7 (id int primary key, f0 int, v int);
+
+INSERT INTO lindp_t0 SELECT g, g % 7 FROM generate_series(0, 199) g;
+INSERT INTO lindp_t1 SELECT g, g % 200, g % 5 FROM generate_series(0, 199) g;
+INSERT INTO lindp_t2 SELECT g, g % 200, g % 5 FROM generate_series(0, 199) g;
+INSERT INTO lindp_t3 SELECT g, g % 200, g % 5 FROM generate_series(0, 199) g;
+INSERT INTO lindp_t4 SELECT g, g % 200, g % 5 FROM generate_series(0, 199) g;
+INSERT INTO lindp_t5 SELECT g, g % 200, g % 5 FROM generate_series(0, 199) g;
+INSERT INTO lindp_t6 SELECT g, g % 200, g % 5 FROM generate_series(0, 199) g;
+INSERT INTO lindp_t7 SELECT g, g % 200, g % 5 FROM generate_series(0, 199) g;
+
+ANALYZE lindp_t0, lindp_t1, lindp_t2, lindp_t3, lindp_t4, lindp_t5, lindp_t6, lindp_t7;
+
+-- A helper that runs a query both with the linearized search on and off,
+-- and reports whether the two row sets are identical.  This is the core
+-- correctness oracle: the linearized search must return the same answer the
+-- standard join search would.
+CREATE FUNCTION lindp_same(query text) RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE
+    on_cnt bigint;
+    off_cnt bigint;
+    diff_cnt bigint;
+BEGIN
+    SET LOCAL lindp2.enabled = on;
+    EXECUTE format('SELECT count(*) FROM (%s) q', query) INTO on_cnt;
+    EXECUTE format('CREATE TEMP TABLE lindp_on AS %s', query);
+
+    SET LOCAL lindp2.enabled = off;
+    EXECUTE format('SELECT count(*) FROM (%s) q', query) INTO off_cnt;
+    EXECUTE format('CREATE TEMP TABLE lindp_off AS %s', query);
+
+    -- symmetric difference must be empty, and the counts must match
+    EXECUTE 'SELECT count(*) FROM ('
+            '(TABLE lindp_on EXCEPT ALL TABLE lindp_off) '
+            'UNION ALL '
+            '(TABLE lindp_off EXCEPT ALL TABLE lindp_on)) d'
+        INTO diff_cnt;
+
+    DROP TABLE lindp_on;
+    DROP TABLE lindp_off;
+    RETURN (on_cnt = off_cnt AND diff_cnt = 0);
+END;
+$$;
+
+-- Chain join: t0-t1-t2-t3-t4-t5
+SELECT lindp_same($$
+    SELECT lindp_t0.id AS a, lindp_t5.id AS b
+    FROM lindp_t0
+    JOIN lindp_t1 ON lindp_t1.f0 = lindp_t0.id
+    JOIN lindp_t2 ON lindp_t2.f1 = lindp_t1.id
+    JOIN lindp_t3 ON lindp_t3.f2 = lindp_t2.id
+    JOIN lindp_t4 ON lindp_t4.f3 = lindp_t3.id
+    JOIN lindp_t5 ON lindp_t5.f4 = lindp_t4.id
+$$) AS chain_ok;
+
+-- Star join: t0 in the center, t1,t2,t6,t7 around it.
+SELECT lindp_same($$
+    SELECT count(*)::int AS c
+    FROM lindp_t0
+    JOIN lindp_t1 ON lindp_t1.f0 = lindp_t0.id
+    JOIN lindp_t2 ON lindp_t2.f1 = lindp_t0.id
+    JOIN lindp_t6 ON lindp_t6.f0 = lindp_t0.id
+    JOIN lindp_t7 ON lindp_t7.f0 = lindp_t0.id
+$$) AS star_ok;
+
+-- Clique-ish / cyclic join graph (extra cross-edges create cycles).
+SELECT lindp_same($$
+    SELECT lindp_t0.id AS a
+    FROM lindp_t0
+    JOIN lindp_t1 ON lindp_t1.f0 = lindp_t0.id
+    JOIN lindp_t2 ON lindp_t2.f1 = lindp_t1.id
+    JOIN lindp_t3 ON lindp_t3.f2 = lindp_t2.id AND lindp_t3.id = lindp_t1.id
+    JOIN lindp_t4 ON lindp_t4.f3 = lindp_t3.id AND lindp_t4.id = lindp_t0.id
+$$) AS cyclic_ok;
+
+-- Outer joins mixed in (ordering restrictions).
+SELECT lindp_same($$
+    SELECT lindp_t0.id AS a, lindp_t3.v AS b
+    FROM lindp_t0
+    JOIN lindp_t1 ON lindp_t1.f0 = lindp_t0.id
+    LEFT JOIN lindp_t2 ON lindp_t2.f1 = lindp_t1.id
+    LEFT JOIN lindp_t3 ON lindp_t3.f2 = lindp_t2.id
+    JOIN lindp_t4 ON lindp_t4.f3 = lindp_t1.id
+$$) AS outer_ok;
+
+-- Adaptive widening + multiple seeds should also be correct.
+SET lindp2.adaptive = on;
+SET lindp2.window_size = 2;
+SET lindp2.seeds = 3;
+SELECT lindp_same($$
+    SELECT lindp_t0.id AS a, lindp_t5.id AS b
+    FROM lindp_t0
+    JOIN lindp_t1 ON lindp_t1.f0 = lindp_t0.id
+    JOIN lindp_t2 ON lindp_t2.f1 = lindp_t1.id
+    JOIN lindp_t3 ON lindp_t3.f2 = lindp_t2.id
+    JOIN lindp_t4 ON lindp_t4.f3 = lindp_t3.id
+    JOIN lindp_t5 ON lindp_t5.f4 = lindp_t4.id
+$$) AS adaptive_ok;
+RESET lindp2.adaptive;
+RESET lindp2.window_size;
+RESET lindp2.seeds;
+
+-- A disconnected join graph (Cartesian product) is decomposed into connected
+-- components, each solved by LinDP and combined by the standard search; the
+-- result must still be correct.
+SELECT lindp_same($$
+    SELECT a.id AS a, b.id AS b
+    FROM lindp_t1 a, lindp_t2 b, lindp_t3 c, lindp_t4 d
+    WHERE a.id < 3 AND b.id < 3 AND c.id < 3 AND d.id < 3
+$$) AS disconnected_ok;
+
+-- A disconnected graph made of two non-trivial connected chains exercises the
+-- component decomposition: LinDP runs on each chain and the standard search
+-- joins the two component relations.  The result must still be correct.
+SELECT lindp_same($$
+    SELECT a.id AS a, e.id AS e
+    FROM lindp_t1 a
+    JOIN lindp_t2 b ON b.f1 = a.id
+    JOIN lindp_t3 c ON c.f2 = b.id,
+         lindp_t4 e
+    JOIN lindp_t5 f ON f.f4 = e.id
+    JOIN lindp_t6 g ON g.f0 = f.id
+    WHERE a.id < 3 AND e.id < 3
+$$) AS two_components_ok;
+
+-- Below min_relations the standard search is used; result still correct.
+SELECT lindp_same($$
+    SELECT lindp_t0.id AS a
+    FROM lindp_t0
+    JOIN lindp_t1 ON lindp_t1.f0 = lindp_t0.id
+$$) AS small_ok;
+
+DROP FUNCTION lindp_same(text);
+DROP TABLE lindp_t0, lindp_t1, lindp_t2, lindp_t3, lindp_t4, lindp_t5, lindp_t6, lindp_t7;

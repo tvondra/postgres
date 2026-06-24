@@ -26,6 +26,7 @@ SUBDIRS = \
 		intarray	\
 		isn		\
 		lindp	\
+		lindp2	\
 		lo		\
 		ltree		\
 		oid2name	\

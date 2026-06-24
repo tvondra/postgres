@@ -1,0 +1,148 @@
+--
+-- Tests for the lindp (LinDP++) join_search_hook module.
+--
+-- The module is loaded with LOAD so that its custom GUCs become available.
+-- We exercise it on inner joins, cross products (disconnected join graphs),
+-- outer joins and complex (multi-relation) join clauses, and in each case we
+-- verify that LinDP++ produces exactly the same result rows as the in-core
+-- exhaustive join search.  This is robust against platform/cost differences
+-- because it compares result sets, not plans.
+--
+LOAD 'lindp3';
+
+-- Activate LinDP++ for fairly small join problems so the tests stay cheap.
+SET lindp3.min_threshold = 4;
+SET lindp3.max_threshold = 64;
+SET lindp3.adaptive = on;
+SET lindp3.fallback = on;
+SET lindp3.seeds = 5;
+
+CREATE TABLE lindp_a (id int, b_id int, val int);
+CREATE TABLE lindp_b (id int, c_id int);
+CREATE TABLE lindp_c (id int, d_id int);
+CREATE TABLE lindp_d (id int);
+CREATE TABLE lindp_e (id int);
+CREATE TABLE lindp_f (id int);
+
+INSERT INTO lindp_a SELECT g, g % 25, g FROM generate_series(1, 400) g;
+INSERT INTO lindp_b SELECT g, g % 15 FROM generate_series(1, 25) g;
+INSERT INTO lindp_c SELECT g, g % 8 FROM generate_series(1, 15) g;
+INSERT INTO lindp_d SELECT g FROM generate_series(1, 8) g;
+INSERT INTO lindp_e SELECT g FROM generate_series(1, 4) g;
+INSERT INTO lindp_f SELECT g FROM generate_series(1, 4) g;
+ANALYZE;
+
+-- Helper: compare the result of the current query under LinDP++ (on) and the
+-- in-core search (off).  We materialize both and assert symmetric difference
+-- is empty.
+
+-- 1. Inner chain join of 5 relations.
+CREATE TEMP TABLE q1_on AS
+  SELECT a.id, b.id AS bid, c.id AS cid, d.id AS did, e.id AS eid
+  FROM lindp_a a, lindp_b b, lindp_c c, lindp_d d, lindp_e e
+  WHERE a.b_id = b.id AND b.c_id = c.id AND c.d_id = d.id AND d.id = e.id;
+SET lindp3.enabled = off;
+CREATE TEMP TABLE q1_off AS
+  SELECT a.id, b.id AS bid, c.id AS cid, d.id AS did, e.id AS eid
+  FROM lindp_a a, lindp_b b, lindp_c c, lindp_d d, lindp_e e
+  WHERE a.b_id = b.id AND b.c_id = c.id AND c.d_id = d.id AND d.id = e.id;
+SET lindp3.enabled = on;
+SELECT count(*) AS q1_rows FROM q1_on;
+SELECT (SELECT count(*) FROM (TABLE q1_on EXCEPT ALL TABLE q1_off) d) AS only_on,
+       (SELECT count(*) FROM (TABLE q1_off EXCEPT ALL TABLE q1_on) d) AS only_off;
+
+-- 2. Cross product: lindp_e and lindp_f are not connected to the rest.
+CREATE TEMP TABLE q2_on AS
+  SELECT a.id, c.id AS cid, e.id AS eid, f.id AS fid
+  FROM lindp_a a, lindp_b b, lindp_c c, lindp_e e, lindp_f f
+  WHERE a.b_id = b.id AND b.c_id = c.id;
+SET lindp3.enabled = off;
+CREATE TEMP TABLE q2_off AS
+  SELECT a.id, c.id AS cid, e.id AS eid, f.id AS fid
+  FROM lindp_a a, lindp_b b, lindp_c c, lindp_e e, lindp_f f
+  WHERE a.b_id = b.id AND b.c_id = c.id;
+SET lindp3.enabled = on;
+SELECT count(*) AS q2_rows FROM q2_on;
+SELECT (SELECT count(*) FROM (TABLE q2_on EXCEPT ALL TABLE q2_off) d) AS only_on,
+       (SELECT count(*) FROM (TABLE q2_off EXCEPT ALL TABLE q2_on) d) AS only_off;
+
+-- 3. Outer joins of 5 relations (join-order restrictions).
+CREATE TEMP TABLE q3_on AS
+  SELECT a.id, b.id AS bid, c.id AS cid, d.id AS did, e.id AS eid
+  FROM lindp_a a
+       LEFT JOIN lindp_b b ON a.b_id = b.id
+       LEFT JOIN lindp_c c ON b.c_id = c.id
+       FULL JOIN lindp_d d ON c.d_id = d.id
+       LEFT JOIN lindp_e e ON d.id = e.id;
+SET lindp3.enabled = off;
+CREATE TEMP TABLE q3_off AS
+  SELECT a.id, b.id AS bid, c.id AS cid, d.id AS did, e.id AS eid
+  FROM lindp_a a
+       LEFT JOIN lindp_b b ON a.b_id = b.id
+       LEFT JOIN lindp_c c ON b.c_id = c.id
+       FULL JOIN lindp_d d ON c.d_id = d.id
+       LEFT JOIN lindp_e e ON d.id = e.id;
+SET lindp3.enabled = on;
+SELECT count(*) AS q3_rows FROM q3_on;
+SELECT (SELECT count(*) FROM (TABLE q3_on EXCEPT ALL TABLE q3_off) d) AS only_on,
+       (SELECT count(*) FROM (TABLE q3_off EXCEPT ALL TABLE q3_on) d) AS only_off;
+
+-- 4. Complex join clause referencing three relations.
+CREATE TEMP TABLE q4_on AS
+  SELECT a.id, b.id AS bid, c.id AS cid
+  FROM lindp_a a, lindp_b b, lindp_c c, lindp_d d, lindp_e e
+  WHERE a.b_id = b.id AND b.c_id = c.id
+        AND ((a.val + b.id) % 8) = c.d_id
+        AND c.d_id = d.id AND d.id = e.id;
+SET lindp3.enabled = off;
+CREATE TEMP TABLE q4_off AS
+  SELECT a.id, b.id AS bid, c.id AS cid
+  FROM lindp_a a, lindp_b b, lindp_c c, lindp_d d, lindp_e e
+  WHERE a.b_id = b.id AND b.c_id = c.id
+        AND ((a.val + b.id) % 8) = c.d_id
+        AND c.d_id = d.id AND d.id = e.id;
+SET lindp3.enabled = on;
+SELECT count(*) AS q4_rows FROM q4_on;
+SELECT (SELECT count(*) FROM (TABLE q4_on EXCEPT ALL TABLE q4_off) d) AS only_on,
+       (SELECT count(*) FROM (TABLE q4_off EXCEPT ALL TABLE q4_on) d) AS only_off;
+
+-- 5. Larger self-join (8 relations) to exercise the interval DP.
+CREATE TEMP TABLE q5_on AS
+  SELECT a1.id AS a1, a3.id AS a3, c.id AS cid, e.id AS eid
+  FROM lindp_a a1
+       JOIN lindp_a a2 ON a1.id = a2.b_id
+       JOIN lindp_a a3 ON a2.id = a3.b_id
+       JOIN lindp_b b ON a3.b_id = b.id
+       JOIN lindp_c c ON b.c_id = c.id
+       JOIN lindp_d d ON c.d_id = d.id
+       JOIN lindp_e e ON d.id = e.id;
+SET lindp3.enabled = off;
+CREATE TEMP TABLE q5_off AS
+  SELECT a1.id AS a1, a3.id AS a3, c.id AS cid, e.id AS eid
+  FROM lindp_a a1
+       JOIN lindp_a a2 ON a1.id = a2.b_id
+       JOIN lindp_a a3 ON a2.id = a3.b_id
+       JOIN lindp_b b ON a3.b_id = b.id
+       JOIN lindp_c c ON b.c_id = c.id
+       JOIN lindp_d d ON c.d_id = d.id
+       JOIN lindp_e e ON d.id = e.id;
+SET lindp3.enabled = on;
+SELECT count(*) AS q5_rows FROM q5_on;
+SELECT (SELECT count(*) FROM (TABLE q5_on EXCEPT ALL TABLE q5_off) d) AS only_on,
+       (SELECT count(*) FROM (TABLE q5_off EXCEPT ALL TABLE q5_on) d) AS only_off;
+
+-- 6. Below-threshold queries delegate to the in-core search (still correct).
+SET lindp3.min_threshold = 100;
+SELECT count(*) AS q6_rows
+  FROM lindp_a a, lindp_b b, lindp_c c
+  WHERE a.b_id = b.id AND b.c_id = c.id;
+SET lindp3.min_threshold = 4;
+
+-- Non-adaptive single-seed mode still produces correct results.
+SET lindp3.adaptive = off;
+SELECT count(*) AS q7_rows
+  FROM lindp_a a, lindp_b b, lindp_c c, lindp_d d, lindp_e e
+  WHERE a.b_id = b.id AND b.c_id = c.id AND c.d_id = d.id AND d.id = e.id;
+SET lindp3.adaptive = on;
+
+DROP TABLE lindp_a, lindp_b, lindp_c, lindp_d, lindp_e, lindp_f;

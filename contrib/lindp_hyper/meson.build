@@ -40,6 +40,8 @@ tests += {
       'lindp2_ex3_lateral',
       'lindp2_ex4_right_outer',
       'lindp2_ex5_lateral_outer',
+      'lindp3_lateral_fail',
+      'lindp3_linearization_fail'
     ],
   },
 }

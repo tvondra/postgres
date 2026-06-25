@@ -60,6 +60,7 @@
 #include "miscadmin.h"
 #include "nodes/pathnodes.h"
 #include "optimizer/cost.h"
+#include "optimizer/geqo.h"
 #include "optimizer/joininfo.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
@@ -71,6 +72,7 @@ PG_MODULE_MAGIC;
 
 /* GUC variables */
 static bool lindp_enabled = true;
+static bool lindp_fallback_enabled = true;
 static int	lindp_min_relations = 2;
 static int	lindp_max_relations = 0;	/* 0 means "no limit" */
 static int	lindp_seeds = 5;
@@ -184,6 +186,15 @@ _PG_init(void)
 							 0,
 							 NULL, NULL, NULL);
 
+	DefineCustomBoolVariable("lindp_hyper.fallback",
+							 "Fallback to stadard join search if linearization fails?",
+							 NULL,
+							 &lindp_fallback_enabled,
+							 true,
+							 PGC_USERSET,
+							 0,
+							 NULL, NULL, NULL);
+
 	DefineCustomIntVariable("lindp_hyper.min_relations",
 							"Minimum number of relations for LinDP++ to engage.",
 							"For fewer relations the standard join search is used.",
@@ -236,9 +247,14 @@ _PG_init(void)
 static RelOptInfo *
 lindp_fallback(PlannerInfo *root, int levels_needed, List *initial_rels)
 {
+	root->initial_rels = initial_rels;
+
 	if (prev_join_search_hook)
 		return prev_join_search_hook(root, levels_needed, initial_rels);
-	return standard_join_search(root, levels_needed, initial_rels);
+	else if (enable_geqo && levels_needed >= geqo_threshold)
+		return geqo(root, levels_needed, initial_rels);
+	else
+		return standard_join_search(root, levels_needed, initial_rels);
 }
 
 /*
@@ -358,7 +374,13 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 
 	/* No usable linearization found: fall back to the standard search. */
 	if (best_order == NULL || best_fitness == DBL_MAX)
+	{
+		/* with fallback disabled, simply error out */
+		if (!lindp_fallback_enabled)
+			elog(ERROR, "LinDP linearization failed to find a valid order");
+
 		return lindp_fallback(root, levels_needed, initial_rels);
+	}
 
 	/*
 	 * Phase 2: rebuild the best linearization in the real planner context,
@@ -368,7 +390,13 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 
 	/* Defensive fallback if the final build somehow failed. */
 	if (result == NULL)
+	{
+		/* with fallback disabled, simply error out */
+		if (!lindp_fallback_enabled)
+			elog(ERROR, "LinDP linearization failed to find a valid plan");
+
 		return lindp_fallback(root, levels_needed, initial_rels);
+	}
 
 	return result;
 }

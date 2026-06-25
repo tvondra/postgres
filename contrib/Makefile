@@ -28,6 +28,7 @@ SUBDIRS = \
 		lindp	\
 		lindp2	\
 		lindp3	\
+		lindp_hyper	\
 		lo		\
 		ltree		\
 		oid2name	\

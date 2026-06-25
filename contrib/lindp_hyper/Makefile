@@ -7,7 +7,7 @@ OBJS = \
 
 PGFILEDESC = "lindp_hyper - LinDP++ join-order search (search-space linearization)"
 
-REGRESS = lindp_hyper
+REGRESS = lindp_hyper lindp_lateral_joins_failure lindp_outer_joins_failure lindp_fail_outer_joins lindp_failure lindp_fail_full_outer lindp_fail_lateral lindp_antijoin lindp_lateral lindp_lateral_nested
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config

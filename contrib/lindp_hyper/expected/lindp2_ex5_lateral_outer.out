@@ -1,0 +1,123 @@
+--
+-- Example 5: a LATERAL chain hanging off the nullable side of a LEFT JOIN
+--
+-- A self-contained test case that builds its own tables and runs a query that
+-- mixes an inner join, a LEFT JOIN, and a two-step chain of LATERAL subqueries.
+-- Relation "t1" is inner-joined to "t2" and LEFT JOINed to "t3"; the first
+-- LATERAL subquery "s" references the nullable side "t3", the second LATERAL
+-- subquery "u" references "s", and both are finally tied back to the preserved
+-- side "t1".  The LATERAL dependencies pin "s"/"u" after the nullable side of
+-- the outer join while the inner-joined "t2" must stay next to "t1", so the
+-- selectivity-driven IKKBZ linear order interleaves relations the outer join
+-- and the lateral chain require to stay together.  No contiguous (window = 0)
+-- split of the linear order is therefore a legal join, the pure-interval DP
+-- cannot build the top join relation, and the module falls back to
+-- standard_join_search() for the component, which still returns a correct plan.
+--
+-- (The "OFFSET 0" optimization fences keep the subqueries from being pulled up
+-- into the parent query, preserving the laterality.)
+--
+-- The test verifies that, despite engaging the fallback, the LinDP++ search
+-- returns exactly the same rows the standard dynamic-programming join search
+-- would.
+--
+LOAD 'lindp_hyper';
+SET lindp_hyper.enabled        = on;
+SET lindp_hyper.fallback       = off;  -- error out if linearization failed
+SET lindp_hyper.min_relations  = 3;    -- low, so a 6-way join uses LinDP (not GEQO/DP)
+SET lindp_hyper.seeds          = 1;    -- try every IKKBZ root
+SET geqo                       = off;
+SET join_collapse_limit        = 100;   -- keep the whole join flat (one search problem)
+SET from_collapse_limit        = 100;
+-- Tables wired up with join keys.  The skewed row counts (large hub and large
+-- laterally-referenced relation, small inner relations) are what drive the
+-- IKKBZ order into the shape that defeats the contiguous-interval DP.
+CREATE TABLE ex5_t1 (id int, k int, v int);
+CREATE TABLE ex5_t2 (id int, k int, v int);
+CREATE TABLE ex5_t3 (id int, k int, v int);
+CREATE TABLE ex5_t4 (id int, k int, v int);
+CREATE TABLE ex5_t5 (id int, k int, v int);
+INSERT INTO ex5_t1 SELECT g, g % 500, g FROM generate_series(0, 999) g;
+INSERT INTO ex5_t2 SELECT g, g % 2,   g FROM generate_series(0, 4)   g;
+INSERT INTO ex5_t3 SELECT g, g % 2,   g FROM generate_series(0, 4)   g;
+INSERT INTO ex5_t4 SELECT g, g % 2,   g FROM generate_series(0, 4)   g;
+INSERT INTO ex5_t5 SELECT g, g % 500, g FROM generate_series(0, 999) g;
+ANALYZE ex5_t1, ex5_t2, ex5_t3, ex5_t4, ex5_t5;
+-- The example query: an inner join plus a LEFT JOIN feeding a chain of two
+-- LATERAL subqueries that reference the nullable side of the outer join.
+EXPLAIN (COSTS OFF)
+SELECT ex5_t1.id AS t1, ex5_t2.id AS t2, ex5_t3.id AS t3,
+       s.id AS s, u.id AS u
+FROM ex5_t1
+    JOIN ex5_t2 ON ex5_t2.id = ex5_t1.id
+    LEFT JOIN ex5_t3 ON ex5_t3.id = ex5_t1.id,
+    LATERAL (SELECT x.id, x.k FROM ex5_t5 x
+             WHERE x.v = ex5_t3.v OFFSET 0) s,
+    LATERAL (SELECT y.id FROM ex5_t4 y
+             WHERE y.v = s.k OFFSET 0) u
+WHERE u.id = ex5_t1.id AND s.id = ex5_t1.id;
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Nested Loop
+   Join Filter: (ex5_t2.id = u.id)
+   ->  Nested Loop
+         Join Filter: (ex5_t2.id = x.id)
+         ->  Hash Left Join
+               Hash Cond: (ex5_t1.id = ex5_t3.id)
+               ->  Hash Join
+                     Hash Cond: (ex5_t1.id = ex5_t2.id)
+                     ->  Seq Scan on ex5_t1
+                     ->  Hash
+                           ->  Seq Scan on ex5_t2
+               ->  Hash
+                     ->  Seq Scan on ex5_t3
+         ->  Seq Scan on ex5_t5 x
+               Filter: (v = ex5_t3.v)
+   ->  Subquery Scan on u
+         Filter: (x.id = u.id)
+         ->  Seq Scan on ex5_t4 y
+               Filter: (v = x.k)
+(19 rows)
+
+-- Show a deterministic slice of the actual result for illustration.
+EXPLAIN (COSTS OFF)
+SELECT ex5_t1.id AS t1, ex5_t2.id AS t2, ex5_t3.id AS t3,
+       s.id AS s, u.id AS u
+FROM ex5_t1
+    JOIN ex5_t2 ON ex5_t2.id = ex5_t1.id
+    LEFT JOIN ex5_t3 ON ex5_t3.id = ex5_t1.id,
+    LATERAL (SELECT x.id, x.k FROM ex5_t5 x
+             WHERE x.v = ex5_t3.v OFFSET 0) s,
+    LATERAL (SELECT y.id FROM ex5_t4 y
+             WHERE y.v = s.k OFFSET 0) u
+WHERE u.id = ex5_t1.id AND s.id = ex5_t1.id
+ORDER BY t1
+LIMIT 5;
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ Limit
+   ->  Nested Loop
+         Join Filter: (ex5_t2.id = u.id)
+         ->  Nested Loop
+               Join Filter: (ex5_t2.id = x.id)
+               ->  Merge Left Join
+                     Merge Cond: (ex5_t1.id = ex5_t3.id)
+                     ->  Sort
+                           Sort Key: ex5_t2.id
+                           ->  Hash Join
+                                 Hash Cond: (ex5_t1.id = ex5_t2.id)
+                                 ->  Seq Scan on ex5_t1
+                                 ->  Hash
+                                       ->  Seq Scan on ex5_t2
+                     ->  Sort
+                           Sort Key: ex5_t3.id
+                           ->  Seq Scan on ex5_t3
+               ->  Seq Scan on ex5_t5 x
+                     Filter: (v = ex5_t3.v)
+         ->  Subquery Scan on u
+               Filter: (x.id = u.id)
+               ->  Seq Scan on ex5_t4 y
+                     Filter: (v = x.k)
+(23 rows)
+
+DROP TABLE ex5_t1, ex5_t2, ex5_t3, ex5_t4, ex5_t5;

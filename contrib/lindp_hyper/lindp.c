@@ -175,7 +175,7 @@ static int	lindp_pick_root(LinDPHypergraph *hg, Bitmapset *vmask,
 void
 _PG_init(void)
 {
-	DefineCustomBoolVariable("lindp.enabled",
+	DefineCustomBoolVariable("lindp_hyper.enabled",
 							 "Enables the LinDP++ join search hook.",
 							 NULL,
 							 &lindp_enabled,
@@ -184,7 +184,7 @@ _PG_init(void)
 							 0,
 							 NULL, NULL, NULL);
 
-	DefineCustomIntVariable("lindp.min_relations",
+	DefineCustomIntVariable("lindp_hyper.min_relations",
 							"Minimum number of relations for LinDP++ to engage.",
 							"For fewer relations the standard join search is used.",
 							&lindp_min_relations,
@@ -193,7 +193,7 @@ _PG_init(void)
 							0,
 							NULL, NULL, NULL);
 
-	DefineCustomIntVariable("lindp.max_relations",
+	DefineCustomIntVariable("lindp_hyper.max_relations",
 							"Maximum number of relations for LinDP++ to engage.",
 							"0 disables the limit.  Above the limit the standard "
 							"join search (or GEQO) is used instead.",
@@ -203,7 +203,7 @@ _PG_init(void)
 							0,
 							NULL, NULL, NULL);
 
-	DefineCustomIntVariable("lindp.seeds",
+	DefineCustomIntVariable("lindp_hyper.seeds",
 							"Number of seed relations tried as IKKBZ roots.",
 							"More seeds explore more linearizations.  0 means "
 							"try every relation as a root.",
@@ -213,7 +213,7 @@ _PG_init(void)
 							0,
 							NULL, NULL, NULL);
 
-	DefineCustomBoolVariable("lindp.cross_products",
+	DefineCustomBoolVariable("lindp_hyper.cross_products",
 							 "Enriches the search space with cross products.",
 							 "When off, disconnected join problems fall back to "
 							 "the standard join search.",
@@ -223,7 +223,7 @@ _PG_init(void)
 							 0,
 							 NULL, NULL, NULL);
 
-	MarkGUCPrefixReserved("lindp");
+	MarkGUCPrefixReserved("lindp_hyper");
 
 	/* Install the hook, chaining to any previously installed hook. */
 	prev_join_search_hook = join_search_hook;

@@ -4,8 +4,12 @@ import sys
 import random
 import time
 
+import os
 import psycopg2
 import re
+import subprocess
+
+PGUSER = os.environ['USER']
 
 def generate_tables(f, s, conn, ntables):
 	tables = {}
@@ -31,7 +35,7 @@ def create_tables(f, conn, tables):
 	seed = random.random()
 
 	cur.execute(f'select setseed({seed})')
-	f.write(f'select setseed({seed})')
+	f.write(f'select setseed({seed});\n')
 
 	for t in tables.keys():
 		tmp = tables[t]
@@ -80,8 +84,8 @@ def vacuum_analyze(f, conn):
 
 	cur = conn.cursor()
 
-	cur.execute('vacuum analyze')
-	f.write('vacuum analyze;\n')
+	cur.execute('VACUUM ANALYZE')
+	f.write('VACUUM ANALYZE;\n\n')
 
 
 def generate_tree(tables):
@@ -149,7 +153,7 @@ def extract_cost(res):
 
 def plan_hyper(sql, seeds):
 
-	conn = psycopg2.connect('host=localhost user=user dbname=test')
+	conn = psycopg2.connect(f'host=localhost user={PGUSER} dbname=test')
 	cur = conn.cursor()
 
 	cur.execute("reset all")
@@ -179,7 +183,7 @@ def plan_hyper(sql, seeds):
 
 def plan_geqo(sql):
 
-	conn = psycopg2.connect('host=localhost user=user dbname=test')
+	conn = psycopg2.connect(f'host=localhost user={PGUSER} dbname=test')
 	cur = conn.cursor()
 
 	cur.execute("reset all")
@@ -202,7 +206,7 @@ def plan_geqo(sql):
 
 def plan_standard(sql):
 
-	conn = psycopg2.connect('host=localhost user=user dbname=test')
+	conn = psycopg2.connect(f'host=localhost user={PGUSER} dbname=test')
 	cur = conn.cursor()
 
 	cur.execute("reset all")
@@ -223,6 +227,29 @@ def plan_standard(sql):
 	return ('\n'.join([r[0] for r in res]), duration, cost)
 
 
+def get_hardness():
+	result = subprocess.run(['./get-hardness.sh'], stdout=subprocess.PIPE)
+	return result.stdout.decode('utf-8').strip()
+
+
+def plan_hardness(sql):
+
+	conn = psycopg2.connect(f'host=localhost user={PGUSER} dbname=test')
+	cur = conn.cursor()
+
+	cur.execute("reset all")
+	cur.execute("set join_collapse_limit = 100")
+	cur.execute("set from_collapse_limit = 100")
+	cur.execute("set geqo = off")
+
+	cur.execute("LOAD 'join_hardness'")
+	cur.execute('set join_hardness.enable = on')
+
+	cur.execute(f'explain {sql}')
+
+	return get_hardness()
+
+
 if __name__ == '__main__':
 
 	ts = int(time.time())
@@ -232,16 +259,17 @@ if __name__ == '__main__':
 	plans_file = open(f'plans-{ts}.log', 'w')
 	results_file = open(f'results-{ts}.log', 'w')
 
-	conn = psycopg2.connect('host=localhost user=user dbname=test')
+	conn = psycopg2.connect(f'host=localhost user={PGUSER} dbname=test')
 	conn.autocommit = True
 
-	ntables = int(sys.argv[1])
+	ntables_from = int(sys.argv[1])
+	ntables_to = int(sys.argv[2])
 
 	sid = 0
 	qid = 0
 
 	# test all join sizes between 2 and ntables (inclusive)
-	for n in range(2, ntables + 1):
+	for n in range(ntables_from, ntables_to + 1):
 
 		sid += 1
 		tables = generate_tables(schema_file, sid, conn, n)
@@ -262,8 +290,8 @@ if __name__ == '__main__':
 			plans_file.write(hyper[0])
 			plans_file.write('\n\n')
 
-			hyper2 = plan_hyper(join, ntables)
-			plans_file.write(f'------------- {qid} hyper {ntables} -------------\n')
+			hyper2 = plan_hyper(join, n)
+			plans_file.write(f'------------- {qid} hyper {n} -------------\n')
 			plans_file.write(hyper2[0])
 			plans_file.write('\n\n')
 
@@ -277,5 +305,7 @@ if __name__ == '__main__':
 			plans_file.write(standard[0])
 			plans_file.write('\n\n')
 
-			results_file.write(f'{sid} {qid} {n} {hyper[1]} {hyper[2]} {hyper2[1]} {hyper2[2]} {geqo[1]} {geqo[2]} {standard[1]} {standard[2]}\n')
+			hardness = plan_hardness(join)
+
+			results_file.write(f'{sid} {qid} {n} {hyper[1]} {hyper[2]} {hyper2[1]} {hyper2[2]} {geqo[1]} {geqo[2]} {standard[1]} {standard[2]} {hardness}\n')
 			results_file.flush()

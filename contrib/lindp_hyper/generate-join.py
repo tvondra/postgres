@@ -257,7 +257,16 @@ def plan_hardness(sql):
 	cur.execute("LOAD 'join_hardness'")
 	cur.execute('set join_hardness.enable = on')
 
-	cur.execute(f'explain {sql}')
+	# set a limit, so that we abort explain if the join is too hard
+	# we'll still get the estimate, though (the join_hardness needs a tweak
+	# to make that happen, though)
+	cur.execute('set join_hardness.threshold = 5000000')
+
+	try:
+		cur.execute(f'explain {sql}')
+	except:
+		# ignore elog(ERROR) if join too hard
+		pass
 
 	return get_hardness()
 

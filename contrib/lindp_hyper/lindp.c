@@ -516,6 +516,7 @@ lindp_edge_selectivity(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
 	List	   *clauses = NIL;
 	ListCell   *lc;
 	double		sel;
+	SpecialJoinInfo sjinfo;
 
 	foreach(lc, rel1->joininfo)
 	{
@@ -540,7 +541,17 @@ lindp_edge_selectivity(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
 		return 0.1;
 	}
 
-	sel = clauselist_selectivity(root, clauses, 0, JOIN_INNER, NULL);
+	/*
+	 * Build a dummy JOIN_INNER SpecialJoinInfo describing the join between the
+	 * two relations.  Passing a non-NULL sjinfo is essential: with a NULL
+	 * sjinfo, clause_selectivity() treats a join clause as a restriction
+	 * clause, which both yields a bogus estimate here and (worse) caches that
+	 * wrong selectivity in the RestrictInfo's norm_selec field, corrupting the
+	 * real join cost estimates computed later for the chosen plan.
+	 */
+	init_dummy_sjinfo(&sjinfo, rel1->relids, rel2->relids);
+
+	sel = clauselist_selectivity(root, clauses, 0, JOIN_INNER, &sjinfo);
 	list_free(clauses);
 
 	/* Keep the value strictly inside (0, 1]. */

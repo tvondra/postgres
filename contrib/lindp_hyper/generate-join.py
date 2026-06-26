@@ -118,13 +118,17 @@ def available_columns(tables, tree):
 	return cols
 
 
-def generate_join(tables, tree, level = 0):
+def generate_join(tables, tree, level = 0, max_clauses = None):
+
+	# pick complexity of the join - number of join clauses to other relations
+	if max_clauses is None:
+		max_clauses = random.randint(1, 3)
 
 	if type(tree) == str:
 		return tree
 
 	if len(tree) == 1:
-		return generate_join(tables, tree[0], level)
+		return generate_join(tables, tree[0], level, max_clauses)
 
 	sql = ''
 	prev = []
@@ -134,7 +138,15 @@ def generate_join(tables, tree, level = 0):
 		c = available_columns(tables, tree[t])
 
 		if t > 0:
-			sql += '\n' + (' ' * 2 * (level + 1)) + random.choice(['JOIN', 'LEFT JOIN', 'RIGHT JOIN', 'FULL JOIN']) + ' ' + r + ' ON (' + random.choice(prev) + ' = ' + random.choice(c) + ')'
+
+			# pick number of clauses for this join
+			nclauses = random.randint(1, max_clauses)
+
+			clauses = []
+			for i in range(0, nclauses):
+				clauses.append('(' + random.choice(prev) + ' = ' + random.choice(c) + ')')
+
+			sql += '\n' + (' ' * 2 * (level + 1)) + random.choice(['JOIN', 'LEFT JOIN', 'RIGHT JOIN', 'FULL JOIN']) + ' ' + r + ' ON (' + ' AND '.join(clauses) + ')'
 		else:
 			sql = (' ' * 2 * (level + 1)) + r
 

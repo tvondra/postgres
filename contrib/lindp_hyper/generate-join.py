@@ -269,7 +269,7 @@ if __name__ == '__main__':
 	schema_file = open(f'schema-{ts}.log', 'w')
 	query_file = open(f'query-{ts}.log', 'w')
 	plans_file = open(f'plans-{ts}.log', 'w')
-	results_file = open(f'results-{ts}.log', 'w')
+	results_file = open(f'results-{ts}.csv', 'w')
 
 	conn = psycopg2.connect(f'host=localhost user={PGUSER} dbname=test')
 	conn.autocommit = True
@@ -277,47 +277,76 @@ if __name__ == '__main__':
 	ntables_from = int(sys.argv[1])
 	ntables_to = int(sys.argv[2])
 
+	# number of data sets to test (per table count)
+	nruns = 10
+	if len(sys.argv) > 3:
+		nruns = int(sys.argv[3])
+
+	# number of queries to test (per dataset)
+	nqueries = 1000
+	if len(sys.argv) > 4:
+		nqueries = int(sys.argv[4])
+
 	sid = 0
 	qid = 0
+	s = time.time()
 
-	# test all join sizes between 2 and ntables (inclusive)
-	for n in range(ntables_from, ntables_to + 1):
+	# repeated runs
+	for r in range(1, nruns + 1):
 
-		sid += 1
-		tables = generate_tables(schema_file, sid, conn, n)
+		t = round(time.time() - s, 2)
+		print(f'{t}\t\trun {r}')
 
-		# 1000 random joins for each join size / schema / data
-		for q in range(0, 1000):
+		# test all join sizes between 2 and ntables (inclusive)
+		for n in range(ntables_from, ntables_to + 1):
 
-			qid += 1
+			sid += 1
 
-			tree = generate_tree(list(tables.keys()))
-			join = 'SELECT * FROM ' + generate_join(tables, tree)
+			t = round(time.time() - s, 2)
+			print(f'{t}\t\t\t{n} tables (schema {sid})')
 
-			query_file.write(f'---------- {qid} ----------\n')
-			query_file.write(f'{join};\n')
+			tables = generate_tables(schema_file, sid, conn, n)
 
-			hyper = plan_hyper(join, 1)
-			plans_file.write(f'------------- {qid} hyper 1 -------------\n')
-			plans_file.write(hyper[0])
-			plans_file.write('\n\n')
+			# 1000 random joins for each join size / schema / data
+			for q in range(0, nqueries):
 
-			hyper2 = plan_hyper(join, n)
-			plans_file.write(f'------------- {qid} hyper {n} -------------\n')
-			plans_file.write(hyper2[0])
-			plans_file.write('\n\n')
+				qid += 1
 
-			geqo = plan_geqo(join)
-			plans_file.write(f'------------- {qid} geqo -------------\n')
-			plans_file.write(geqo[0])
-			plans_file.write('\n\n')
+				t = round(time.time() - s, 2)
+				print(f'{t}\t\t\t\tquery {qid}')
 
-			standard = plan_standard(join)
-			plans_file.write(f'------------- {qid} standard -------------\n')
-			plans_file.write(standard[0])
-			plans_file.write('\n\n')
+				tree = generate_tree(list(tables.keys()))
+				join = 'SELECT * FROM ' + generate_join(tables, tree)
 
-			hardness = plan_hardness(join)
+				query_file.write(f'---------- {qid} ----------\n')
+				query_file.write(f'{join};\n')
 
-			results_file.write(f'{sid} {qid} {n} {hyper[1]} {hyper[2]} {hyper2[1]} {hyper2[2]} {geqo[1]} {geqo[2]} {standard[1]} {standard[2]} {hardness}\n')
-			results_file.flush()
+				hyper = plan_hyper(join, 1)
+				plans_file.write(f'------------- {qid} hyper 1 -------------\n')
+				plans_file.write(hyper[0])
+				plans_file.write('\n\n')
+
+				hyper2 = plan_hyper(join, n)
+				plans_file.write(f'------------- {qid} hyper {n} -------------\n')
+				plans_file.write(hyper2[0])
+				plans_file.write('\n\n')
+
+				geqo = plan_geqo(join)
+				plans_file.write(f'------------- {qid} geqo -------------\n')
+				plans_file.write(geqo[0])
+				plans_file.write('\n\n')
+
+				# don't do standard_join_search for (n > 14), it may not complete
+				# set based on experiments
+				if n <= 14:
+					standard = plan_standard(join)
+					plans_file.write(f'------------- {qid} standard -------------\n')
+					plans_file.write(standard[0])
+					plans_file.write('\n\n')
+				else:
+					standard = (-1, -1, -1)
+
+				hardness = plan_hardness(join)
+
+				results_file.write(f'{sid} {qid} {n} {hyper[1]} {hyper[2]} {hyper2[1]} {hyper2[2]} {geqo[1]} {geqo[2]} {standard[1]} {standard[2]} {hardness}\n')
+				results_file.flush()

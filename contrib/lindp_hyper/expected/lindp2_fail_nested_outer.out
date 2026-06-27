@@ -107,25 +107,25 @@ FROM (ex2_t1 JOIN ex2_t2 ON ex2_t2.id = ex2_t1.id)
     LEFT JOIN (ex2_t3 JOIN ex2_t4 ON ex2_t4.id = ex2_t3.id)
         ON ex2_t3.id = ex2_t2.id
     JOIN ex2_t5 ON ex2_t5.id = ex2_t1.id;
-                             QUERY PLAN                             
---------------------------------------------------------------------
+                          QUERY PLAN                          
+--------------------------------------------------------------
  Hash Join
-   Hash Cond: (ex2_t1.id = ex2_t2.id)
-   ->  Seq Scan on ex2_t1
+   Hash Cond: (ex2_t5.id = ex2_t2.id)
+   ->  Seq Scan on ex2_t5
    ->  Hash
-         ->  Hash Join
-               Hash Cond: (ex2_t5.id = ex2_t2.id)
-               ->  Seq Scan on ex2_t5
+         ->  Hash Left Join
+               Hash Cond: (ex2_t2.id = ex2_t3.id)
+               ->  Hash Join
+                     Hash Cond: (ex2_t1.id = ex2_t2.id)
+                     ->  Seq Scan on ex2_t1
+                     ->  Hash
+                           ->  Seq Scan on ex2_t2
                ->  Hash
-                     ->  Hash Right Join
-                           Hash Cond: (ex2_t3.id = ex2_t2.id)
-                           ->  Hash Join
-                                 Hash Cond: (ex2_t3.id = ex2_t4.id)
-                                 ->  Seq Scan on ex2_t3
-                                 ->  Hash
-                                       ->  Seq Scan on ex2_t4
+                     ->  Hash Join
+                           Hash Cond: (ex2_t3.id = ex2_t4.id)
+                           ->  Seq Scan on ex2_t3
                            ->  Hash
-                                 ->  Seq Scan on ex2_t2
+                                 ->  Seq Scan on ex2_t4
 (17 rows)
 
     
@@ -138,28 +138,28 @@ FROM (ex2_t1 JOIN ex2_t2 ON ex2_t2.id = ex2_t1.id)
     JOIN ex2_t5 ON ex2_t5.id = ex2_t1.id
 ORDER BY t1
 LIMIT 5;
-                                   QUERY PLAN                                   
---------------------------------------------------------------------------------
+                                QUERY PLAN                                
+--------------------------------------------------------------------------
  Limit
    ->  Sort
          Sort Key: ex2_t1.id
          ->  Hash Join
-               Hash Cond: (ex2_t1.id = ex2_t2.id)
-               ->  Seq Scan on ex2_t1
+               Hash Cond: (ex2_t5.id = ex2_t2.id)
+               ->  Seq Scan on ex2_t5
                ->  Hash
-                     ->  Hash Join
-                           Hash Cond: (ex2_t5.id = ex2_t2.id)
-                           ->  Seq Scan on ex2_t5
+                     ->  Hash Left Join
+                           Hash Cond: (ex2_t2.id = ex2_t3.id)
+                           ->  Hash Join
+                                 Hash Cond: (ex2_t1.id = ex2_t2.id)
+                                 ->  Seq Scan on ex2_t1
+                                 ->  Hash
+                                       ->  Seq Scan on ex2_t2
                            ->  Hash
-                                 ->  Hash Right Join
-                                       Hash Cond: (ex2_t3.id = ex2_t2.id)
-                                       ->  Hash Join
-                                             Hash Cond: (ex2_t3.id = ex2_t4.id)
-                                             ->  Seq Scan on ex2_t3
-                                             ->  Hash
-                                                   ->  Seq Scan on ex2_t4
+                                 ->  Hash Join
+                                       Hash Cond: (ex2_t3.id = ex2_t4.id)
+                                       ->  Seq Scan on ex2_t3
                                        ->  Hash
-                                             ->  Seq Scan on ex2_t2
+                                             ->  Seq Scan on ex2_t4
 (20 rows)
 
 -- now try fallback, and check it produces the same plan as regular search
@@ -173,25 +173,25 @@ FROM (ex2_t1 JOIN ex2_t2 ON ex2_t2.id = ex2_t1.id)
     LEFT JOIN (ex2_t3 JOIN ex2_t4 ON ex2_t4.id = ex2_t3.id)
         ON ex2_t3.id = ex2_t2.id
     JOIN ex2_t5 ON ex2_t5.id = ex2_t1.id;
-                             QUERY PLAN                             
---------------------------------------------------------------------
+                          QUERY PLAN                          
+--------------------------------------------------------------
  Hash Join
-   Hash Cond: (ex2_t1.id = ex2_t2.id)
-   ->  Seq Scan on ex2_t1
+   Hash Cond: (ex2_t5.id = ex2_t2.id)
+   ->  Seq Scan on ex2_t5
    ->  Hash
-         ->  Hash Join
-               Hash Cond: (ex2_t5.id = ex2_t2.id)
-               ->  Seq Scan on ex2_t5
+         ->  Hash Left Join
+               Hash Cond: (ex2_t2.id = ex2_t3.id)
+               ->  Hash Join
+                     Hash Cond: (ex2_t1.id = ex2_t2.id)
+                     ->  Seq Scan on ex2_t1
+                     ->  Hash
+                           ->  Seq Scan on ex2_t2
                ->  Hash
-                     ->  Hash Right Join
-                           Hash Cond: (ex2_t3.id = ex2_t2.id)
-                           ->  Hash Join
-                                 Hash Cond: (ex2_t3.id = ex2_t4.id)
-                                 ->  Seq Scan on ex2_t3
-                                 ->  Hash
-                                       ->  Seq Scan on ex2_t4
+                     ->  Hash Join
+                           Hash Cond: (ex2_t3.id = ex2_t4.id)
+                           ->  Seq Scan on ex2_t3
                            ->  Hash
-                                 ->  Seq Scan on ex2_t2
+                                 ->  Seq Scan on ex2_t4
 (17 rows)
 
 SET lindp_hyper.enabled = off;

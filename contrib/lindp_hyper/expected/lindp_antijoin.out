@@ -53,24 +53,19 @@ WHERE NOT EXISTS (SELECT 1 FROM aj_b JOIN aj_c ON aj_b.id = aj_c.id
 				  WHERE aj_b.id = aj_a.id);
                        QUERY PLAN                        
 ---------------------------------------------------------
- Merge Anti Join
-   Merge Cond: (aj_a.id = aj_b.id)
-   ->  Merge Join
-         Merge Cond: (aj_a.id = aj_e.id)
-         ->  Sort
-               Sort Key: aj_a.id
+ Nested Loop Anti Join
+   ->  Hash Join
+         Hash Cond: (aj_e.id = aj_a.id)
+         ->  Seq Scan on aj_e
+         ->  Hash
                ->  Seq Scan on aj_a
-         ->  Sort
-               Sort Key: aj_e.id
-               ->  Seq Scan on aj_e
-   ->  Nested Loop
-         ->  Index Only Scan using aj_b_id on aj_b
-         ->  Memoize
-               Cache Key: aj_b.id
-               Cache Mode: logical
-               ->  Index Only Scan using aj_c_id on aj_c
-                     Index Cond: (id = aj_b.id)
-(17 rows)
+   ->  Hash Join
+         Hash Cond: (aj_c.id = aj_b.id)
+         ->  Seq Scan on aj_c
+         ->  Hash
+               ->  Index Only Scan using aj_b_id on aj_b
+                     Index Cond: (id = aj_a.id)
+(12 rows)
 
 -- The same shape with EXISTS (a semi-join) fails for the same reason.
 EXPLAIN (COSTS OFF)
@@ -127,24 +122,19 @@ WHERE NOT EXISTS (SELECT 1 FROM aj_b JOIN aj_c ON aj_b.id = aj_c.id
 				  WHERE aj_b.id = aj_a.id);
                        QUERY PLAN                        
 ---------------------------------------------------------
- Merge Anti Join
-   Merge Cond: (aj_a.id = aj_b.id)
-   ->  Merge Join
-         Merge Cond: (aj_a.id = aj_e.id)
-         ->  Sort
-               Sort Key: aj_a.id
+ Nested Loop Anti Join
+   ->  Hash Join
+         Hash Cond: (aj_e.id = aj_a.id)
+         ->  Seq Scan on aj_e
+         ->  Hash
                ->  Seq Scan on aj_a
-         ->  Sort
-               Sort Key: aj_e.id
-               ->  Seq Scan on aj_e
-   ->  Nested Loop
-         ->  Index Only Scan using aj_b_id on aj_b
-         ->  Memoize
-               Cache Key: aj_b.id
-               Cache Mode: logical
-               ->  Index Only Scan using aj_c_id on aj_c
-                     Index Cond: (id = aj_b.id)
-(17 rows)
+   ->  Hash Join
+         Hash Cond: (aj_c.id = aj_b.id)
+         ->  Seq Scan on aj_c
+         ->  Hash
+               ->  Index Only Scan using aj_b_id on aj_b
+                     Index Cond: (id = aj_a.id)
+(12 rows)
 
 EXPLAIN (COSTS OFF)
 SELECT * FROM aj_a JOIN aj_e ON aj_e.id = aj_a.id

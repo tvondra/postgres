@@ -389,7 +389,13 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 	/* No usable linearization found: fall back to the standard search. */
 	/* XXX this shouldn't really happen, I think? */
 	if (best_order == NULL || best_fitness == DBL_MAX)
+	{
+		/* with fallback disabled, simply error out */
+		if (!lindp_fallback_enabled)
+			elog(ERROR, "LinDP linearization failed to find a valid plan");
+
 		return lindp_fallback(root, levels_needed, initial_rels);
+	}
 
 	/*
 	 * Phase 2: rebuild the best linearization in the real planner context,

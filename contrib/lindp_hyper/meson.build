@@ -42,7 +42,8 @@ tests += {
       'lindp2_ex5_lateral_outer',
       'lindp3_lateral_fail',
       'lindp3_linearization_fail',
-      'plan_cost_regress_1'
+      'plan_cost_regress_1',
+      'plan_cost_regress_2'
     ],
   },
 }

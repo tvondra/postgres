@@ -267,7 +267,7 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 	int			n = levels_needed;
 	int			nseeds;
 	int		   *seedrels;
-	RelOptInfo *result;
+	RelOptInfo *result = NULL;
 	int			i;
 
 	/* Decide whether LinDP++ should handle this join problem at all. */

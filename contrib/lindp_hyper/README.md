@@ -66,15 +66,9 @@ The implementation mirrors the structure of the paper:
    the cross edges from step 1 -- realizes the paper's heuristic of enriching
    the search space with cross products.
 
-4. **Multi-seed search.**  The linearization is only a heuristic, so several
-   seed relations are tried as IKKBZ roots.  All of the resulting
-   linearizations are built into the same set of join relations, so their
-   paths accumulate and the core's `add_path()` keeps the Pareto-optimal ones.
-   Because the seeds are a fixed prefix of the relations ordered by ascending
-   cardinality, a larger `lindp.seeds` value explores a superset of the
-   linearizations of a smaller one, so raising `lindp.seeds` can only ever
-   improve (never worsen) the chosen plan.
-
+4. **Adaptive seeding.**  The linearization is only a heuristic, so several
+   seed relations are tried as IKKBZ roots, each linearization is costed, and
+   the cheapest plan is kept.
 
 
 Building the actual join relations and paths is delegated to the core
@@ -98,15 +92,51 @@ Configuration parameters
 
 `lindp_hyper.seeds` (`integer`)
     Number of seed relations tried as IKKBZ roots.  More seeds explore more
-    linearizations at the cost of planning time; because every seed's paths are
-    accumulated, raising this can only ever improve the chosen plan.  `0` tries
-    every relation.  Default `5`.
+    linearizations at the cost of planning time; raising this can only ever
+    improve the chosen plan.  `0` tries every relation.  Default `5`.
 
 `lindp_hyper.cross_products` (`boolean`)
     When `on` (the default), the search space is enriched with cross products
     and disconnected join problems are handled directly.  When `off`, the
     disconnected components are planned using linearization, but then fall
     back to the standard join search.
+
+
+Monotonicity
+------------
+
+Monotonicity in lindp.seeds: each seed is linearized and costed independently,
+and only the cheapest linearization is kept, so the chosen plan's cost is the
+minimum over the seeds tried.  Because the seeds are a fixed prefix of the
+relations ordered by ascending cardinality, a larger lindp.seeds value tries
+a superset of the linearizations of a smaller one; raising lindp.seeds can
+therefore never produce a more expensive plan.
+
+The guarantee however holds only to a single join problem:
+
+* Top-level (single, non-split join search): still monotone. best_fitness is
+  a minimum over the evaluated seeds; raising nseeds extends that set, so the
+  minimum is non-increasing, and Phase 2 rebuilds the exact winning order so
+  the final cost equals best_fitness. The commit specifically preserves this
+  property by running Phase-1 scoring with final = true (so each candidate
+  includes its Gather/parallel path etc.).
+
+* Nested join-search subproblems: monotonicity no longer guaranteed. the search
+  hook is invoked per subproblem (e.g. the FULL-JOIN / make_rel_from_joinlist-split
+  subproblems whose result feeds an enclosing join search). It keeps only the
+  single cheapest-in-isolation linearization for a subproblem and discards the
+  other linearizations' paths. The plan that is cheapest for a subproblem in
+  isolation is not necessarily the one the enclosing join wants - a different
+  linearization might expose a path with useful pathkeys, a cheaper startup cost,
+  or a parameterization that lets the outer join build a cheaper overall plan.
+  Raising lindp.seeds can change which linearization wins the subproblem,
+  dropping the path the enclosing join relied on, and thus make the final plan
+  more expensive.
+
+What we could do about this? We do pick the seed linearization based on the
+cheapest total path, and build paths only for that. But maybe we could merge
+paths from multiple seeds? Or at least consider other stuff when selecting
+the seed (e.g. query_pathkeys)?
 
 
 Questions

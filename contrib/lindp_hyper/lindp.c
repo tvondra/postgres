@@ -319,6 +319,20 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 	 * private memory context (mirroring geqo_eval()), keeping the cheapest
 	 * linearization.  We must restore join_rel_list and join_rel_hash after
 	 * each trial so the throw-away join relations do not leak.
+	 *
+	 * We run the DP with "final" set to true so that each candidate is costed
+	 * exactly as it would be in the final build, including the Gather path on
+	 * the top relation (see lindp_finalize_joinrel()).  Scoring seeds by a
+	 * serial-only cost while the chosen plan is ultimately parallel would make
+	 * the ranking inconsistent with the final plan cost, so that adding more
+	 * seeds could pick a higher-cost plan.
+	 *
+	 * XXX There's a balance between doing a cheap costing of all the seeds,
+	 * and getting accurate costs of the best plan. With only approximate
+	 * cost we can end up picking a seed with lower approximate cost, only
+	 * to end up with a more expensive plan. This may happen e.g. because
+	 * lindp_run_dp(final=false) used to skip finalization, and thus did
+	 * not build gather plans. So it was serial-only comparison.
 	 */
 	for (i = 0; i < nseeds; i++)
 	{
@@ -345,7 +359,7 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 
 		order = lindp_linearize(root, hg, seedrels[i], &order_len);
 		top = (order != NULL && order_len == n)
-			? lindp_run_dp(root, hg, order, n, false)
+			? lindp_run_dp(root, hg, order, n, true)
 			: NULL;
 
 		if (top != NULL && top->cheapest_total_path != NULL)
@@ -1050,6 +1064,9 @@ lindp_pick_root(LinDPHypergraph *hg, Bitmapset *vmask, int root_hint)
  *
  * Returns the join relation covering the whole order, or NULL if no legal
  * contiguous plan exists for this linearization.
+ *
+ * XXX At this point we only call lindp_run_dp with final=true, so maybe we
+ * should ditch the argument entirely.
  */
 static RelOptInfo *
 lindp_run_dp(PlannerInfo *root, LinDPHypergraph *hg, int *order, int n,
@@ -1114,9 +1131,20 @@ lindp_finalize_joinrel(PlannerInfo *root, RelOptInfo *rel)
 	/* Create paths for partitionwise joins. */
 	generate_partitionwise_join_paths(root, rel);
 
-	/* Consider gathering partial paths, except for the topmost rel. */
-	if (!is_top_rel)
-		generate_useful_gather_paths(root, rel, false);
+	/*
+	 * Consider gathering partial paths.  standard_join_search() skips this for
+	 * the topmost rel, because the core planner gathers it later (once the
+	 * final scan/join target is known) in apply_scanjoin_target_to_paths().
+	 * We must do it here even for the topmost rel, though: lindp_join_search()
+	 * scores each seed's linearization by the cheapest_total_path cost of the
+	 * top join relation, and without a Gather path that cost reflects only the
+	 * serial plan.  Scoring the serial cost while the chosen plan is ultimately
+	 * a parallel one makes the seed ranking inconsistent with the final plan
+	 * cost, so adding more seeds could select a higher-cost plan.  Gathering
+	 * the top rel here is harmless for the final build, since the core planner
+	 * simply regenerates the Gather paths with the final target afterwards.
+	 */
+	generate_useful_gather_paths(root, rel, false);
 
 	/* Find and save the cheapest paths for this rel. */
 	set_cheapest(rel);

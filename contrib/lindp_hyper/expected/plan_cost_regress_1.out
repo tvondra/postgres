@@ -246,9 +246,9 @@ SELECT * FROM   t_0
                                  ->  Sort  (cost=34.06..34.55 rows=199 width=256)
                                        Sort Key: t_6.c_6_10
                                        ->  Merge Join  (cost=0.43..26.46 rows=199 width=256)
-                                             Merge Cond: (t_0.c_0_24 = t_6.c_6_0)
-                                             ->  Index Scan using t_0_c_0_24_idx on t_0  (cost=0.29..1419.02 rows=31182 width=128)
+                                             Merge Cond: (t_6.c_6_0 = t_0.c_0_24)
                                              ->  Index Scan using t_6_c_6_0_idx on t_6  (cost=0.14..14.13 rows=199 width=128)
+                                             ->  Index Scan using t_0_c_0_24_idx on t_0  (cost=0.29..1419.02 rows=31182 width=128)
                            ->  Index Scan using t_1_c_1_8_idx on t_1  (cost=0.42..0.46 rows=1 width=128)
                                  Index Cond: (c_1_8 = t_2.c_2_13)
                      ->  Nested Loop  (cost=0.29..0.50 rows=1 width=256)

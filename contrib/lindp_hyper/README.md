@@ -66,9 +66,15 @@ The implementation mirrors the structure of the paper:
    the cross edges from step 1 -- realizes the paper's heuristic of enriching
    the search space with cross products.
 
-4. **Adaptive seeding.**  The linearization is only a heuristic, so several
-   seed relations are tried as IKKBZ roots, each linearization is costed, and
-   the cheapest plan is kept.
+4. **Multi-seed search.**  The linearization is only a heuristic, so several
+   seed relations are tried as IKKBZ roots.  All of the resulting
+   linearizations are built into the same set of join relations, so their
+   paths accumulate and the core's `add_path()` keeps the Pareto-optimal ones.
+   Because the seeds are a fixed prefix of the relations ordered by ascending
+   cardinality, a larger `lindp.seeds` value explores a superset of the
+   linearizations of a smaller one, so raising `lindp.seeds` can only ever
+   improve (never worsen) the chosen plan.
+
 
 
 Building the actual join relations and paths is delegated to the core
@@ -92,8 +98,9 @@ Configuration parameters
 
 `lindp_hyper.seeds` (`integer`)
     Number of seed relations tried as IKKBZ roots.  More seeds explore more
-    linearizations at the cost of planning time.  `0` tries every relation.
-    Default `5`.
+    linearizations at the cost of planning time; because every seed's paths are
+    accumulated, raising this can only ever improve the chosen plan.  `0` tries
+    every relation.  Default `5`.
 
 `lindp_hyper.cross_products` (`boolean`)
     When `on` (the default), the search space is enriched with cross products

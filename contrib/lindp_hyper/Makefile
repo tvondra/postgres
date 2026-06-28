@@ -15,7 +15,8 @@ REGRESS = lindp_hyper lindp_lateral_joins_failure lindp_outer_joins_failure \
 	lindp2_ex4_right_outer lindp2_ex5_lateral_outer \
 	lindp3_lateral_fail lindp3_linearization_fail \
 	plan_cost_regress_1 plan_cost_regress_2 \
-	subplan_targetlist_failure
+	subplan_targetlist_failure \
+	syn_min_righthand_outer_joins
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config

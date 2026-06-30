@@ -1124,19 +1124,27 @@ find_interesting_bloom_filters(PlannerInfo *root, RelOptInfo *rel)
 			{
 				lfirst(lc3) = lappend((List *) lfirst(lc3), rinfo);
 				found = true;
+
+				/* added to an existing group, don't keep the relids around */
+				bms_free(build_relids);
+
 				break;
 			}
 		}
-		if (!found)
+
+		if (!found) 	/* new group */
 		{
 			group_relids = lappend(group_relids, build_relids);
 			group_clauses = lappend(group_clauses, list_make1(rinfo));
 		}
-		else
-			bms_free(build_relids);
 	}
 
-	/* Evaluate selectivity of each group and keep the interesting ones. */
+	/*
+	 * We have collected all potentially intresting filters. Evaluate selectivity
+	 * of each group and keep only the most interesting filters. Filters have to
+	 * eliminate at least bloom_filter_pushdown_threshold tuples, and we keep
+	 * only bloom_filter_pushdown_max most selective ones.
+	 */
 	{
 		ListCell   *lcr = list_head(group_relids);
 		ListCell   *lcc = list_head(group_clauses);
@@ -1153,9 +1161,9 @@ find_interesting_bloom_filters(PlannerInfo *root, RelOptInfo *rel)
 
 			sel = clauselist_selectivity(root, clauses, 0, JOIN_SEMI, &sjinfo);
 
-			if (sel <= 1.0 - bloom_filter_pushdown_threshold && sel > 0.0 &&
-				bloom_filter_recipient_reachable(root, rel->relid,
-												 build_relids))
+			if ((sel <= 1.0 - bloom_filter_pushdown_threshold) &&
+				(sel > 0.0) &&	/* XXX seems unnecessary */
+				bloom_filter_recipient_reachable(root, rel->relid, build_relids))
 			{
 				ExpectedFilter *f = makeNode(ExpectedFilter);
 

@@ -4747,6 +4747,12 @@ create_mergejoin_plan(PlannerInfo *root,
  * XXX We could do pushdown to parallel parts of a query. But we'd need
  * a different way to communicate if a filter is built etc. (the worker
  * won't have access to the hashjoin state).
+ *
+ * XXX Not sure this handles partitioned tables correctly. Those will be below
+ * Append node, and we don't push through those. But the scans will still expect
+ * the filter, I think. Even if we pushed through Append node, it probably won't
+ * work because we expect a single consumer. But we'll have one consumer per
+ * scan of a partition.
  */
 static Plan *
 find_bloom_filter_recipient(Plan *plan, Index target_relid)

@@ -473,6 +473,9 @@ expected_filters_selectivity(List *filters)
  * Only the plain scan path node types that can receive a pushed-down filter
  * are supported (matching find_bloom_filter_recipient in createplan.c).
  * Returns NULL for unsupported path types.
+ *
+ * XXX This should probably adjust the CPU cost in some way. It assumes the
+ * filter checks are free, which does not seem right.
  */
 Path *
 create_filtered_scan_path(PlannerInfo *root, Path *subpath, List *filters)

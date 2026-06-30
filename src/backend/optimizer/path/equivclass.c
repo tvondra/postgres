@@ -3343,6 +3343,9 @@ generate_implied_equalities_for_column_ec(PlannerInfo *root,
  *
  * The caller can pass a Relids set of rels we aren't interested in joining
  * to, so as to save the work of creating useless clauses.
+ *
+ * XXX This could reuse generate_implied_equalities_for_column_ec for the
+ * inner loop, but I chose to not do that for now.
  */
 List *
 generate_implied_equalities_for_column(PlannerInfo *root,
@@ -3413,6 +3416,9 @@ generate_implied_equalities_for_column(PlannerInfo *root,
  * As with generate_implied_equalities_for_column(), the result for any single
  * column is a redundant set of clauses equating that column to each of the
  * other-relation values it is known to be equal to.
+ *
+ * XXX We don't really need the last two arguments, but we keep this as close
+ * to generate_implied_equalities_for_column as possible.
  */
 List *
 generate_implied_equalities_for_all_columns(PlannerInfo *root,

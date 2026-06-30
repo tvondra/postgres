@@ -912,13 +912,16 @@ bloom_join_side_preserved(JoinType jointype, bool to_outer)
 /*
  * jointype_realizes_bloom_filter
  *		Can a hash join of this type build and push a Bloom filter to its
- *		outer (probe) side?  This must match the join-type check in
- *		try_push_bloom_filter() (createplan.c), so that a filter we cost for
- *		is actually realized at plan time.  Only join types that drop
- *		unmatched outer (probe) tuples are safe, since the filter eliminates
- *		probe tuples lacking an inner match.  Note JOIN_RIGHT qualifies: it
- *		preserves unmatched tuples of the inner (build) side, not the outer
- *		(probe) side, so dropping unmatched probe tuples is still correct.
+ *		outer (probe) side?
+ *
+ * This must match the join-type check in try_push_bloom_filter(), so that a
+ * filter we cost for is actually realized at plan time.  Only join types that
+ * drop unmatched outer (probe) tuples are safe, since the filter eliminates
+ * probe tuples lacking an inner match.
+ *
+ * Note JOIN_RIGHT qualifies: it preserves unmatched tuples of the inner (build)
+ * side, not the outer (probe) side, so dropping unmatched probe tuples is still
+ * correct.
  */
 static bool
 jointype_realizes_bloom_filter(JoinType jointype)
@@ -990,14 +993,17 @@ hashjoin_pushes_filter_to(List *hashclauses, Relids outer_relids,
  *		carry, applying the propagation and contradiction rules.
  *
  * Each filter expected by an input path is either:
+ *
  *   - propagated upward (its build side is not yet fully joined in), or
+ *
  *   - realized by this join (a hash join that is the filter's source and can
  *     push the filter to its outer side): it is dropped from the result, since
  *     it has now been applied.  When 'realized' is non-NULL, such filters are
  *     appended to *realized so the caller can record them on the join path and
  *     later propagate the pushdown decision to the plan, or
+ *
  *   - contradicted: the join is the filter's source but cannot push it (it is
- *     not a suitable hash join).  In that case the input path cannot be used
+ *     not a suitable hash join). In that case the input path cannot be used
  *     for this join, so *contradicted is set true and NIL is returned.
  *
  * 'is_hashjoin'/'hashclauses' describe the join method; hashclauses is only
@@ -1228,7 +1234,7 @@ try_nestloop_path(PlannerInfo *root,
 
 	/*
 	 * Account for expected Bloom filters carried by the input paths.  A
-	 * nestloop never builds a hash filter, so if it is the source of any
+	 * nestloop never builds a Bloom filter, so if it is the source of any
 	 * expected filter the path is contradicted and must be rejected;
 	 * otherwise the filters propagate to the resulting path.
 	 */
@@ -1239,12 +1245,33 @@ try_nestloop_path(PlannerInfo *root,
 		jfilters = compute_join_expected_filters(root, outer_path, inner_path,
 												 jointype, false, NIL,
 												 &contradicted, NULL);
+
+		/*
+		 * Contradicted means the inner/outer paths expect this join to realize
+		 * one of the expected filters, but a nestloop can't do that. So these
+		 * input paths are incompatible with a nestloop.
+		 */
 		if (contradicted)
 		{
 			bms_free(required_outer);
 			return;
 		}
 
+		/*
+		 * If the path expects any filters, it's excluded from the cost pruning
+		 * performed by add_path (so don't bother with add_path_precheck either).
+		 * Once a path has all filters satisfied (or there were no filters), do
+		 * the pruning as usual.
+		 *
+		 * XXX We don't want the "regular" paths without filters to get removed,
+		 * because we need the option to pick from join algorithms. Paths with
+		 * filters would likely win (simply because there are fewer rows), but
+		 * they only work with hashjoins. However, maybe the hashjoin won't work
+		 * for some reason (e.g. it wouldn't fit into work_mem).
+		 *
+		 * XXX Maybe it'd be cleaner to do this in add_path_precheck (i.e. make
+		 * it return true for paths with expected filters).
+		 */
 		if (jfilters != NIL ||
 			add_path_precheck(joinrel, workspace.disabled_nodes,
 							  workspace.startup_cost, workspace.total_cost,

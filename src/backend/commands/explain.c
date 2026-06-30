@@ -2589,19 +2589,23 @@ show_upper_qual(List *qual, const char *qlabel,
 
 /*
  * show_bloom_filter_info
- *		Show info about every bloom filter pushed down to a scan node.
+ *		Show info about every Bloom filter pushed down to a scan node.
  *
  * In TEXT format each filter is rendered on a single line, e.g.
  *
- *   Bloom Filter N: (a, b) producer=3 checked=99999 rejected=99990
+ *   Bloom Filter N: keys=(a, b) checked=99999 rejected=99990
  *
- * The checked/rejected fields are omitted outside of ANALYZE). In
- * structured formats we emit a group per filter with the same fields
- * broken out as properties.
+ * The checked/rejected fields are omitted outside of ANALYZE). In structured
+ * formats we emit a group per filter with the same fields broken out as
+ * properties.
  *
- * Called from the per-recipient cases in ExplainNode; the recipient is
- * expected to be a scan node in the current PoC, but nothing here
- * depends on that.
+ * Called from the per-recipient cases in ExplainNode; the recipient is expected
+ * to be a scan node, but nothing here depends on that. We may choose to push
+ * filters to other nodes in the plan.
+ *
+ * This only prints information about the keys, and the checked/rejected counts.
+ * Detailed information about the filter itself (number of bits, number of hash
+ * functions, ...) is available on the producer side.
  */
 static void
 show_bloom_filter_info(PlanState *planstate, List *ancestors,
@@ -3599,9 +3603,16 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 	}
 
 	/*
-	 * Show infromation about the bloom filter produced by this Hash node
-	 * (if any). For plain EXPLAIN, the filter is not initialized / built,
-	 * but we still show available plan-time metadata (at least the ID).
+	 * Show infromation about the Bloom filter produced by this Hash node (if
+	 * any). For plain EXPLAIN, the filter is not initialized / built, but we
+	 * still show available plan-time metadata (at least the ID).
+	 *
+	 * Once the filter is built, we show the various filter parameters (number
+	 * of bits, hash functions, ...). Note that even with EXPLAIN ANALYZE the
+	 * filter may not be built, due to the hashjoin delaying the Hash build
+	 * until on the first outer tuple.
+	 *
+	 * XXX We don't show the keys, because those are always the join keys.
 	 */
 	if (hashstate->bloom_filter_id > 0)
 	{

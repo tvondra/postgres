@@ -911,20 +911,30 @@ bloom_em_matches_anybarevar(PlannerInfo *root, RelOptInfo *rel,
 {
 	Var		   *var;
 
+	/* We're looking only for bare Var expressions. */
 	if (!IsA(em->em_expr, Var))
 		return false;
+
+	/*
+	 * Is the Var referencing a normal (non-system) attribute in the relation
+	 * we're processing (generating scans for)?
+	 *
+	 * FIXME Can we have (varlevelsup != 0) for baserels? I don't think we can
+	 * have outer referecenses in that place.
+	 */
 	var = (Var *) em->em_expr;
 	if (var->varno != rel->relid ||
 		var->varattno <= 0 ||
 		var->varlevelsup != 0)
 		return false;
+
 	return true;
 }
 
 /*
  * bloom_filter_recipient_reachable
- *	  Best-effort check that a Bloom filter owned by 'owner_relid' and built
- *	  from 'build_relids' could actually be pushed to the owner's scan.
+ *		Check that a Bloom filter owned by owner_relid and built from
+ *		build_relids could actually be pushed to the owner's scan.
  *
  * A pushed-down filter removes owner tuples that have no match on the build
  * side, so it can only be applied where the join that realizes it drops such
@@ -932,13 +942,18 @@ bloom_em_matches_anybarevar(PlannerInfo *root, RelOptInfo *rel,
  * before it can be joined to the build side, the filter would change the
  * result and is therefore unusable: at plan time find_bloom_filter_recipient
  * would refuse to descend into that side and find no recipient (see also
- * bloom_join_side_preserved, which the path-time propagation honours).
+ * bloom_join_side_preserved, which is checking for this situation).
  *
- * Picking such a filter only to throw it away later wastes planner effort, so
- * we screen it out here.  This is purely an optimization: correctness is still
- * guaranteed by the propagation logic in compute_join_expected_filters(),
- * which contradicts any path that would carry a filter across a non-preserved
- * join side.  Hence it is fine for this test to be conservative.
+ * Picking such a filter only to throw it away later wastes planner effort,
+ * and we might also ignore some other filters because of that. It's better
+ * to eliminate it right away.
+ *
+ * This is primarily an optimization - we don't want to generate paths that
+ * would ultimately be useless, and possibly not generating paths for other
+ * filters. The correctness is still guaranteed by the propagation logic in
+ * compute_join_expected_filters(), which rejects cases that would carry a
+ * filter across a non-preserved join side. That guarantees we don't pick a
+ * plan with such filters, only to find about the issue in createplan.c.
  */
 static bool
 bloom_filter_recipient_reachable(PlannerInfo *root, Index owner_relid,
@@ -1014,8 +1029,10 @@ find_interesting_bloom_filters(PlannerInfo *root, RelOptInfo *rel)
 
 	if (!enable_hashjoin_bloom)
 		return NIL;
+
 	if (bloom_filter_pushdown_max <= 0)
 		return NIL;
+
 	if (rel->reloptkind != RELOPT_BASEREL)
 		return NIL;
 
@@ -1031,6 +1048,7 @@ find_interesting_bloom_filters(PlannerInfo *root, RelOptInfo *rel)
 		/* EC-derived clauses are already covered above. */
 		if (rinfo->parent_ec != NULL)
 			continue;
+
 		candidates = lappend(candidates, rinfo);
 	}
 
@@ -1048,6 +1066,11 @@ find_interesting_bloom_filters(PlannerInfo *root, RelOptInfo *rel)
 		ListCell   *lc3;
 		bool		found;
 
+		/*
+		 * Only care about (Expr op Expr) clauses. We know one side has to be
+		 * a bare Var node, from the "owner" side (which is the scan node).
+		 * The other side can be arbitrary expression on the other relation.
+		 */
 		if (!is_opclause(rinfo->clause) ||
 			list_length(((OpExpr *) rinfo->clause)->args) != 2)
 			continue;
@@ -1057,6 +1080,7 @@ find_interesting_bloom_filters(PlannerInfo *root, RelOptInfo *rel)
 		right = get_rightop(rinfo->clause);
 
 		/* Identify which side is a bare Var of this rel (the owner side). */
+		/* XXX replace this with a macro shared with bloom_em_matches_anybarevar */
 		if (IsA(left, Var) && ((Var *) left)->varno == rel->relid &&
 			((Var *) left)->varattno > 0 && ((Var *) left)->varlevelsup == 0)
 			ownerexpr = left;
@@ -1074,6 +1098,9 @@ find_interesting_bloom_filters(PlannerInfo *root, RelOptInfo *rel)
 		/*
 		 * The build side must be a single base relation; that's what the
 		 * recipient lookup and our selectivity estimate can handle.
+		 *
+		 * XXX I don't think this restriction is necessary. We can allow the
+		 * build side to be a join. I don't see why that would be a problem.
 		 */
 		build_relids = bms_difference(rinfo->clause_relids, rel->relids);
 		if (!bms_get_singleton_member(build_relids, &buildrel) ||
@@ -1086,6 +1113,8 @@ find_interesting_bloom_filters(PlannerInfo *root, RelOptInfo *rel)
 		}
 
 		/* Add to an existing group, or start a new one. */
+		/* XXX Maybe we sould have a HTAB with the relids as a key? But the
+		 * lists should not be that long, I think. */
 		found = false;
 		forboth(lc2, group_relids, lc3, group_clauses)
 		{
@@ -1143,9 +1172,14 @@ find_interesting_bloom_filters(PlannerInfo *root, RelOptInfo *rel)
 	}
 
 	/*
-	 * If there are too many interesting filters, keep only the most selective
-	 * (smallest surviving fraction) ones, to bound the number of generated
-	 * paths.
+	 * We only connsider a limited number of interesting filters, to prevent
+	 * path explosion. If we found too many, keep only the most selective ones
+	 * (with smallest surviving fraction of tuples), to bound the number of
+	 * generated paths.
+	 *
+	 * XXX This also aligns with good join orders - those tend to perform the
+	 * most selective joins first. So we get to build the filters soon, even
+	 * if the hashjoin optimization is not disabled.
 	 */
 	while (list_length(result) > bloom_filter_pushdown_max)
 	{
@@ -1201,6 +1235,7 @@ add_expected_filter_paths(PlannerInfo *root, RelOptInfo *rel)
 	{
 		Path	   *path = (Path *) lfirst(lc);
 
+		/* XXX Is parameterization really a problem? Always? */
 		if (path->param_info != NULL || path->expected_filters != NIL)
 			continue;
 
@@ -1221,6 +1256,21 @@ add_expected_filter_paths(PlannerInfo *root, RelOptInfo *rel)
 	if (basepaths == NIL)
 		return;
 
+	/*
+	 * Generate all combinations of the interesting filters. We do that by
+	 * iterating 1 to (2^n-1), which generates all bitmask in between. Those
+	 * are the subsets.
+	 *
+	 * XXX This is a good demonstration why we need to keep the number of
+	 * filters low
+	 *
+	 * XXX Maybe we should also stop adding filters once the other filters
+	 * already eliminate enought tuples. Say, we know F1 alone eliminates 99%
+	 * tuples. Does it make sense to also consider [F1,F2]? Probably not. We
+	 * could track "maximum" sets, and reject combinations containing one
+	 * of those. We'd need to generate sets of increasing size, the iteration
+	 * does not do that. But that's not hard.
+	 */
 	for (combo = 1; combo < ((uint32) 1 << nfilters); combo++)
 	{
 		List	   *subset = NIL;

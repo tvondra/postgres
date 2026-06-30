@@ -109,7 +109,7 @@ static void set_plain_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
 								   RangeTblEntry *rte);
 static List *find_interesting_bloom_filters(PlannerInfo *root,
 											RelOptInfo *rel);
-static void add_expected_filter_paths(PlannerInfo *root, RelOptInfo *rel);
+static void generate_expected_filter_paths(PlannerInfo *root, RelOptInfo *rel);
 static void set_tablesample_rel_size(PlannerInfo *root, RelOptInfo *rel,
 									 RangeTblEntry *rte);
 static void set_tablesample_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
@@ -614,7 +614,7 @@ set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
 	 */
 	if (rel->reloptkind == RELOPT_BASEREL &&
 		rte->rtekind == RTE_RELATION)
-		add_expected_filter_paths(root, rel);
+		generate_expected_filter_paths(root, rel);
 
 	/* Now find the cheapest of the paths for this rel */
 	set_cheapest(rel);
@@ -1200,19 +1200,31 @@ find_interesting_bloom_filters(PlannerInfo *root, RelOptInfo *rel)
 }
 
 /*
- * add_expected_filter_paths
- *	  For a plain base relation, generate additional scan paths that anticipate
- *	  one or more pushed-down Bloom filters.
+ * generate_expected_filter_paths
+ *		Generate additional scan paths that anticipate one or more pushed-down
+*		Bloom filters.
  *
- * For each non-empty subset of the interesting filters (see
- * find_interesting_bloom_filters), we clone every eligible existing scan path,
- * reducing its row estimate by the combined filter selectivity and attaching
- * the corresponding ExpectedFilter nodes.  These paths are kept alongside the
- * regular paths (add_path keeps paths with differing expected_filters) and are
- * consumed by join path generation; set_cheapest never selects them.
+ * For each non-empty subset of the interesting filters, we clone every eligible
+ * existing scan path, reducing its row estimate by the combined selectivity and
+ * attaching the corresponding ExpectedFilter nodes.
+ *
+ * These paths are kept alongside the regular paths (add_path keeps paths with
+ * differing expected_filters) and are consumed by join path generation;
+ * set_cheapest never selects them.
+ *
+ * XXX We must not clone paths that already have expected filters.
+ *
+ * XXX The cloning is a rather dirty way to copy paths. It does not readjust the
+ * cost in a reasonable way. For example custom scans could do something smart
+ * with the filters, so it should have a chance to deal with that. A cleaner
+ * solution might be to actually pass the filters to the various "create"
+ * function, like create_seqscan_path/... For CustomScan nodes we can probably
+ * do most of this in the set_rel_pathlist_hook, somewhere. Maybe that needs
+ * some helper methods, though. And maybe it will need to pass some of the info
+ * through the callbacks? Not sure, someone has to try that.
  */
 static void
-add_expected_filter_paths(PlannerInfo *root, RelOptInfo *rel)
+generate_expected_filter_paths(PlannerInfo *root, RelOptInfo *rel)
 {
 	List	   *filters;
 	List	   *basepaths = NIL;

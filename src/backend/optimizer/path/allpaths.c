@@ -1017,13 +1017,23 @@ bloom_filter_recipient_reachable(PlannerInfo *root, Index owner_relid,
  * bloom_filter_pushdown_threshold of the rel's tuples.  We keep at most
  * bloom_filter_pushdown_max of the most selective candidates, and return them
  * as a list of ExpectedFilter nodes.
+ *
+ * XXX This needs to be careful to not interfere with the general selectivity
+ * estimation, performed by clauselist_selectivity(). We'll estimate the filter
+ * selectivity using a made-up sjinfo with JOIN_INNER, which may not match
+ * the actual join. The selectivities must not leak - this is why this function
+ * does not collect the RestrictInfos but only the clauses. If we used the
+ * RestrictInfos, the clauselist_selectivity would cache the incorrect result
+ * in them, and it'd affect the planning in weird ways.
+ *
+ * FIXME Maybe there's a better way to calculate the filter selectivity?
  */
 static List *
 find_interesting_bloom_filters(PlannerInfo *root, RelOptInfo *rel)
 {
 	List	   *candidates;
 	List	   *group_relids = NIL; /* parallel: Relids per group */
-	List	   *group_clauses = NIL;	/* parallel: List of RestrictInfos */
+	List	   *group_clauses = NIL;	/* parallel: List of clauses */
 	List	   *result = NIL;
 	ListCell   *lc;
 
@@ -1049,35 +1059,40 @@ find_interesting_bloom_filters(PlannerInfo *root, RelOptInfo *rel)
 		if (rinfo->parent_ec != NULL)
 			continue;
 
-		candidates = lappend(candidates, rinfo);
+		candidates = lappend(candidates, rinfo->clause);
 	}
 
 	/* Group candidate clauses by their build-side relids. */
 	foreach(lc, candidates)
 	{
-		RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
+		Node	   *clause = (Node *) lfirst(lc);
 		Node	   *left;
 		Node	   *right;
 		Node	   *ownerexpr;
 		Oid			opno;
+		Relids		clause_relids;
 		Relids		build_relids;
 		int			buildrel;
 		ListCell   *lc2;
 		ListCell   *lc3;
 		bool		found;
 
+		/* strip RestrictInfo (see comment above) */
+		if (IsA(clause, RestrictInfo))
+			clause = (Node *) ((RestrictInfo *) clause)->clause;
+
 		/*
 		 * Only care about (Expr op Expr) clauses. We know one side has to be
 		 * a bare Var node, from the "owner" side (which is the scan node).
 		 * The other side can be arbitrary expression on the other relation.
 		 */
-		if (!is_opclause(rinfo->clause) ||
-			list_length(((OpExpr *) rinfo->clause)->args) != 2)
+		if (!is_opclause(clause) ||
+			list_length(((OpExpr *) clause)->args) != 2)
 			continue;
 
-		opno = ((OpExpr *) rinfo->clause)->opno;
-		left = get_leftop(rinfo->clause);
-		right = get_rightop(rinfo->clause);
+		opno = ((OpExpr *) clause)->opno;
+		left = get_leftop(clause);
+		right = get_rightop(clause);
 
 		/* Identify which side is a bare Var of this rel (the owner side). */
 		/* XXX replace this with a macro shared with bloom_em_matches_anybarevar */
@@ -1102,7 +1117,8 @@ find_interesting_bloom_filters(PlannerInfo *root, RelOptInfo *rel)
 		 * XXX I don't think this restriction is necessary. We can allow the
 		 * build side to be a join. I don't see why that would be a problem.
 		 */
-		build_relids = bms_difference(rinfo->clause_relids, rel->relids);
+		clause_relids = pull_varnos(root, (Node *) clause);
+		build_relids = bms_difference(clause_relids, rel->relids);
 		if (!bms_get_singleton_member(build_relids, &buildrel) ||
 			buildrel >= root->simple_rel_array_size ||
 			root->simple_rel_array[buildrel] == NULL ||
@@ -1122,7 +1138,7 @@ find_interesting_bloom_filters(PlannerInfo *root, RelOptInfo *rel)
 
 			if (bms_equal(grelids, build_relids))
 			{
-				lfirst(lc3) = lappend((List *) lfirst(lc3), rinfo);
+				lfirst(lc3) = lappend((List *) lfirst(lc3), clause);
 				found = true;
 
 				/* added to an existing group, don't keep the relids around */
@@ -1135,7 +1151,7 @@ find_interesting_bloom_filters(PlannerInfo *root, RelOptInfo *rel)
 		if (!found) 	/* new group */
 		{
 			group_relids = lappend(group_relids, build_relids);
-			group_clauses = lappend(group_clauses, list_make1(rinfo));
+			group_clauses = lappend(group_clauses, list_make1(clause));
 		}
 	}
 

@@ -1472,13 +1472,14 @@ try_mergejoin_path(PlannerInfo *root,
 
 	/*
 	 * Account for expected Bloom filters carried by the input paths.  A
-	 * mergejoin never builds a hash filter, so it contradicts (and cannot
+	 * mergejoin never builds a Bloom filter, so it contradicts (and cannot
 	 * use) any input path for which it would be the filter's source.
 	 * Filter-bearing paths bypass the precheck, since their reduced cost
 	 * isn't comparable to ordinary paths.
+	 *
+	 * XXX see the comments in try_nestloop_path
 	 */
 	{
-		Path	   *mjpath;
 		bool		contradicted;
 		List	   *jfilters;
 
@@ -1491,32 +1492,36 @@ try_mergejoin_path(PlannerInfo *root,
 			return;
 		}
 
-		if (jfilters == NIL &&
-			!add_path_precheck(joinrel, workspace.disabled_nodes,
+		if (jfilters != NIL ||
+			add_path_precheck(joinrel, workspace.disabled_nodes,
 							   workspace.startup_cost, workspace.total_cost,
 							   pathkeys, required_outer))
 		{
+			Path	   *mjpath;
+
+			mjpath = (Path *) create_mergejoin_path(root,
+													joinrel,
+													jointype,
+													&workspace,
+													extra,
+													outer_path,
+													inner_path,
+													extra->restrictlist,
+													pathkeys,
+													required_outer,
+													mergeclauses,
+													outersortkeys,
+													innersortkeys,
+													outer_presorted_keys);
+			set_join_path_expected_filters(mjpath, jfilters);
+			add_path(joinrel, mjpath);
+		}
+		else
+		{
 			/* Waste no memory when we reject a path here */
 			bms_free(required_outer);
-			return;
 		}
 
-		mjpath = (Path *) create_mergejoin_path(root,
-												joinrel,
-												jointype,
-												&workspace,
-												extra,
-												outer_path,
-												inner_path,
-												extra->restrictlist,
-												pathkeys,
-												required_outer,
-												mergeclauses,
-												outersortkeys,
-												innersortkeys,
-												outer_presorted_keys);
-		set_join_path_expected_filters(mjpath, jfilters);
-		add_path(joinrel, mjpath);
 	}
 }
 
@@ -1649,12 +1654,11 @@ try_hashjoin_path(PlannerInfo *root,
 
 	/*
 	 * Account for expected Bloom filters carried by the input paths.  A hash
-	 * join builds and pushes down a bloom filter, so it realizes (and removes
+	 * join builds and pushes down a Bloom filter, so it realizes (and removes
 	 * from propagation) any expected filter for which it is the source; other
 	 * filters propagate upward.  Filter-bearing paths bypass the precheck.
 	 */
 	{
-		Path	   *hjpath;
 		bool		contradicted;
 		List	   *jfilters;
 		List	   *realized;
@@ -1662,42 +1666,48 @@ try_hashjoin_path(PlannerInfo *root,
 		jfilters = compute_join_expected_filters(root, outer_path, inner_path,
 												 jointype, true, hashclauses,
 												 &contradicted, &realized);
+
+		/* XXX Can a hashjoin contradict a filter? Probably not. */
 		if (contradicted)
 		{
 			bms_free(required_outer);
 			return;
 		}
 
-		if (jfilters == NIL &&
-			!add_path_precheck(joinrel, workspace.disabled_nodes,
-							   workspace.startup_cost, workspace.total_cost,
-							   NIL, required_outer))
+		if (jfilters != NIL ||
+			add_path_precheck(joinrel, workspace.disabled_nodes,
+							  workspace.startup_cost, workspace.total_cost,
+							  NIL, required_outer))
+		{
+			Path	   *hjpath;
+
+			hjpath = (Path *) create_hashjoin_path(root,
+												   joinrel,
+												   jointype,
+												   &workspace,
+												   extra,
+												   outer_path,
+												   inner_path,
+												   false,	/* parallel_hash */
+												   extra->restrictlist,
+												   required_outer,
+												   hashclauses);
+			set_join_path_expected_filters(hjpath, jfilters);
+
+			/*
+			 * Record the filters this hash join realizes, so create_hashjoin_plan
+			 * can push exactly those down (and no others) at plan-creation time.
+			 */
+			((HashPath *) hjpath)->realized_filters = realized;
+
+			add_path(joinrel, hjpath);
+		}
+		else
 		{
 			/* Waste no memory when we reject a path here */
 			bms_free(required_outer);
 			return;
 		}
-
-		hjpath = (Path *) create_hashjoin_path(root,
-											   joinrel,
-											   jointype,
-											   &workspace,
-											   extra,
-											   outer_path,
-											   inner_path,
-											   false,	/* parallel_hash */
-											   extra->restrictlist,
-											   required_outer,
-											   hashclauses);
-		set_join_path_expected_filters(hjpath, jfilters);
-
-		/*
-		 * Record the filters this hash join realizes, so create_hashjoin_plan
-		 * can push exactly those down (and no others) at plan-creation time.
-		 */
-		((HashPath *) hjpath)->realized_filters = realized;
-
-		add_path(joinrel, hjpath);
 	}
 }
 

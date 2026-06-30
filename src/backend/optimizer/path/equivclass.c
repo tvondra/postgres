@@ -3375,16 +3375,84 @@ generate_implied_equalities_for_column(PlannerInfo *root,
 	while ((i = bms_next_member(rel->eclass_indexes, i)) >= 0)
 	{
 		EquivalenceClass *cur_ec = (EquivalenceClass *) list_nth(root->eq_classes, i);
+		EquivalenceMemberIterator it;
+		EquivalenceMember *cur_em;
+		ListCell   *lc2;
 
 		/* Sanity check eclass_indexes only contain ECs for rel */
 		Assert(is_child_rel || bms_is_subset(rel->relids, cur_ec->ec_relids));
 
-		(void) generate_implied_equalities_for_column_ec(root, rel, cur_ec,
-														 callback, callback_arg,
-														 prohibited_rels,
-														 parent_relids,
-														 is_child_rel,
-														 &result);
+		/*
+		 * Won't generate joinclauses if const or single-member (the latter
+		 * test covers the volatile case too)
+		 */
+		if (cur_ec->ec_has_const || list_length(cur_ec->ec_members) <= 1)
+			continue;
+
+		/*
+		 * Scan members, looking for a match to the target column.  Note that
+		 * child EC members are considered, but only when they belong to the
+		 * target relation.  (Unlike regular members, the same expression
+		 * could be a child member of more than one EC.  Therefore, it's
+		 * potentially order-dependent which EC a child relation's target
+		 * column gets matched to.  This is annoying but it only happens in
+		 * corner cases, so for now we live with just reporting the first
+		 * match.  See also get_eclass_for_sort_expr.)
+		 */
+		setup_eclass_member_iterator(&it, cur_ec, rel->relids);
+		while ((cur_em = eclass_member_iterator_next(&it)) != NULL)
+		{
+			if (bms_equal(cur_em->em_relids, rel->relids) &&
+				callback(root, rel, cur_ec, cur_em, callback_arg))
+				break;
+		}
+
+		if (!cur_em)
+			continue;
+
+		/*
+		 * Found our match.  Scan the other EC members and attempt to generate
+		 * joinclauses.  Ignore children here.
+		 */
+		foreach(lc2, cur_ec->ec_members)
+		{
+			EquivalenceMember *other_em = (EquivalenceMember *) lfirst(lc2);
+			Oid			eq_op;
+			RestrictInfo *rinfo;
+
+			/* Child members should not exist in ec_members */
+			Assert(!other_em->em_is_child);
+
+			/* Make sure it'll be a join to a different rel */
+			if (other_em == cur_em ||
+				bms_overlap(other_em->em_relids, rel->relids))
+				continue;
+
+			/* Forget it if caller doesn't want joins to this rel */
+			if (bms_overlap(other_em->em_relids, prohibited_rels))
+				continue;
+
+			/*
+			 * Also, if this is a child rel, avoid generating a useless join
+			 * to its parent rel(s).
+			 */
+			if (is_child_rel &&
+				bms_overlap(parent_relids, other_em->em_relids))
+				continue;
+
+			eq_op = select_equality_operator(cur_ec,
+											 cur_em->em_datatype,
+											 other_em->em_datatype);
+			if (!OidIsValid(eq_op))
+				continue;
+
+			/* set parent_ec to mark as redundant with other joinclauses */
+			rinfo = create_join_clause(root, cur_ec, eq_op,
+									   cur_em, other_em,
+									   cur_ec);
+
+			result = lappend(result, rinfo);
+		}
 
 		/*
 		 * If somehow we failed to create any join clauses, we might as well

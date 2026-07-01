@@ -2606,6 +2606,17 @@ show_upper_qual(List *qual, const char *qlabel,
  * This only prints information about the keys, and the checked/rejected counts.
  * Detailed information about the filter itself (number of bits, number of hash
  * functions, ...) is available on the producer side.
+ *
+ * XXX It might be a good idea to show the expected filter selectivity too,
+ * not just the one actually observed during execution. That'd make it easier
+ * to reason about the decisions and review the plan changes.
+ *
+ * XXX If we choose other filter types, we'd need some general way to show the
+ * information. I don't know if we should have a "generic" information provided
+ * by all the filters, or if we would need a way to print custom information.
+ * Chances are we'd have a limited number of supported filter types, in which
+ * case we can have a show_ function for each type. Only if users could inject
+ * arbitrary filters, that'd be an issue. But that seems unlikely.
  */
 static void
 show_bloom_filter_info(PlanState *planstate, List *ancestors,
@@ -3613,6 +3624,11 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 	 * until on the first outer tuple.
 	 *
 	 * XXX We don't show the keys, because those are always the join keys.
+	 *
+	 * XXX I think it makes sense to show the checked/rejected counters both
+	 * here and for the consumer. If/when we allow multiple consumers for the
+	 * filter, then this would show the "summary" while the scan node would
+	 * show just counters for that one consumer.
 	 */
 	if (hashstate->bloom_filter_id > 0)
 	{

@@ -3345,7 +3345,8 @@ generate_implied_equalities_for_column_ec(PlannerInfo *root,
  * to, so as to save the work of creating useless clauses.
  *
  * XXX This could reuse generate_implied_equalities_for_column_ec for the
- * inner loop, but I chose to not do that for now.
+ * inner loop, similarly to generate_implied_equalities_for_all_columns, but I
+ * chose to not do that for now. Better keep this as is.
  */
 List *
 generate_implied_equalities_for_column(PlannerInfo *root,

@@ -1226,7 +1226,7 @@ find_interesting_bloom_filters(PlannerInfo *root, RelOptInfo *rel)
 /*
  * generate_expected_filter_paths
  *		Generate additional scan paths that anticipate one or more pushed-down
-*		Bloom filters.
+ *		Bloom filters.
  *
  * For each non-empty subset of the interesting filters, we clone every eligible
  * existing scan path, reducing its row estimate by the combined selectivity and
@@ -1246,6 +1246,16 @@ find_interesting_bloom_filters(PlannerInfo *root, RelOptInfo *rel)
  * do most of this in the set_rel_pathlist_hook, somewhere. Maybe that needs
  * some helper methods, though. And maybe it will need to pass some of the info
  * through the callbacks? Not sure, someone has to try that.
+ *
+ * XXX This may need some major changes to work with custom scans. Right now we
+ * only consider filters exactly matching the hash keys, so if the hashjoin is
+ * on (t1.a = t2.a AND t1.b = t2.b), then the filter will be on (a,b). But a
+ * custom scan may prefer "split" filters on each column independently. We'd
+ * need a way for the custom scan to indicate that, and we'd need to apply this
+ * only to the "matching" scan paths (and not to any other scan paths). But
+ * we only look at the paths after selecting the "interesting" filters, so we'd
+ * need to rethink that - we'd need to make the "interesting" filters specific
+ * to a path, or something like that.
  */
 static void
 generate_expected_filter_paths(PlannerInfo *root, RelOptInfo *rel)

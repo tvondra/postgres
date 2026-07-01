@@ -4693,11 +4693,11 @@ create_mergejoin_plan(PlannerInfo *root,
  * BLOOM FILTER PUSHDOWN
  *
  * When a hash join is created as a path, we decide whether it should build a
- * bloom filter and push it down to a scan on its outer (probe) side.  That
+ * Bloom filter and push it down to a scan on its outer (probe) side.  That
  * decision - which filters are selective enough to be worth building, and
  * which scan they can be pushed to - is made entirely while creating paths
  * (see find_interesting_bloom_filters and compute_join_expected_filters in the
- * optimizer); the chosen filters are recorded on the HashPath as its
+ * optimizer); and the chosen filters are recorded on the HashPath as its
  * realized_filters.  Here we merely propagate that decision into the plan: we
  * never reconsider whether a filter is worthwhile, and in particular we never
  * push a filter that was not selected as interesting when creating paths.

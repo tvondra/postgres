@@ -1860,6 +1860,17 @@ typedef struct GroupByOrdering
  * 'clauses' is the list of hashjoinable equality RestrictInfos defining the
  *		filter keys (the owner side of each clause is a bare Var of owner_relid).
  * 'selectivity' is the expected surviving fraction of owner rows (in (0,1]).
+ *
+ * XXX The "owner_relid" may be a bit misleading, particularly if we allow
+ * pushing a filter to multiple nodes (e.g. scans on a partition). In that case
+ * we'd have multiple "owners", but ownership suggests there's just one. And
+ * some places already use "consumer" when referencing to the scan nodes, so
+ * maybe we should just use that?
+ *
+ * XXX What if we allow pushdown to non-scan nodes, e.g. above a join when
+ * pushdown to a scan is not possible (e.g. because the join clause is complex
+ * and references multiple relations)? Or maybe we could push to ForeignScan,
+ * and I'm not sure if those have a valid relid in all cases.
  */
 typedef struct ExpectedFilter
 {

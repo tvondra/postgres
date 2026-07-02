@@ -501,6 +501,17 @@ create_filtered_scan_path(PlannerInfo *root, Path *subpath, List *filters)
 		case T_TidRangePath:
 			sz = sizeof(TidRangePath);
 			break;
+		case T_CustomPath:
+
+			/*
+			 * A base-relation CustomScan provider that advertised
+			 * CUSTOMPATH_SUPPORT_BLOOM_FILTERS can receive a pushed-down
+			 * filter and apply it in its own scan loop
+			 * .generate_expected_filter_paths() only offers such paths here,
+			 * so we need not re-check the flag.
+			 */
+			sz = sizeof(CustomPath);
+			break;
 		default:
 			/* unsupported scan path type */
 			return NULL;
@@ -620,10 +631,10 @@ add_path(RelOptInfo *parent_rel, Path *new_path)
 
 		/*
 		 * Paths carrying different sets of expected Bloom filters serve
-		 * different purposes (each may be consumed by a different parent join,
-		 * or none at all), and their cost/row estimates aren't directly
-		 * comparable.  So if the two paths don't expect the same filters, keep
-		 * both and don't let either dominate the other.
+		 * different purposes (each may be consumed by a different parent
+		 * join, or none at all), and their cost/row estimates aren't directly
+		 * comparable.  So if the two paths don't expect the same filters,
+		 * keep both and don't let either dominate the other.
 		 */
 		if (!expected_filters_equal(new_path->expected_filters,
 									old_path->expected_filters))
@@ -854,8 +865,8 @@ add_path_precheck(RelOptInfo *parent_rel, int disabled_nodes,
 		 * filters of their own, so any filter-bearing old path is a
 		 * non-comparable speculative path and must not be allowed to dominate
 		 * (and thereby suppress) the new path.  Skipping them here also
-		 * guarantees that a join relation always retains at least one ordinary,
-		 * filter-free path to serve as cheapest_total_path.
+		 * guarantees that a join relation always retains at least one
+		 * ordinary, filter-free path to serve as cheapest_total_path.
 		 */
 		if (old_path->expected_filters != NIL)
 			continue;

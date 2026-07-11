@@ -148,7 +148,7 @@ static double lindp_edge_selectivity(PlannerInfo *root,
 									 const RelOptInfo *rel1, const RelOptInfo *rel2);
 static int	lindp_count_components(const LinDPHypergraph *hg);
 
-static int *lindp_linearize(const PlannerInfo *root, const LinDPHypergraph *hg,
+static int *lindp_linearize(const LinDPHypergraph *hg,
 							int seed, int *order_len);
 static int *lindp_linearize_set(const LinDPHypergraph *hg, const Bitmapset *vmask,
 								int root_hint, int *order_len);
@@ -353,8 +353,7 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 		savehash = root->join_rel_hash;
 		Assert(root->join_rel_level == NULL);
 		root->join_rel_hash = NULL;
-
-		order = lindp_linearize(root, hg, seedrels[i], &order_len);
+		order = lindp_linearize(hg, seedrels[i], &order_len);
 		top = (order != NULL && order_len == n)
 			? lindp_run_dp(root, hg, order, n, true)
 			: NULL;
@@ -612,13 +611,11 @@ lindp_count_components(const LinDPHypergraph *hg)
  * decomposition imposed by outer-join hyperedges.
  */
 static int *
-lindp_linearize(const PlannerInfo *root,  const LinDPHypergraph *hg, int seed,
+lindp_linearize(const LinDPHypergraph *hg, int seed,
 				int *order_len)
 {
 	Bitmapset  *vmask = NULL;
 	int		   *order;
-
-	(void) root;
 
 	for (int i = 0; i < hg->nverts; i++)
 		vmask = bms_add_member(vmask, i);

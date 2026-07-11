@@ -293,7 +293,7 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 	 * by ascending cardinality, since small relations make good roots, and
 	 * keep at most lindp.seeds of them.
 	 */
-	seedrels = (int *) palloc(n * sizeof(int));
+	seedrels = palloc_array(int, n);
 	for (int i = 0; i < n; i++)
 		seedrels[i] = i;
 	for (int i = 0; i < n; i++)
@@ -375,7 +375,7 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 			best_fitness = fitness;
 
 			/* Copy the winning order into the planner's context. */
-			best_order = (int *) palloc(order_len * sizeof(int));
+			best_order = palloc_array(int, order_len);
 			memcpy(best_order, order, order_len * sizeof(int));
 			best_order_len = order_len;
 		}
@@ -425,9 +425,9 @@ lindp_build_hypergraph(PlannerInfo *root, const List *initial_rels)
 	int			i;
 
 	hg->nverts = n;
-	hg->verts = (LinDPVertex *) palloc0(n * sizeof(LinDPVertex));
-	hg->adj = (Bitmapset **) palloc0(n * sizeof(Bitmapset *));
-	hg->sel = (double **) palloc0(n * sizeof(double *));
+	hg->verts = palloc0_array(LinDPVertex, n);
+	hg->adj = palloc0_array(Bitmapset *, n);
+	hg->sel = palloc0_array(double *, n);
 	hg->hyperedges = NIL;
 
 	i = 0;
@@ -444,7 +444,7 @@ lindp_build_hypergraph(PlannerInfo *root, const List *initial_rels)
 
 	for (i = 0; i < n; i++)
 	{
-		hg->sel[i] = (double *) palloc(n * sizeof(double));
+		hg->sel[i] = palloc_array(double, n);
 		for (int j = 0; j < n; j++)
 			hg->sel[i][j] = 1.0;
 	}
@@ -666,7 +666,7 @@ lindp_linearize_set(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_
 
 	if (count <= 1)
 	{
-		int		   *order = (int *) palloc(Max(count, 1) * sizeof(int));
+		int		   *order = palloc_array(int, 1);
 
 		*order_len = 0;
 		if (count == 1)
@@ -728,7 +728,7 @@ lindp_linearize_set(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_
 			orderX = lindp_linearize_set(hg, leftover, rx, &lenX);
 		}
 
-		order = (int *) palloc(Max(lenL + lenR + lenX, 1) * sizeof(int));
+		order = palloc_array(int, Max(lenL + lenR + lenX, 1));
 		memcpy(order, orderL, lenL * sizeof(int));
 		memcpy(order + lenL, orderR, lenR * sizeof(int));
 		if (lenX > 0)
@@ -792,7 +792,7 @@ lindp_ikkbz_chain(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_hi
 {
 	int			rootv = lindp_pick_root(hg, vmask, root_hint);
 	int			total = bms_num_members(vmask);
-	int		   *order = (int *) palloc(total * sizeof(int));
+	int		   *order = palloc_array(int, total);
 	int			pos = 0;
 	Bitmapset  *remaining = bms_copy(vmask);
 
@@ -897,8 +897,8 @@ lindp_merge_chains(List *chains)
 	if (nchains == 0)
 		return NIL;
 
-	norm = (List **) palloc(nchains * sizeof(List *));
-	cells = (ListCell **) palloc(nchains * sizeof(ListCell *));
+	norm = palloc_array(List *, nchains);
+	cells = palloc_array(ListCell *, nchains);
 
 	i = 0;
 	foreach(lc, chains)
@@ -1066,7 +1066,7 @@ lindp_pick_root(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_hint
 static RelOptInfo *
 lindp_run_dp(PlannerInfo *root, LinDPHypergraph *hg, int *order, int n, bool final)
 {
-	RelOptInfo **best = (RelOptInfo **) palloc0(n * n * sizeof(RelOptInfo *));
+	RelOptInfo **best = palloc0_array(RelOptInfo *, n * n);
 
 	/* Length-1 intervals are the input relations themselves. */
 	for (int i = 0; i < n; i++)

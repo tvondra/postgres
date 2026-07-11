@@ -271,7 +271,6 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 	int			best_order_len = 0;
 	double		best_fitness = DBL_MAX;
 	RelOptInfo *result;
-	int			i;
 
 	/* Decide whether LinDP++ should handle this join problem at all. */
 	if (!lindp_enabled ||
@@ -295,13 +294,11 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 	 * keep at most lindp.seeds of them.
 	 */
 	seedrels = (int *) palloc(n * sizeof(int));
-	for (i = 0; i < n; i++)
+	for (int i = 0; i < n; i++)
 		seedrels[i] = i;
-	for (i = 0; i < n; i++)
+	for (int i = 0; i < n; i++)
 	{
-		int			j;
-
-		for (j = i + 1; j < n; j++)
+		for (int j = i + 1; j < n; j++)
 		{
 			if (hg->verts[seedrels[j]].rows < hg->verts[seedrels[i]].rows)
 			{
@@ -334,7 +331,7 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 	 * lindp_run_dp(final=false) used to skip finalization, and thus did
 	 * not build gather plans. So it was serial-only comparison.
 	 */
-	for (i = 0; i < nseeds; i++)
+	for (int i = 0; i < nseeds; i++)
 	{
 		MemoryContext mycontext;
 		MemoryContext oldcxt;
@@ -447,19 +444,15 @@ lindp_build_hypergraph(PlannerInfo *root, const List *initial_rels)
 
 	for (i = 0; i < n; i++)
 	{
-		int			j;
-
 		hg->sel[i] = (double *) palloc(n * sizeof(double));
-		for (j = 0; j < n; j++)
+		for (int j = 0; j < n; j++)
 			hg->sel[i][j] = 1.0;
 	}
 
 	/* Simple edges: a join predicate (or order restriction) between rels. */
 	for (i = 0; i < n; i++)
 	{
-		int			j;
-
-		for (j = i + 1; j < n; j++)
+		for (int j = i + 1; j < n; j++)
 		{
 			RelOptInfo *ri = hg->verts[i].rel;
 			RelOptInfo *rj = hg->verts[j].rel;
@@ -586,9 +579,8 @@ lindp_count_components(const LinDPHypergraph *hg)
 {
 	Bitmapset  *seen = NULL;
 	int			ncomp = 0;
-	int			i;
 
-	for (i = 0; i < hg->nverts; i++)
+	for (int i = 0; i < hg->nverts; i++)
 	{
 		Bitmapset  *vmask;
 		Bitmapset  *comp;
@@ -624,12 +616,11 @@ lindp_linearize(const PlannerInfo *root,  const LinDPHypergraph *hg, int seed,
 				int *order_len)
 {
 	Bitmapset  *vmask = NULL;
-	int			i;
 	int		   *order;
 
 	(void) root;
 
-	for (i = 0; i < hg->nverts; i++)
+	for (int i = 0; i < hg->nverts; i++)
 		vmask = bms_add_member(vmask, i);
 
 	order = lindp_linearize_set(hg, vmask, seed, order_len);
@@ -1076,18 +1067,16 @@ static RelOptInfo *
 lindp_run_dp(PlannerInfo *root, LinDPHypergraph *hg, int *order, int n, bool final)
 {
 	RelOptInfo **best = (RelOptInfo **) palloc0(n * n * sizeof(RelOptInfo *));
-	int			len;
-	int			i;
 
 	/* Length-1 intervals are the input relations themselves. */
-	for (i = 0; i < n; i++)
+	for (int i = 0; i < n; i++)
 		best[i * n + i] = hg->verts[order[i]].rel;
 
-	for (len = 2; len <= n; len++)
+	for (int len = 2; len <= n; len++)
 	{
 		CHECK_FOR_INTERRUPTS();
 
-		for (i = 0; i + len - 1 < n; i++)
+		for (int i = 0; i + len - 1 < n; i++)
 		{
 			int			j = i + len - 1;
 			RelOptInfo *joinrel = NULL;

@@ -143,31 +143,31 @@ static RelOptInfo *lindp_fallback(PlannerInfo *root, int levels_needed,
 								  List *initial_rels);
 
 static LinDPHypergraph *lindp_build_hypergraph(PlannerInfo *root,
-											   List *initial_rels);
+											   const List *initial_rels);
 static double lindp_edge_selectivity(PlannerInfo *root,
-									 RelOptInfo *rel1, RelOptInfo *rel2);
-static int	lindp_count_components(LinDPHypergraph *hg);
+									 const RelOptInfo *rel1, const RelOptInfo *rel2);
+static int	lindp_count_components(const LinDPHypergraph *hg);
 
-static int *lindp_linearize(PlannerInfo *root, LinDPHypergraph *hg,
+static int *lindp_linearize(const PlannerInfo *root, const LinDPHypergraph *hg,
 							int seed, int *order_len);
-static int *lindp_linearize_set(LinDPHypergraph *hg, Bitmapset *vmask,
+static int *lindp_linearize_set(const LinDPHypergraph *hg, const Bitmapset *vmask,
 								int root_hint, int *order_len);
-static int *lindp_ikkbz_chain(LinDPHypergraph *hg, Bitmapset *vmask,
+static int *lindp_ikkbz_chain(const LinDPHypergraph *hg, const Bitmapset *vmask,
 							  int root_hint, int *order_len);
-static Bitmapset *lindp_component(LinDPHypergraph *hg, int start,
-								  Bitmapset *vmask);
-static List *lindp_ikkbz_solve(LinDPHypergraph *hg, int v, int parent,
-							   Bitmapset *vmask, Bitmapset **visited);
+static Bitmapset *lindp_component(const LinDPHypergraph *hg, int start,
+								  const Bitmapset *vmask);
+static List *lindp_ikkbz_solve(const LinDPHypergraph *hg, int v, int parent,
+							   const Bitmapset *vmask, Bitmapset **visited);
 static List *lindp_merge_chains(List *chains);
 static List *lindp_normalize_chain(List *chain);
-static LinDPModule *lindp_make_module(LinDPHypergraph *hg, int v, int parent);
-static LinDPModule *lindp_combine_modules(LinDPModule *a, LinDPModule *b);
+static LinDPModule *lindp_make_module(const LinDPHypergraph *hg, int v, int parent);
+static LinDPModule *lindp_combine_modules(const LinDPModule *a, const LinDPModule *b);
 
 static RelOptInfo *lindp_run_dp(PlannerInfo *root, LinDPHypergraph *hg,
 								int *order, int n, bool final);
 static void lindp_finalize_joinrel(PlannerInfo *root, RelOptInfo *rel);
 
-static int	lindp_pick_root(LinDPHypergraph *hg, Bitmapset *vmask,
+static int	lindp_pick_root(const LinDPHypergraph *hg, const Bitmapset *vmask,
 							int root_hint);
 
 
@@ -420,7 +420,7 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
  * Build the join hypergraph from the list of relations to be joined.
  */
 static LinDPHypergraph *
-lindp_build_hypergraph(PlannerInfo *root, List *initial_rels)
+lindp_build_hypergraph(PlannerInfo *root, const List *initial_rels)
 {
 	LinDPHypergraph *hg = palloc0_object(LinDPHypergraph);
 	int			n = list_length(initial_rels);
@@ -525,7 +525,7 @@ lindp_build_hypergraph(PlannerInfo *root, List *initial_rels)
  * linearization, so a rough estimate is fine.
  */
 static double
-lindp_edge_selectivity(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
+lindp_edge_selectivity(PlannerInfo *root, const RelOptInfo *rel1, const RelOptInfo *rel2)
 {
 	Relids		joinrelids = bms_union(rel1->relids, rel2->relids);
 	List	   *clauses = NIL;
@@ -582,7 +582,7 @@ lindp_edge_selectivity(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
  * Count the connected components of the hypergraph over its simple edges.
  */
 static int
-lindp_count_components(LinDPHypergraph *hg)
+lindp_count_components(const LinDPHypergraph *hg)
 {
 	Bitmapset  *seen = NULL;
 	int			ncomp = 0;
@@ -620,7 +620,7 @@ lindp_count_components(LinDPHypergraph *hg)
  * decomposition imposed by outer-join hyperedges.
  */
 static int *
-lindp_linearize(PlannerInfo *root, LinDPHypergraph *hg, int seed,
+lindp_linearize(const PlannerInfo *root,  const LinDPHypergraph *hg, int seed,
 				int *order_len)
 {
 	Bitmapset  *vmask = NULL;
@@ -663,7 +663,7 @@ lindp_linearize(PlannerInfo *root, LinDPHypergraph *hg, int seed,
  * linearization for the (simple) sub-problem.
  */
 static int *
-lindp_linearize_set(LinDPHypergraph *hg, Bitmapset *vmask, int root_hint,
+lindp_linearize_set(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_hint,
 					int *order_len)
 {
 	int			count = bms_num_members(vmask);
@@ -759,7 +759,7 @@ lindp_linearize_set(LinDPHypergraph *hg, Bitmapset *vmask, int root_hint,
  * that contains "start".
  */
 static Bitmapset *
-lindp_component(LinDPHypergraph *hg, int start, Bitmapset *vmask)
+lindp_component(const LinDPHypergraph *hg, int start, const Bitmapset *vmask)
 {
 	Bitmapset  *comp = bms_make_singleton(start);
 	Bitmapset  *frontier = bms_make_singleton(start);
@@ -796,7 +796,7 @@ lindp_component(LinDPHypergraph *hg, int start, Bitmapset *vmask)
  * products.
  */
 static int *
-lindp_ikkbz_chain(LinDPHypergraph *hg, Bitmapset *vmask, int root_hint,
+lindp_ikkbz_chain(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_hint,
 				  int *order_len)
 {
 	int			rootv = lindp_pick_root(hg, vmask, root_hint);
@@ -858,7 +858,7 @@ lindp_ikkbz_chain(LinDPHypergraph *hg, Bitmapset *vmask, int root_hint,
  * Returns a chain (list of LinDPModule *) headed by v.
  */
 static List *
-lindp_ikkbz_solve(LinDPHypergraph *hg, int v, int parent, Bitmapset *vmask,
+lindp_ikkbz_solve(const LinDPHypergraph *hg, int v, int parent, const Bitmapset *vmask,
 				  Bitmapset **visited)
 {
 	List	   *childchains = NIL;
@@ -994,7 +994,7 @@ lindp_normalize_chain(List *chain)
  * Construct the singleton module for a single vertex.
  */
 static LinDPModule *
-lindp_make_module(LinDPHypergraph *hg, int v, int parent)
+lindp_make_module(const LinDPHypergraph *hg, int v, int parent)
 {
 	LinDPModule *m = palloc0_object(LinDPModule);
 	double		n = hg->verts[v].rows;
@@ -1014,7 +1014,7 @@ lindp_make_module(LinDPHypergraph *hg, int v, int parent)
  * ASI cost recurrence T(ab) = T(a) T(b), C(ab) = C(a) + T(a) C(b).
  */
 static LinDPModule *
-lindp_combine_modules(LinDPModule *a, LinDPModule *b)
+lindp_combine_modules(const LinDPModule *a, const LinDPModule *b)
 {
 	LinDPModule *m = palloc0_object(LinDPModule);
 
@@ -1031,7 +1031,7 @@ lindp_combine_modules(LinDPModule *a, LinDPModule *b)
  * otherwise choose the vertex with the smallest cardinality.
  */
 static int
-lindp_pick_root(LinDPHypergraph *hg, Bitmapset *vmask, int root_hint)
+lindp_pick_root(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_hint)
 {
 	int			best = -1;
 	int			i;

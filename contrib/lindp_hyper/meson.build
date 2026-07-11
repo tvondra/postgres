@@ -10,7 +10,7 @@ if host_system == 'windows'
     '--FILEDESC', 'lindp_hyper - LinDP++ join-order search (search-space linearization)',])
 endif
 
-lindp_hyper = shared_module('lindp',
+lindp_hyper = shared_module('lindp_hyper',
   lindp_hyper_sources,
   kwargs: contrib_mod_args,
 )

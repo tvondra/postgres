@@ -433,7 +433,7 @@ lindp_build_hypergraph(PlannerInfo *root, const List *initial_rels)
 	i = 0;
 	foreach(lc, initial_rels)
 	{
-		RelOptInfo *rel = (RelOptInfo *) lfirst(lc);
+		RelOptInfo *rel = lfirst_node(RelOptInfo, lc);
 
 		hg->verts[i].index = i;
 		hg->verts[i].rel = rel;
@@ -479,7 +479,7 @@ lindp_build_hypergraph(PlannerInfo *root, const List *initial_rels)
 	 */
 	foreach(lc, root->join_info_list)
 	{
-		SpecialJoinInfo *sjinfo = (SpecialJoinInfo *) lfirst(lc);
+		SpecialJoinInfo *sjinfo = lfirst_node(SpecialJoinInfo, lc);
 		LinDPHyperEdge *he;
 		Bitmapset  *rhs = NULL;
 		Bitmapset  *lhs = NULL;
@@ -528,7 +528,7 @@ lindp_edge_selectivity(PlannerInfo *root, const RelOptInfo *rel1, const RelOptIn
 
 	foreach(lc, rel1->joininfo)
 	{
-		RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
+		RestrictInfo *rinfo = lfirst_node(RestrictInfo, lc);
 
 		if (bms_is_subset(rinfo->clause_relids, joinrelids) &&
 			bms_overlap(rinfo->clause_relids, rel1->relids) &&

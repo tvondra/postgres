@@ -148,12 +148,11 @@ static double lindp_edge_selectivity(PlannerInfo *root,
 									 const RelOptInfo *rel1, const RelOptInfo *rel2);
 static bool lindp_is_multicomp(const LinDPHypergraph *hg);
 
-static int *lindp_linearize(const LinDPHypergraph *hg,
-							int seed, int *order_len);
+static int *lindp_linearize(const LinDPHypergraph *hg, int seed);
 static int *lindp_linearize_set(const LinDPHypergraph *hg, const Bitmapset *vmask,
-								int root_hint, int *order_len);
+								int root_hint);
 static int *lindp_ikkbz_chain(const LinDPHypergraph *hg, const Bitmapset *vmask,
-							  int root_hint, int *order_len);
+							  int root_hint);
 static Bitmapset *lindp_component(const LinDPHypergraph *hg, int start,
 								  const Bitmapset *vmask);
 static List *lindp_ikkbz_solve(const LinDPHypergraph *hg, int v, int parent,
@@ -268,7 +267,6 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 	int			nseeds;
 	int		   *seedrels;
 	int		   *best_order = NULL;
-	int			best_order_len = 0;
 	double		best_fitness = DBL_MAX;
 	RelOptInfo *result;
 
@@ -338,7 +336,6 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 		int			savelength;
 		struct HTAB *savehash;
 		int		   *order;
-		int			order_len = 0;
 		RelOptInfo *top;
 		double		fitness;
 
@@ -353,12 +350,11 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 		savehash = root->join_rel_hash;
 		Assert(root->join_rel_level == NULL);
 		root->join_rel_hash = NULL;
-		order = lindp_linearize(hg, seedrels[i], &order_len);
-		top = (order != NULL && order_len == n)
-			? lindp_run_dp(root, hg, order, n, true)
-			: NULL;
 
-		if (top != NULL && top->cheapest_total_path != NULL)
+		order = lindp_linearize(hg, seedrels[i]);
+		top = lindp_run_dp(root, hg, order, n, true);
+
+		if (top->cheapest_total_path != NULL)
 			fitness = top->cheapest_total_path->total_cost;
 		else
 			fitness = DBL_MAX;
@@ -374,9 +370,8 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 			best_fitness = fitness;
 
 			/* Copy the winning order into the planner's context. */
-			best_order = palloc_array(int, order_len);
-			memcpy(best_order, order, order_len * sizeof(int));
-			best_order_len = order_len;
+			best_order = palloc_array(int, n);
+			memcpy(best_order, order, n * sizeof(int));
 		}
 
 		MemoryContextDelete(mycontext);
@@ -397,7 +392,7 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 	 * Phase 2: rebuild the best linearization in the real planner context,
 	 * this time performing the full per-joinrel finalization.
 	 */
-	result = lindp_run_dp(root, hg, best_order, best_order_len, true);
+	result = lindp_run_dp(root, hg, best_order, n, true);
 
 	/* Defensive fallback if the final build somehow failed. */
 	if (result == NULL)
@@ -601,8 +596,7 @@ lindp_is_multicomp(const LinDPHypergraph *hg)
  * decomposition imposed by outer-join hyperedges.
  */
 static int *
-lindp_linearize(const LinDPHypergraph *hg, int seed,
-				int *order_len)
+lindp_linearize(const LinDPHypergraph *hg, int seed)
 {
 	Bitmapset  *vmask = NULL;
 	int		   *order;
@@ -610,7 +604,7 @@ lindp_linearize(const LinDPHypergraph *hg, int seed,
 	for (int i = 0; i < hg->nverts; i++)
 		vmask = bms_add_member(vmask, i);
 
-	order = lindp_linearize_set(hg, vmask, seed, order_len);
+	order = lindp_linearize_set(hg, vmask, seed);
 
 	bms_free(vmask);
 	return order;
@@ -641,8 +635,7 @@ lindp_linearize(const LinDPHypergraph *hg, int seed,
  * linearization for the (simple) sub-problem.
  */
 static int *
-lindp_linearize_set(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_hint,
-					int *order_len)
+lindp_linearize_set(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_hint)
 {
 	int			count = bms_num_members(vmask);
 	ListCell   *lc;
@@ -655,9 +648,8 @@ lindp_linearize_set(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_
 	{
 		int		   *order = palloc_array(int, 1);
 
-		*order_len = 0;
 		if (count == 1)
-			order[(*order_len)++] = bms_singleton_member(vmask);
+			order[0] = bms_singleton_member(vmask);
 		return order;
 	}
 
@@ -697,8 +689,8 @@ lindp_linearize_set(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_
 		int		   *orderL;
 		int		   *orderR;
 		int		   *orderX = NULL;
-		int			lenL = 0;
-		int			lenR = 0;
+		int			lenL = bms_num_members(bestL);
+		int			lenR = bms_num_members(bestR);
 		int			lenX = 0;
 		int		   *order;
 		int			rl = lindp_pick_root(hg, bestL, root_hint);
@@ -706,21 +698,23 @@ lindp_linearize_set(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_
 
 		leftover = bms_del_members(leftover, bestR);
 
-		orderL = lindp_linearize_set(hg, bestL, rl, &lenL);
-		orderR = lindp_linearize_set(hg, bestR, rr, &lenR);
+		orderL = lindp_linearize_set(hg, bestL, rl);
+		orderR = lindp_linearize_set(hg, bestR, rr);
 		if (!bms_is_empty(leftover))
 		{
 			int			rx = lindp_pick_root(hg, leftover, root_hint);
 
-			orderX = lindp_linearize_set(hg, leftover, rx, &lenX);
+			orderX = lindp_linearize_set(hg, leftover, rx);
+			lenX = bms_num_members(leftover);
 		}
 
-		order = palloc_array(int, Max(lenL + lenR + lenX, 1));
+		Assert(lenL + lenR + lenX == count);
+
+		order = palloc_array(int, count);
 		memcpy(order, orderL, lenL * sizeof(int));
 		memcpy(order + lenL, orderR, lenR * sizeof(int));
 		if (lenX > 0)
 			memcpy(order + lenL + lenR, orderX, lenX * sizeof(int));
-		*order_len = lenL + lenR + lenX;
 
 		bms_free(bestL);
 		bms_free(bestR);
@@ -729,7 +723,7 @@ lindp_linearize_set(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_
 	}
 
 	/* No splitting hyperedge: linearize the simple sub-problem. */
-	return lindp_ikkbz_chain(hg, vmask, root_hint, order_len);
+	return lindp_ikkbz_chain(hg, vmask, root_hint);
 }
 
 /*
@@ -774,8 +768,7 @@ lindp_component(const LinDPHypergraph *hg, int start, const Bitmapset *vmask)
  * products.
  */
 static int *
-lindp_ikkbz_chain(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_hint,
-				  int *order_len)
+lindp_ikkbz_chain(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_hint)
 {
 	int			rootv = lindp_pick_root(hg, vmask, root_hint);
 	int			total = bms_num_members(vmask);
@@ -815,7 +808,8 @@ lindp_ikkbz_chain(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_hi
 	}
 
 	bms_free(remaining);
-	*order_len = pos;
+
+	Assert(pos == total);
 
 	return order;
 }

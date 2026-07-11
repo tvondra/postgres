@@ -146,7 +146,7 @@ static LinDPHypergraph *lindp_build_hypergraph(PlannerInfo *root,
 											   const List *initial_rels);
 static double lindp_edge_selectivity(PlannerInfo *root,
 									 const RelOptInfo *rel1, const RelOptInfo *rel2);
-static int	lindp_count_components(const LinDPHypergraph *hg);
+static bool lindp_is_multicomp(const LinDPHypergraph *hg);
 
 static int *lindp_linearize(const LinDPHypergraph *hg,
 							int seed, int *order_len);
@@ -285,7 +285,7 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 	 * cannot build a connected plan without them, so fall back to the
 	 * standard search (which forms cross products only when strictly needed).
 	 */
-	if (!lindp_cross_products && lindp_count_components(hg) > 1)
+	if (!lindp_cross_products && lindp_is_multicomp(hg))
 		return lindp_fallback(root, levels_needed, initial_rels);
 
 	/*
@@ -571,36 +571,26 @@ lindp_edge_selectivity(PlannerInfo *root, const RelOptInfo *rel1, const RelOptIn
 }
 
 /*
- * Count the connected components of the hypergraph over its simple edges.
+ * Check if there are more than one connected components of the hypergraph
+ * over its simple edges.
  */
-static int
-lindp_count_components(const LinDPHypergraph *hg)
+static bool
+lindp_is_multicomp(const LinDPHypergraph *hg)
 {
-	Bitmapset  *seen = NULL;
-	int			ncomp = 0;
+	Bitmapset  *vmask = NULL;
+	Bitmapset  *comp;
+	int			compsize;
 
-	for (int i = 0; i < hg->nverts; i++)
-	{
-		Bitmapset  *vmask;
-		Bitmapset  *comp;
+	for (int v = 0; v < hg->nverts; v++)
+		vmask = bms_add_member(vmask, v);
 
-		if (bms_is_member(i, seen))
-			continue;
+	comp = lindp_component(hg, 0, NULL);
 
-		vmask = NULL;
-		for (int v = 0; v < hg->nverts; v++)
-			vmask = bms_add_member(vmask, v);
+	compsize = bms_num_members(comp);
 
-		comp = lindp_component(hg, i, vmask);
-		seen = bms_add_members(seen, comp);
-		ncomp++;
+	bms_free(comp);
 
-		bms_free(vmask);
-		bms_free(comp);
-	}
-
-	bms_free(seen);
-	return ncomp;
+	return compsize < hg->nverts;
 }
 
 /*

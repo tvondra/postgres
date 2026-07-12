@@ -1089,7 +1089,7 @@ lindp_run_dp(PlannerInfo *root, LinDPHypergraph *hg, int *order, int n, bool fin
 		}
 	}
 
-	return best[0 * n + (n - 1)];
+	return best[n - 1];
 }
 
 /*

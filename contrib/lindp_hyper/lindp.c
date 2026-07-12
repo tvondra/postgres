@@ -490,7 +490,7 @@ lindp_build_hypergraph(PlannerInfo *root, const List *initial_rels)
 		}
 
 		/* Only useful if it actually splits the vertex set. */
-		if (bms_is_empty(rhs) || bms_num_members(rhs) == n)
+		if (bms_is_empty(rhs) || bms_is_empty(lhs))
 		{
 			bms_free(rhs);
 			bms_free(lhs);

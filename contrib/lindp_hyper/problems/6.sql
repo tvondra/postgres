@@ -37,7 +37,7 @@ END $$;
 
 ANALYZE;
 
-\timing
+\timing on
 
 -- ---------------------------------------------------------------------------
 -- The challenging query: a plain 32-way equi-join on the partition key.

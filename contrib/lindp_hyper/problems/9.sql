@@ -53,7 +53,7 @@ set geqo = on;
 set geqo_threshold = 2;
 set geqo_effort = 5;
 
-\timing
+\timing on
 
 EXPLAIN
 SELECT count(*) FROM geqo_hub h

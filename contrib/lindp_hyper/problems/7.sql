@@ -40,7 +40,7 @@ SET from_collapse_limit = 64;
 -- Expect: Planning Time well over 10 seconds (>13s on a release build, and
 -- several times that on an assert-enabled build).
 
-\timing
+\timing on
 
 EXPLAIN (COSTS OFF, SUMMARY ON)
 SELECT m1.c1

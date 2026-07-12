@@ -32,7 +32,7 @@ SET geqo_seed           = 0;
 SET join_collapse_limit = 20;
 SET from_collapse_limit = 20;
 
-\timing
+\timing on
 
 -- 1. The exhaustive optimum, for comparison (standard_join_search).
 SET geqo = off;

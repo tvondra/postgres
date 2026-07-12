@@ -38,7 +38,7 @@ SET from_collapse_limit = 32;
 SET enable_partitionwise_join = on;
 SET jit = off;
 
-\timing
+\timing on
 
 EXPLAIN
 SELECT 1

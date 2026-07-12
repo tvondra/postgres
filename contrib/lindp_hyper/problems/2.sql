@@ -26,7 +26,7 @@ SET from_collapse_limit = 100;
 -- Deterministic GEQO runs.
 SET geqo_seed = 0;
 
-\timing
+\timing on
 
 -- The query.
 --

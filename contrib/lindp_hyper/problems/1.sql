@@ -22,7 +22,7 @@ SET from_collapse_limit = 64;
 SET geqo_effort = 5;
 SET geqo_seed = 0.5;
 
-\timing
+\timing on
 
 EXPLAIN
 SELECT count(*)

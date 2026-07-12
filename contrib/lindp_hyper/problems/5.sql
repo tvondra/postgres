@@ -35,7 +35,7 @@ $$;
 ANALYZE;
 
 
-\timing
+\timing on
 
 EXPLAIN (COSTS OFF)
 SELECT *

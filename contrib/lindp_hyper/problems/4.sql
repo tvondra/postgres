@@ -80,7 +80,7 @@ SET geqo_seed = 0;
 SET join_collapse_limit = 40;
 SET from_collapse_limit = 40;
 
-\timing
+\timing on
 
 -- Query that is challenging for GEQO
 -- We use a CROSS JOIN of 32 tables with 12 conditions between each pair of tables.

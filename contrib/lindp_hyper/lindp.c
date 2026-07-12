@@ -557,8 +557,8 @@ lindp_edge_selectivity(PlannerInfo *root, const RelOptInfo *rel1, const RelOptIn
 	list_free(clauses);
 
 	/* Keep the value strictly inside (0, 1]. */
-	if (sel <= 0.0)
-		sel = LINDP_EPSILON;
+	if (sel < 0)
+		sel = 0;
 	else if (sel > 1.0)
 		sel = 1.0;
 

@@ -169,7 +169,6 @@ static void lindp_finalize_joinrel(PlannerInfo *root, RelOptInfo *rel);
 static int	lindp_pick_root(const LinDPHypergraph *hg, const Bitmapset *vmask,
 							int root_hint);
 
-
 /*
  * Module load callback.
  */

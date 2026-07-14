@@ -766,6 +766,7 @@ lindp_linearize(const LinDPHypergraph *hg, int seed)
 	Bitmapset  *vmask = NULL;
 	int		   *order;
 
+	/* linearizing the whole graph, so the vmask covers all vertices */
 	for (int i = 0; i < hg->nverts; i++)
 		vmask = bms_add_member(vmask, i);
 
@@ -798,6 +799,18 @@ lindp_linearize(const LinDPHypergraph *hg, int seed)
  * the nested hyperedges of a left-deep outer-join chain in order.  When no
  * hyperedge splits vmask, we fall through to the classic IKKBZ tree
  * linearization for the (simple) sub-problem.
+ *
+ * 'vmask' identifies the set of vertices the linearization operates on. As
+ * we're splitting the graph into smaller parts (using the hyper edges), the
+ * sets get smaller and smaller.
+ *
+ * 'root_hint' is a hint which vertex to use as a root for the subsets after
+ * splitting vmask per the hyper edge.
+ *
+ * XXX I'm not sure the root_hint is very useful. We keep re-calculating it
+ * through the recursion, but we only really need it for the lindp_ikkbz_chain
+ * call at the end, so maybe we should just calculate it there? We're bound
+ * to recalculate it in 2 of the 3 sets anyway, so is it helpful?
  */
 static int *
 lindp_linearize_set(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_hint)
@@ -809,12 +822,16 @@ lindp_linearize_set(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_
 	Bitmapset  *bestL = NULL;
 	Bitmapset  *bestR = NULL;
 
-	if (count <= 1)
+	/* the mask should have at least one vertex */
+	Assert(count >= 1);
+
+	/* single vertex is trivially linearized */
+	if (count == 1)
 	{
 		int		   *order = palloc_array(int, 1);
 
-		if (count == 1)
-			order[0] = bms_singleton_member(vmask);
+		order[0] = bms_singleton_member(vmask);
+
 		return order;
 	}
 
@@ -833,7 +850,40 @@ lindp_linearize_set(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_
 		int			lsize = bms_num_members(lv);
 		int			cover = rsize + lsize;
 
-		if (rsize > 0 && lsize > 0 && cover <= count && cover > best_cover)
+		/*
+		 * We should never get edges that don't fit into vmask, I think. It
+		 * would mean the sides intersect, and that seems impossible for
+		 * edges encoding outer joins.
+		 */
+		Assert(cover <= count);
+
+		/*
+		 * Sanity check: If both ends of a hyperedge intersect with the vmask,
+		 * then the vmask should cover the whole hyperedge.
+		 *
+		 * XXX It's certainly possible to get endges where one side overlaps
+		 * with the vmask - that happens once we pick the edge and descend
+		 * into either side. Then in later cycles we try to use the edge
+		 * again, and we get a partial intersect with one of the sides. So
+		 * that's expected.
+		 *
+		 * But to get "partial" intersections with both sides, I think an edge
+		 * would have to "contradict" some other hyper edge we used. And I
+		 * don't think we can construct such joins, because joins are "nested"
+		 * in a certain way.
+		 *
+		 * XXX I suppose we could also remember which hyper edges we already
+		 * used, and skip them. That would probably mean we would not see
+		 * partial matches at all, but I'm not sure it's worth the complexity.
+		 */
+		if ((rsize > 0) && (lsize > 0))
+		{
+			Assert(bms_is_subset(he->rhs_verts, vmask));
+			Assert(bms_is_subset(he->lhs_verts, vmask));
+		}
+
+		/* Keep the "larger" hyperedge, covering more vertices in vmask. */
+		if ((rsize > 0) && (lsize > 0) && (cover > best_cover))
 		{
 			bms_free(bestR);
 			bms_free(bestL);
@@ -849,9 +899,14 @@ lindp_linearize_set(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_
 		}
 	}
 
+	/*
+	 * If we found a hyper edge, split the set into left/right side, and the
+	 * leftover nodes. Linearize each part independently, and then concatenate
+	 * the parts.
+	 */
 	if (best_edge != NULL)
 	{
-		Bitmapset  *leftover = bms_difference(vmask, bestL);
+		Bitmapset  *leftover = NULL;
 		int		   *orderL;
 		int		   *orderR;
 		int		   *orderX = NULL;
@@ -862,8 +917,14 @@ lindp_linearize_set(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_
 		int			rl = lindp_pick_root(hg, bestL, root_hint);
 		int			rr = lindp_pick_root(hg, bestR, root_hint);
 
+		/* calculate the set of vertices not included in left/right set */
+		leftover = bms_difference(vmask, bestL);
 		leftover = bms_del_members(leftover, bestR);
 
+		/*
+		 * Linearize the left/right sets, and then also the leftover set
+		 * (if non-empty).
+		 */
 		orderL = lindp_linearize_set(hg, bestL, rl);
 		orderR = lindp_linearize_set(hg, bestR, rr);
 		if (!bms_is_empty(leftover))
@@ -876,15 +937,25 @@ lindp_linearize_set(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_
 
 		Assert(lenL + lenR + lenX == count);
 
+		/*
+		 * Concatenate the three orders into a final order covering the vmask.
+		 *
+		 * XXX Does it matter in which order we copy the left/right/leftover
+		 * parts into the final order?
+		 */
 		order = palloc_array(int, count);
 		memcpy(order, orderL, lenL * sizeof(int));
 		memcpy(order + lenL, orderR, lenR * sizeof(int));
 		if (lenX > 0)
 			memcpy(order + lenL + lenR, orderX, lenX * sizeof(int));
 
+
 		bms_free(bestL);
 		bms_free(bestR);
 		bms_free(leftover);
+
+		/* XXX Maybe free the partial orders? We don't need them anymore. */
+
 		return order;
 	}
 

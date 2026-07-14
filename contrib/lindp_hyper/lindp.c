@@ -569,6 +569,7 @@ lindp_build_hypergraph(PlannerInfo *root, const List *initial_rels)
 		Bitmapset  *rhs = NULL;
 		Bitmapset  *lhs = NULL;
 
+		/* inner joins don't generate hyperedges */
 		if (sjinfo->jointype == JOIN_INNER)
 			continue;
 
@@ -580,13 +581,17 @@ lindp_build_hypergraph(PlannerInfo *root, const List *initial_rels)
 				lhs = bms_add_member(lhs, i);
 		}
 
-		/* Only useful if it actually splits the vertex set. */
+		/* only useful if it actually splits the vertex set */
+		/* XXX is this needed? in which situation can this happen? */
 		if (bms_is_empty(rhs) || bms_is_empty(lhs))
 		{
 			bms_free(rhs);
 			bms_free(lhs);
 			continue;
 		}
+
+		/* the sides of an edge must not overlap */
+		Assert(!bms_overlap(rhs, lhs));
 
 		he = palloc0_object(LinDPHyperEdge);
 		he->rhs_verts = rhs;
@@ -725,8 +730,9 @@ lindp_edge_selectivity(PlannerInfo *root, const RelOptInfo *rel1, const RelOptIn
 
 /*
  * Check if there are more than one connected components of the hypergraph
- * over its simple edges.
- */
+ * over its simple edges. We simply calculate the size of the component
+ * containing the first vertex, and compare it to the size of the graph.
+  */
 static bool
 lindp_is_multicomp(const LinDPHypergraph *hg)
 {
@@ -743,6 +749,7 @@ lindp_is_multicomp(const LinDPHypergraph *hg)
 
 	bms_free(comp);
 
+	/* is the whole graph one component? */
 	return compsize < hg->nverts;
 }
 

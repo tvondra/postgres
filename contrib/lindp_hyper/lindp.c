@@ -21,11 +21,29 @@
  *
  * The first two papers are foundational.  The first paper lays out the
  * complete join planning framework, and the LinDP algorithm as it's main
- * part.  Second paper extends the LinDP to support all join queries, by
- * using hypergraphs.  The third paper presents optimizations so that it
- * handles even larger problems.
+ * part.  Second paper extends the LinDP to support all join queries,
+ * including queries with outer joins and crossproducts, by using hypergraphs.
+ * The third paper presents optimizations so that it handles even larger
+ * join problems.
  *
- * The implementation follows the approach laid out in the papers:
+ * The core idea of the LinDP algorithm is "search space linearization",
+ * i.e. restricting the DP algorithm to connected subchains of some linear
+ * order of the relations. The DP algorithm can still build bushy plans by
+ * "parenthesizing" the subchains, but can't reorder the relations.
+ *
+ * Selecting a good linear order is crucial for the quality of the plan.
+ * This is done by the IKKBZ algorithm, which produces optimal left-deep
+ * plans (for acyclic graphs with inner joins) in polynomial time.
+ *
+ * Multiple such linear orders are evaluated, and the cheapest one is used
+ * for the main "linearized DP" phase, which produces the final plan. This
+ * final plan may not be optimal, but it's usually good enough and not too
+ * far from the optimum. If the optimal tree actually is linear, the LinDP
+ * algorithm will generate it. If the optimal plan is bushy, the optimal
+ * linear plan is an upper bound (and LinDP finds a plan in between).
+ *
+ * The implementation follows the approach laid out in the cited papers,
+ * particularly in paper [1]:
  *
  *	1. Build a hypergraph representing the join structure.  Vertices are the
  *	   relations to be joined; simple edges represent join predicates,

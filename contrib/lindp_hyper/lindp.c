@@ -335,16 +335,16 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 	 * We run the DP with "final" set to true so that each candidate is costed
 	 * exactly as it would be in the final build, including the Gather path on
 	 * the top relation (see lindp_finalize_joinrel()).  Scoring seeds by a
-	 * serial-only cost while the chosen plan is ultimately parallel would make
-	 * the ranking inconsistent with the final plan cost, so that adding more
-	 * seeds could pick a higher-cost plan.
+	 * serial-only cost while the chosen plan is ultimately parallel would
+	 * make the ranking inconsistent with the final plan cost, so that adding
+	 * more seeds could pick a higher-cost plan.
 	 *
 	 * XXX There's a balance between doing a cheap costing of all the seeds,
-	 * and getting accurate costs of the best plan. With only approximate
-	 * cost we can end up picking a seed with lower approximate cost, only
-	 * to end up with a more expensive plan. This may happen e.g. because
-	 * lindp_run_dp(final=false) used to skip finalization, and thus did
-	 * not build gather plans. So it was serial-only comparison.
+	 * and getting accurate costs of the best plan. With only approximate cost
+	 * we can end up picking a seed with lower approximate cost, only to end
+	 * up with a more expensive plan. This may happen e.g. because
+	 * lindp_run_dp(final=false) used to skip finalization, and thus did not
+	 * build gather plans. So it was serial-only comparison.
 	 */
 	for (int i = 0; i < nseeds; i++)
 	{
@@ -561,12 +561,12 @@ lindp_edge_selectivity(PlannerInfo *root, const RelOptInfo *rel1, const RelOptIn
 	}
 
 	/*
-	 * Build a dummy JOIN_INNER SpecialJoinInfo describing the join between the
-	 * two relations.  Passing a non-NULL sjinfo is essential: with a NULL
+	 * Build a dummy JOIN_INNER SpecialJoinInfo describing the join between
+	 * the two relations.  Passing a non-NULL sjinfo is essential: with a NULL
 	 * sjinfo, clause_selectivity() treats a join clause as a restriction
 	 * clause, which both yields a bogus estimate here and (worse) caches that
-	 * wrong selectivity in the RestrictInfo's norm_selec field, corrupting the
-	 * real join cost estimates computed later for the chosen plan.
+	 * wrong selectivity in the RestrictInfo's norm_selec field, corrupting
+	 * the real join cost estimates computed later for the chosen plan.
 	 */
 	init_dummy_sjinfo(&sjinfo, rel1->relids, rel2->relids);
 
@@ -671,9 +671,10 @@ lindp_linearize_set(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_
 	}
 
 	/*
-	 * Look for the hyperedge that covers the most of vmask while still leaving
-	 * both of its sides non-empty within vmask (so that it genuinely splits
-	 * the set).  Ties are broken by list order, which keeps the choice stable.
+	 * Look for the hyperedge that covers the most of vmask while still
+	 * leaving both of its sides non-empty within vmask (so that it genuinely
+	 * splits the set).  Ties are broken by list order, which keeps the choice
+	 * stable.
 	 */
 	foreach(lc, hg->hyperedges)
 	{
@@ -1122,15 +1123,16 @@ lindp_finalize_joinrel(PlannerInfo *root, RelOptInfo *rel)
 	generate_partitionwise_join_paths(root, rel);
 
 	/*
-	 * Consider gathering partial paths.  standard_join_search() skips this for
-	 * the topmost rel, because the core planner gathers it later (once the
-	 * final scan/join target is known) in apply_scanjoin_target_to_paths().
-	 * We do it here even for the topmost rel; that is harmless, because the
-	 * core planner simply regenerates the Gather paths with the final target
-	 * afterwards.  Gathering intermediate rels (including the topmost rel of a
-	 * subproblem that feeds an enclosing join) is necessary so that a parallel
-	 * path can become a relation's cheapest path and be used by higher joins,
-	 * exactly as standard_join_search() does.
+	 * Consider gathering partial paths.  standard_join_search() skips this
+	 * for the topmost rel, because the core planner gathers it later (once
+	 * the final scan/join target is known) in
+	 * apply_scanjoin_target_to_paths(). We do it here even for the topmost
+	 * rel; that is harmless, because the core planner simply regenerates the
+	 * Gather paths with the final target afterwards.  Gathering intermediate
+	 * rels (including the topmost rel of a subproblem that feeds an enclosing
+	 * join) is necessary so that a parallel path can become a relation's
+	 * cheapest path and be used by higher joins, exactly as
+	 * standard_join_search() does.
 	 */
 	generate_useful_gather_paths(root, rel, false);
 

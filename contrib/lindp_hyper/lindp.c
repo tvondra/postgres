@@ -327,7 +327,7 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 
 	/* Decide whether LinDP++ should handle this join problem at all. */
 	if (!lindp_enabled ||
-		n < lindp_min_relations ||
+		(n < lindp_min_relations) ||
 		(lindp_max_relations > 0 && n > lindp_max_relations))
 		return lindp_fallback(root, levels_needed, initial_rels);
 
@@ -348,10 +348,15 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 	seedrels = lindp_ikkbz_seeds(hg, n, nseeds);
 
 	/*
-	 * Phase 1: for each seed, linearize and evaluate the resulting plan in a
-	 * private memory context (mirroring geqo_eval()), keeping the cheapest
-	 * linearization.  We must restore join_rel_list and join_rel_hash after
-	 * each trial so the throw-away join relations do not leak.
+	 * Phase 1: pick the best IKKBZ seeds / linearizations
+	 *
+	 * Pick the IKKBZ seed that is expected to generate the best final plan.
+	 * We linearize and evaluate the resulting plan, and keep the cheapest
+	 * linearization.
+	 *
+	 * We evaluate the plan in a private memory context, mirroring
+	 * geqo_eval(). We must restore join_rel_list and join_rel_hash after each
+	 * trial so the throw-away join relations do not leak.
 	 *
 	 * We run the DP with "final" set to true so that each candidate is costed
 	 * exactly as it would be in the final build, including the Gather path on
@@ -360,12 +365,27 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 	 * make the ranking inconsistent with the final plan cost, so that adding
 	 * more seeds could pick a higher-cost plan.
 	 *
-	 * XXX There's a balance between doing a cheap costing of all the seeds,
-	 * and getting accurate costs of the best plan. With only approximate cost
-	 * we can end up picking a seed with lower approximate cost, only to end
-	 * up with a more expensive plan. This may happen e.g. because
-	 * lindp_run_dp(final=false) used to skip finalization, and thus did not
-	 * build gather plans. So it was serial-only comparison.
+	 * XXX There's a trade off between doing a cheap vs. accurate costing of
+	 * the seeds. On the one hand we want to cost the seeds cheaply, so that
+	 * we can evaluate more of them. But on the other hand we want the cost to
+	 * be close to the "actual" cost, otherwise we can see weird effects. For
+	 * example, with approximate costs, we may get a worse final plan after
+	 * increasing the number of seeds (one of the additional seeds may seem
+	 * cheaper, but end up with a worse "full" cost).
+	 *
+	 * We used to skip the finalization when costing the IKKBZ seeds, in which
+	 * case we did not consider plans with a gather on top. We compared the
+	 * plans using just serial-only costs, but maybe one plan could be made
+	 * parallel.
+	 *
+	 * XXX This essentially does a pull planning for each IKKBZ seed, as it
+	 * runs lindp_run_dp() with exactly the same parameters as later. It
+	 * should still be relatively cheap, as the linearization fixes the join
+	 * order, though. However, it means the later lindp_run_dp() call is
+	 * entirely duplicate to what we already did when costing the seed. Maybe
+	 * we could save the work somehow?
+	 *
+	 * XXX Maybe move to a separate function, just like lindp_ikkbz_seeds?
 	 */
 	for (int i = 0; i < nseeds; i++)
 	{
@@ -379,6 +399,10 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 
 		CHECK_FOR_INTERRUPTS();
 
+		/*
+		 * XXX maybe don't recreate the context over and over, and just reset
+		 * it after each seed
+		 */
 		mycontext = AllocSetContextCreate(CurrentMemoryContext,
 										  "LinDP",
 										  ALLOCSET_DEFAULT_SIZES);
@@ -389,9 +413,11 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 		Assert(root->join_rel_level == NULL);
 		root->join_rel_hash = NULL;
 
+		/* derive the linearization (for the seed), and run the LinDP */
 		order = lindp_linearize(hg, seedrels[i]);
 		top = lindp_run_dp(root, hg, order, n, true);
 
+		/* we use the cost of the cheapest total path as cost of the seed */
 		if (top->cheapest_total_path != NULL)
 			fitness = top->cheapest_total_path->total_cost;
 		else
@@ -415,8 +441,12 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 		MemoryContextDelete(mycontext);
 	}
 
-	/* No usable linearization found: fall back to the standard search. */
-	/* XXX this shouldn't really happen, I think? */
+	/*
+	 * No usable linearization found: fall back to the standard search / GEQO.
+	 *
+	 * With LinDP++ the fallback should not be needed, the algorithm should
+	 * find a valid join order / plan for abitrary joins.
+	 */
 	if (best_order == NULL || best_fitness == DBL_MAX)
 	{
 		/* with fallback disabled, simply error out */
@@ -427,12 +457,19 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 	}
 
 	/*
-	 * Phase 2: rebuild the best linearization in the real planner context,
-	 * this time performing the full per-joinrel finalization.
+	 * Phase 2: build a full plan for the best linearization
+	 *
+	 * This time do that in the regular memory context, etc.
 	 */
 	result = lindp_run_dp(root, hg, best_order, n, true);
 
-	/* Defensive fallback if the final build somehow failed. */
+	/*
+	 * Defensive fallback if the final build somehow failed.
+	 *
+	 * XXX This should not really happen. lindp_run_dp should always produce a
+	 * valid plan. Moreover we've already done this for this order earlier,
+	 * and it produced a valid plan. Maybe no fallback here?
+	 */
 	if (result == NULL)
 	{
 		/* with fallback disabled, simply error out */

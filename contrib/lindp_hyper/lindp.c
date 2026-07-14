@@ -90,6 +90,7 @@ PG_MODULE_MAGIC;
 
 /* GUC variables */
 static bool lindp_enabled = true;
+static bool lindp_debug = false;
 static bool lindp_fallback_enabled = true;
 static int	lindp_min_relations = 2;
 static int	lindp_max_relations = 0;	/* 0 means "no limit" */
@@ -162,6 +163,7 @@ static RelOptInfo *lindp_fallback(PlannerInfo *root, int levels_needed,
 
 static LinDPHypergraph *lindp_build_hypergraph(PlannerInfo *root,
 											   const List *initial_rels);
+static void lindp_print_hypergraph(LinDPHypergraph *hg);
 static double lindp_edge_selectivity(PlannerInfo *root,
 									 const RelOptInfo *rel1, const RelOptInfo *rel2);
 static bool lindp_is_multicomp(const LinDPHypergraph *hg);
@@ -207,6 +209,15 @@ _PG_init(void)
 							 NULL,
 							 &lindp_fallback_enabled,
 							 true,
+							 PGC_USERSET,
+							 0,
+							 NULL, NULL, NULL);
+
+	DefineCustomBoolVariable("lindp_hyper.debug",
+							 "Print various internal debug info (as warnings)",
+							 NULL,
+							 &lindp_debug,
+							 false,
 							 PGC_USERSET,
 							 0,
 							 NULL, NULL, NULL);
@@ -332,6 +343,9 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 		return lindp_fallback(root, levels_needed, initial_rels);
 
 	hg = lindp_build_hypergraph(root, initial_rels);
+
+	if (lindp_debug)
+		lindp_print_hypergraph(hg);
 
 	/*
 	 * If cross products are disabled and the join graph is disconnected, we
@@ -499,6 +513,7 @@ lindp_build_hypergraph(PlannerInfo *root, const List *initial_rels)
 	hg->sel = palloc0_array(double *, n);
 	hg->hyperedges = NIL;
 
+	/* vertices are relations to be joined */
 	i = 0;
 	foreach(lc, initial_rels)
 	{
@@ -511,6 +526,7 @@ lindp_build_hypergraph(PlannerInfo *root, const List *initial_rels)
 		i++;
 	}
 
+	/* initialize the selectivity matrix to 1.0 */
 	for (i = 0; i < n; i++)
 	{
 		hg->sel[i] = palloc_array(double, n);
@@ -579,6 +595,73 @@ lindp_build_hypergraph(PlannerInfo *root, const List *initial_rels)
 	}
 
 	return hg;
+}
+
+/*
+ * Print the hypergraph (for debugging purposes).
+ */
+static void
+lindp_print_hypergraph(LinDPHypergraph *hg)
+{
+	ListCell   *lc;
+	StringInfoData str;
+
+	initStringInfo(&str);
+
+	/* vertices first, with relids */
+	appendStringInfoString(&str, "vertices: {\n");
+	for (int i = 0; i < hg->nverts; i++)
+	{
+		appendStringInfo(&str, "\t%d => [%s]\n", i, bmsToString(hg->verts[i].relids));
+	}
+	appendStringInfoString(&str, "}\n");
+
+	/* adjacency matrix */
+	appendStringInfoString(&str, "adjacency: {\n");
+	for (int i = 0; i < hg->nverts; i++)
+	{
+		appendStringInfoString(&str, "\t");
+		for (int j = 0; j < hg->nverts; j++)
+		{
+			if (j > 0)
+				appendStringInfoString(&str, ", ");
+
+			if (bms_is_member(j, hg->adj[i]))
+				appendStringInfoString(&str, "1");
+			else
+				appendStringInfoString(&str, "0");
+		}
+		appendStringInfoString(&str, "\n");
+	}
+	appendStringInfoString(&str, "}\n");
+
+	/* selectivity matrix */
+	appendStringInfoString(&str, "selectivity: {\n");
+	for (int i = 0; i < hg->nverts; i++)
+	{
+		appendStringInfoString(&str, "\t");
+		for (int j = 0; j < hg->nverts; j++)
+		{
+			if (j > 0)
+				appendStringInfoString(&str, ", ");
+
+			appendStringInfo(&str, "%f", hg->sel[i][j]);
+		}
+		appendStringInfoString(&str, "\n");
+	}
+	appendStringInfoString(&str, "}\n");
+
+	/* hyperedges */
+	appendStringInfoString(&str, "hyperedges: {\n");
+	foreach (lc, hg->hyperedges)
+	{
+		LinDPHyperEdge *edge = (LinDPHyperEdge *) lfirst(lc);
+
+		appendStringInfo(&str, "\t[%s] => [%s]\n", bmsToString(edge->rhs_verts), bmsToString(edge->lhs_verts));
+	}
+	appendStringInfoString(&str, "}");
+
+	elog(WARNING, "%s", str.data);
 }
 
 /*

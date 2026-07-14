@@ -965,13 +965,27 @@ lindp_linearize_set(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_
 
 /*
  * Compute the connected component (over simple edges, restricted to vmask)
- * that contains "start".
+ * that contains the "start" vertex.
  */
 static Bitmapset *
 lindp_component(const LinDPHypergraph *hg, int start, const Bitmapset *vmask)
 {
 	Bitmapset  *comp = bms_make_singleton(start);
 	Bitmapset  *frontier = bms_make_singleton(start);
+
+	/*
+	 * frontier is the "edge" of the component - a reservoir of new vertices that
+	 * may contribute adjacent vertices to the component. All frontier vertices
+	 * are part of the component already.
+	 *
+	 * In each iteration we remove a vertex from the reservoir (there's no
+	 * ordering, so it's not a queue), and explore all it's adjacent vertices. If
+	 * the new vertex is in the vmask, and is not in the component yet, we found
+	 * a new vertex. We add it to both the reservoir and component.
+	 *
+	 * XXX This is guaranteed to terminate, as we process each vertex at most
+	 * once, and there's a finite number of vertices.
+	 */
 
 	while (!bms_is_empty(frontier))
 	{
@@ -983,8 +997,15 @@ lindp_component(const LinDPHypergraph *hg, int start, const Bitmapset *vmask)
 		c = -1;
 		while ((c = bms_next_member(hg->adj[v], c)) >= 0)
 		{
+			/* not in vmask, or already in the component */
 			if (!bms_is_member(c, vmask) || bms_is_member(c, comp))
 				continue;
+
+			/*
+			 * We could also check if it's in the frontier, but that does not
+			 * chance anything - if we set the bit twice, it's still set.
+			 */
+
 			comp = bms_add_member(comp, c);
 			frontier = bms_add_member(frontier, c);
 		}

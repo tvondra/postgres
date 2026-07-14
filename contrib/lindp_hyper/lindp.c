@@ -274,6 +274,44 @@ lindp_fallback(PlannerInfo *root, int levels_needed, List *initial_rels)
 }
 
 /*
+ * Choose the seed relations to try as IKKBZ roots.  We order the vertices
+ * by ascending cardinality, since small relations make good roots, and
+ * keep at most lindp.seeds of them.
+ */
+static int *
+lindp_ikkbz_seeds(LinDPHypergraph *hg, int n, int nseeds)
+{
+	int		   *seedrels;
+
+	seedrels = palloc_array(int, n);
+	for (int i = 0; i < n; i++)
+		seedrels[i] = i;
+
+	/*
+	 * Pick the seeds using a simple selection sort. It seems good enough,
+	 * because we only ever expect a relatively small number of entries, and
+	 * we simply compare the cardinalities, which is cheap.
+	 *
+	 * FIXME I think we could use (i < nseeds), to stop early.
+	 */
+	for (int i = 0; i < n; i++)
+	{
+		for (int j = i + 1; j < n; j++)
+		{
+			if (hg->verts[seedrels[j]].rows < hg->verts[seedrels[i]].rows)
+			{
+				int			tmp = seedrels[i];
+
+				seedrels[i] = seedrels[j];
+				seedrels[j] = tmp;
+			}
+		}
+	}
+
+	return seedrels;
+}
+
+/*
  * The join_search_hook entry point.
  */
 static RelOptInfo *
@@ -297,34 +335,17 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 
 	/*
 	 * If cross products are disabled and the join graph is disconnected, we
-	 * cannot build a connected plan without them, so fall back to the
-	 * standard search (which forms cross products only when strictly needed).
+	 * cannot build a connected plan without them.  In that case fall back to
+	 * the standard join search (which forms cross products when needed).
 	 */
 	if (!lindp_cross_products && lindp_is_multicomp(hg))
 		return lindp_fallback(root, levels_needed, initial_rels);
 
 	/*
-	 * Choose the seed relations to try as IKKBZ roots.  We order the vertices
-	 * by ascending cardinality, since small relations make good roots, and
-	 * keep at most lindp.seeds of them.
+	 * Choose the seed relations to try as IKKBZ roots.
 	 */
-	seedrels = palloc_array(int, n);
-	for (int i = 0; i < n; i++)
-		seedrels[i] = i;
-	for (int i = 0; i < n; i++)
-	{
-		for (int j = i + 1; j < n; j++)
-		{
-			if (hg->verts[seedrels[j]].rows < hg->verts[seedrels[i]].rows)
-			{
-				int			tmp = seedrels[i];
-
-				seedrels[i] = seedrels[j];
-				seedrels[j] = tmp;
-			}
-		}
-	}
 	nseeds = (lindp_seeds <= 0) ? n : Min(lindp_seeds, n);
+	seedrels = lindp_ikkbz_seeds(hg, n, nseeds);
 
 	/*
 	 * Phase 1: for each seed, linearize and evaluate the resulting plan in a

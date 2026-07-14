@@ -5,12 +5,27 @@
  *
  * This module installs a join_search_hook that replaces PostgreSQL's
  * standard dynamic-programming join search with the linearized dynamic
- * programming approach (LinDP++) described in
+ * programming approach (LinDP++) described in three papers:
  *
- *	  T. Neumann, B. Radke: "Adaptive Optimization of Very Large Join
- *	  Queries", SIGMOD 2018.  https://db.in.tum.de/~radke/papers/lindp++.pdf
+ * [1] T. Neumann, B. Radke: "Adaptive Optimization of Very Large Join
+ *     Queries", SIGMOD 2018.
+ *     https://db.in.tum.de/~radke/papers/hugejoins.pdf
  *
- * The implementation follows the structure laid out in the paper:
+ * [2] B. Radke, T. Neumann: "LinDP++: Generalizing Linearized DP to
+ *     Crossproducs and Non-Inner Joins", BTW2019.
+ *     https://db.in.tum.de/~radke/papers/lindp++.pdf
+ *
+ * [3] A. Birler, M. Stoian, T. Neumann: "Optimizing Linearized Join
+ *     Enumeration by Adapting to the Query Structure", BTW2025.
+ *     https://db.in.tum.de/~birler/papers/adaptivelindp.pdf
+ *
+ * The first two papers are foundational.  The first paper lays out the
+ * complete join planning framework, and the LinDP algorithm as it's main
+ * part.  Second paper extends the LinDP to support all join queries, by
+ * using hypergraphs.  The third paper presents optimizations so that it
+ * handles even larger problems.
+ *
+ * The implementation follows the approach laid out in the papers:
  *
  *	1. Build a hypergraph representing the join structure.  Vertices are the
  *	   relations to be joined; simple edges represent join predicates,
@@ -20,7 +35,7 @@
  *
  *	2. Linearize the hypergraph into a single sequence of relations using a
  *	   generalization of the IKKBZ algorithm to hypergraphs (Algorithm 2 in
- *	   the paper).  Outer-join hyperedges are handled by a recursive
+ *	   paper [2]).  Outer-join hyperedges are handled by a recursive
  *	   precedence-graph decomposition: the vertex set is split at a hyperedge
  *	   into its two sides, each side is linearized recursively, and the
  *	   results are concatenated.  Simple, connected sub-problems are
@@ -38,11 +53,14 @@
  *	4. The linearization is only a heuristic, so we evaluate several seed
  *	   relations (roots) for the IKKBZ pass, keep the cheapest resulting
  *	   plan, and fall back to the standard join search whenever no legal
- *	   linearized plan can be produced.
+ *	   linearized plan can be produced.  The LinDP++ algorithm should find
+ *	   a valid join order / plan for abitrary join queries, so a fallback
+ *	   should not be needed.
  *
  * Building the actual join relations is delegated to make_join_rel(), which
  * enforces all join-legality rules.  As a result the plans produced here are
  * always valid; the algorithm above only decides *which* orders to consider.
+ *
  *
  * Copyright (c) 2026, PostgreSQL Global Development Group
  *

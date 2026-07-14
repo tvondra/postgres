@@ -1096,14 +1096,25 @@ lindp_ikkbz_chain(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_hi
  * a single connected component.
  *
  * The precedence tree edges are the simple edges of the hypergraph, oriented
- * away from the root.  The join graph can contain cycles (for example an
- * equivalence class connects every relation to every other, producing a
- * clique), but IKKBZ requires a precedence *tree*.  We therefore build a DFS
- * spanning tree on the fly: "visited" accumulates every vertex already placed
- * in the tree, and any edge leading back to a visited vertex is skipped.
- * Without this, a cyclic graph would make the recursion loop forever.
+ * away from the root.
+ *
+ * The join graph can contain cycles (for example an equivalence class connects
+ * every relation to every other, producing a clique), but IKKBZ requires acyclic
+ * graph / a precedence *tree*.  We therefore build a minimum spanning tree by
+ * DFS on the fly, to handle cyclic graphs.
+ *
+ * "visited" accumulates every vertex already placed in the spanning tree, and
+ * any edge leading back to a visited vertex is skipped. Without this, a cyclic
+ * graph would make the recursion loop forever.
  *
  * Returns a chain (list of LinDPModule *) headed by v.
+ *
+ * Note: The spanning tree is for the purpose of IKKBZ only. The linearized DP
+ * (executed on the linear orders from IKKBZ) uses the full join graph.
+ *
+ * FIXME I'm not sure this actually generates "minimum spanning tree", i.e. a
+ * spanning tree minimizing the join selectivities. I suppose that can have
+ * negative impact on the linearization quality.
  */
 static List *
 lindp_ikkbz_solve(const LinDPHypergraph *hg, int v, int parent, const Bitmapset *vmask,
@@ -1123,6 +1134,7 @@ lindp_ikkbz_solve(const LinDPHypergraph *hg, int v, int parent, const Bitmapset 
 		if (c == parent || !bms_is_member(c, vmask) ||
 			bms_is_member(c, *visited))
 			continue;
+
 		childchains = lappend(childchains,
 							  lindp_ikkbz_solve(hg, c, v, vmask, visited));
 	}

@@ -1312,6 +1312,15 @@ lindp_pick_root(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_hint
 /*
  * Linearized dynamic programming over the given order.
  *
+ * The linearized DP is similar to the regular DP (in standard_join_search),
+ * except that it's restricted to a linearized order - subproblems it solves
+ * are subchains of that linearization.
+ *
+ * This means each subproblem can be identified by the start and end item.
+ * The results are organized in (N x N) table, and the (i,j) element tracks
+ * the join relation for subchain [i,j]. The result of the join is stored
+ * in (0, N-1), which is a join of all the N relations.
+ *
  * best[i][j] holds the join relation for the contiguous sub-sequence
  * order[i..j].  A join is only formed between two adjacent sub-sequences, so
  * the DP runs in O(n^3) make_join_rel() calls while still allowing bushy
@@ -1331,6 +1340,9 @@ lindp_pick_root(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_hint
  *
  * XXX At this point we only call lindp_run_dp with final=true, so maybe we
  * should ditch the argument entirely.
+ *
+ * XXX I believe the paper [3] optimizes this by using linked() to skip
+ * calculating joins that are not needed / illegal.
  */
 static RelOptInfo *
 lindp_run_dp(PlannerInfo *root, LinDPHypergraph *hg, int *order, int n, bool final)

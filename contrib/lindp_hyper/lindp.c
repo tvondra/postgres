@@ -984,6 +984,8 @@ lindp_linearize_set(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_
 /*
  * Compute the connected component (over simple edges, restricted to vmask)
  * that contains the "start" vertex.
+ *
+ * Returns a bitmap with graph vertices (0 to N-1) in the component.
  */
 static Bitmapset *
 lindp_component(const LinDPHypergraph *hg, int start, const Bitmapset *vmask)

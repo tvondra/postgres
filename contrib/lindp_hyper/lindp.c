@@ -1071,30 +1071,20 @@ lindp_ikkbz_chain(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_hi
 	 * Pick the root for the remaining nodes, calculate the connected component
 	 * containing the selected root, and linearize it using IKKBZ. Add the
 	 * result to the result, and continue with the following component.
-	 *
-	 * XXX Shouldn't we be updating the rootv after processing the component,
-	 * so that in the next iteration we start with a root in 'remaining'?
 	 */
 	while (!bms_is_empty(remaining))
 	{
-		int			cstart;
 		Bitmapset  *comp;
 		Bitmapset  *visited = NULL;
 		List	   *chain;
 		ListCell   *lc;
 
-		/* Linearize the component containing the root first, then the rest. */
-		if (bms_is_member(rootv, remaining))
-			cstart = rootv;
-		else
-			cstart = lindp_pick_root(hg, remaining, -1);
-
 		/*
 		 * calculate the component (bitmask of connected nodes) starting at
 		 * the selected 'root' vertex, and linearize it
 		 */
-		comp = lindp_component(hg, cstart, remaining);
-		chain = lindp_ikkbz_solve(hg, cstart, -1, comp, &visited);
+		comp = lindp_component(hg, rootv, remaining);
+		chain = lindp_ikkbz_solve(hg, rootv, -1, comp, &visited);
 
 		foreach(lc, chain)
 		{
@@ -1109,6 +1099,9 @@ lindp_ikkbz_chain(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_hi
 
 		/* remove the whole component from the 'remaining' vmask */
 		remaining = bms_del_members(remaining, comp);
+
+		/* pick a new root node */
+		rootv = lindp_pick_root(hg, remaining, -1);
 
 		bms_free(comp);
 		bms_free(visited);

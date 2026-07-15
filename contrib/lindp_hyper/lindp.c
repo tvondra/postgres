@@ -1042,6 +1042,15 @@ lindp_component(const LinDPHypergraph *hg, int start, const Bitmapset *vmask)
  * that contains the chosen root first.  Concatenating components is exactly
  * the "cross edge" treatment: the interval DP will join them with cross
  * products.
+ *
+ * 'vmask' identifies the vertices in the component
+ *
+ * 'root_hint' is a suggested root vertex for building the linarization. The
+ * vertex is just a hint - it may not belong to the component. If it belongs
+ * to the component, it's used. Otherwise we pick the correct root with
+ * minimal cardinality.
+ *
+ * Returns an array encoding the linearization order (same length as vmask).
  */
 static int *
 lindp_ikkbz_chain(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_hint)
@@ -1050,8 +1059,20 @@ lindp_ikkbz_chain(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_hi
 	int			total = bms_num_members(vmask);
 	int		   *order = palloc_array(int, total);
 	int			pos = 0;
+
+	/* start with all nodes in the "unprocessed" part */
 	Bitmapset  *remaining = bms_copy(vmask);
 
+	/*
+	 * Process the remaining nodes, one component at a time.
+	 *
+	 * Pick the root for the remaining nodes, calculate the connected component
+	 * containing the selected root, and linearize it using IKKBZ. Add the
+	 * result to the result, and continue with the following component.
+	 *
+	 * XXX Shouldn't we be updating the rootv after processing the component,
+	 * so that in the next iteration we start with a root in 'remaining'?
+	 */
 	while (!bms_is_empty(remaining))
 	{
 		int			cstart;
@@ -1066,21 +1087,29 @@ lindp_ikkbz_chain(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_hi
 		else
 			cstart = lindp_pick_root(hg, remaining, -1);
 
+		/*
+		 * calculate the component (bitmask of connected nodes) starting at
+		 * the selected 'root' vertex, and linearize it
+		 */
 		comp = lindp_component(hg, cstart, remaining);
 		chain = lindp_ikkbz_solve(hg, cstart, -1, comp, &visited);
-		bms_free(visited);
 
 		foreach(lc, chain)
 		{
 			LinDPModule *m = (LinDPModule *) lfirst(lc);
 			ListCell   *lc2;
 
+			Assert(pos < total);
+
 			foreach(lc2, m->seq)
 				order[pos++] = lfirst_int(lc2);
 		}
 
+		/* remove the whole component from the 'remaining' vmask */
 		remaining = bms_del_members(remaining, comp);
+
 		bms_free(comp);
+		bms_free(visited);
 	}
 
 	bms_free(remaining);

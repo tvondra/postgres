@@ -1385,9 +1385,8 @@ lindp_run_dp(PlannerInfo *root, LinDPHypergraph *hg, int *order, int n, bool fin
 		{
 			int			j = i + len - 1;
 			RelOptInfo *joinrel = NULL;
-			int			k;
 
-			for (k = i; k < j; k++)
+			for (int k = i; k < j; k++)
 			{
 				RelOptInfo *lrel = best[i * n + k];
 				RelOptInfo *rrel = best[(k + 1) * n + j];

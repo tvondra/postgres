@@ -824,23 +824,6 @@ relids_have_relevant_joinclause(PlannerInfo *root, Relids relids1,
 }
 
 /*
- * Maximum number of base relations allowed in an enumerated Bloom-filter
- * build side.  Bloom filters over larger joins are unlikely to be worthwhile
- * and enumerating them would inflate planning time, so we keep this small.
- *
- * This bounds the *size* of each candidate build side, which is distinct from
- * the bloom_filter_pushdown_max GUC that bounds how many interesting filters
- * are ultimately kept per probe relation.
- */
-#define BLOOM_MAX_BUILD_RELIDS	3
-
-/*
- * Overall cap on the number of enumerated build-side relid sets, as a safety
- * valve against pathological join graphs.
- */
-#define BLOOM_MAX_BUILD_SETS	100
-
-/*
  * enumerate_bloom_filter_build_relids
  *	  Enumerate the legal join relations (and single base relations) that
  *	  could serve as the build side of a pushed-down hash-join Bloom filter.
@@ -860,7 +843,7 @@ relids_have_relevant_joinclause(PlannerInfo *root, Relids relids1,
 List *
 enumerate_bloom_filter_build_relids(PlannerInfo *root)
 {
-	List	   *levels[BLOOM_MAX_BUILD_RELIDS + 1];
+	List	  **levels;
 	List	   *result = NIL;
 	int			nbaserels = 0;
 	int			level;
@@ -874,10 +857,13 @@ enumerate_bloom_filter_build_relids(PlannerInfo *root)
 	root->bloom_build_relids = NIL;
 
 	/* Feature must be enabled to bother. */
-	if (!enable_hashjoin_bloom || bloom_filter_pushdown_max <= 0)
+	if (!enable_hashjoin_bloom || bloom_filter_pushdown_max <= 0 ||
+		bloom_filter_pushdown_max_build_relids <= 0)
 		return NIL;
 
 	/* Level 1: each base relation on its own. */
+	levels = (List **) palloc0((bloom_filter_pushdown_max_build_relids + 1) *
+							   sizeof(List *));
 	levels[1] = NIL;
 	for (i = 1; i < root->simple_rel_array_size; i++)
 	{
@@ -911,7 +897,7 @@ enumerate_bloom_filter_build_relids(PlannerInfo *root)
 	result = list_copy(levels[1]);
 
 	/* Build higher levels by adding one base relation at a time. */
-	for (level = 2; level <= BLOOM_MAX_BUILD_RELIDS; level++)
+	for (level = 2; level <= bloom_filter_pushdown_max_build_relids; level++)
 	{
 		ListCell   *lc;
 
@@ -968,7 +954,7 @@ enumerate_bloom_filter_build_relids(PlannerInfo *root)
 				levels[level] = lappend(levels[level], joinrelids);
 				result = lappend(result, joinrelids);
 
-				if (list_length(result) >= BLOOM_MAX_BUILD_SETS)
+				if (list_length(result) >= bloom_filter_pushdown_max_build_sets)
 				{
 					root->bloom_build_relids = result;
 					return result;

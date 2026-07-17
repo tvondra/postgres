@@ -1459,7 +1459,6 @@ set_indexonlyscan_references(PlannerInfo *root,
 							   index_itlist,
 							   INDEX_VAR,
 							   rtoffset,
-							   NRM_EQUAL,
 							   NUM_EXEC_QUAL((Plan *) plan));
 		}
 	}

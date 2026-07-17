@@ -516,6 +516,9 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 
 /*
  * Build the join hypergraph from the list of relations to be joined.
+ *
+ * FIXME This needs to also create hyperedges for complex join clauses, i.e.
+ * clauses referencing more than two relations (e.g. A.x + B.y = C.z).
  */
 static LinDPHypergraph *
 lindp_build_hypergraph(PlannerInfo *root, const List *initial_rels)

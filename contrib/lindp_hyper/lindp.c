@@ -31,6 +31,18 @@
  * order of the relations. The DP algorithm can still build bushy plans by
  * "parenthesizing" the subchains, but can't reorder the relations.
  *
+ * The paper [2] explains the key idea of LinDP algorithm like this:
+ *
+ *   Assume that we would know the optimal join order. Then we could take
+ *   the relative order of the relations in the optimal join tree and
+ *   linearize the search space by restricting the DP algorithm to
+ *   consider only sub-chains of that relative order. Given the optimal
+ *   relative order as input the DP phase can construct the optimal bushy
+ *   tree in O(n^3).
+ *
+ * Of course, we don't know the optimal join order (not even the relative
+ * one). But we can also use some approximation of that.
+ *
  * Selecting a good linear order is crucial for the quality of the plan.
  * This is done by the IKKBZ algorithm, which produces optimal left-deep
  * plans (for acyclic graphs with inner joins) in polynomial time.
@@ -41,6 +53,15 @@
  * far from the optimum. If the optimal tree actually is linear, the LinDP
  * algorithm will generate it. If the optimal plan is bushy, the optimal
  * linear plan is an upper bound (and LinDP finds a plan in between).
+ *
+ * Classical IKKBZ requires acyclic graphs with simple edges (between two
+ * relations). Cyclic graphs can be handled by calculating a minimum spanning
+ * tree - which is a heuristic, but works well in practice. Hyper edges (for
+ * complex join clauses or non-inner join restrictions) are much harder,
+ * becase those joins may not have any valid left-deep plans (those plans
+ * have to be bushy). Generalizing the IKKBZ to these cases is one of the
+ * key elements of paper [2], by using precedence-driven decomposition.
+ *
  *
  * The implementation follows the approach laid out in the cited papers,
  * particularly in paper [1]:
@@ -410,12 +431,21 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 	 * plans using just serial-only costs, but maybe one plan could be made
 	 * parallel.
 	 *
-	 * XXX This essentially does a pull planning for each IKKBZ seed, as it
+	 * XXX This essentially does a full planning for each IKKBZ seed, as it
 	 * runs lindp_run_dp() with exactly the same parameters as later. It
 	 * should still be relatively cheap, as the linearization fixes the join
 	 * order, though. However, it means the later lindp_run_dp() call is
 	 * entirely duplicate to what we already did when costing the seed. Maybe
 	 * we could save the work somehow?
+	 *
+	 * XXX There are multiple "distinct" cost functions used here. The IKKBZ
+	 * algorithm (lindp_linearize) requires a cost function with the ASI
+	 * (Adjacent Sequence Interchange) property, and that usually uses some
+	 * simplified cost function like C_out (it does not actually construct
+	 * paths, which is what "our" costing deals with). Then we have a cost
+	 * used to compare the linearizations for different seed rels. And finally
+	 * there's the "full" costing for paths. In principle all of those could
+	 * use different cost functions.
 	 *
 	 * XXX Maybe move to a separate function, just like lindp_ikkbz_seeds?
 	 */
@@ -519,6 +549,9 @@ lindp_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
  *
  * FIXME This needs to also create hyperedges for complex join clauses, i.e.
  * clauses referencing more than two relations (e.g. A.x + B.y = C.z).
+ *
+ * XXX Section 3.2 in paper [2] seems very relevant to the hyper edges. It
+ * talks about forward/backward hyperedges, etc.
  */
 static LinDPHypergraph *
 lindp_build_hypergraph(PlannerInfo *root, const List *initial_rels)
@@ -1136,12 +1169,19 @@ lindp_ikkbz_chain(const LinDPHypergraph *hg, const Bitmapset *vmask, int root_hi
  *
  * Returns a chain (list of LinDPModule *) headed by v.
  *
- * Note: The spanning tree is for the purpose of IKKBZ only. The linearized DP
- * (executed on the linear orders from IKKBZ) uses the full join graph.
+ * Note: The spanning tree is for the purpose of IKKBZ only. The intuition is
+ * that less selective joins are less likely to be part of the optimal join
+ * tree, and so dropping those edges is usually safe. The DP (executed on the
+ * linear orders from IKKBZ) uses the full join graph, including cycles etc.
  *
  * FIXME I'm not sure this actually generates "minimum spanning tree", i.e. a
  * spanning tree minimizing the join selectivities. I suppose that can have
- * negative impact on the linearization quality.
+ * negative impact on the linearization quality. Maybe it happens implicitly
+ * somehow (actually, the earlier comment says this happens by DFS).
+ *
+ * XXX It's probably tricky to explicitly calculate the minimum spanning tree
+ * before doing everything else, because what if the minimum edge contradicts
+ * a hyper edge in some way?
  */
 static List *
 lindp_ikkbz_solve(const LinDPHypergraph *hg, int v, int parent, const Bitmapset *vmask,
@@ -1239,6 +1279,17 @@ lindp_merge_chains(List *chains)
  * Normalize a chain: repeatedly merge any adjacent pair of modules whose
  * ranks are out of order (rank(a) > rank(b)) into a single compound module.
  * The result has non-decreasing ranks.
+ *
+ * The order of modules is determined by the precedence graph, while the
+ * rank expresses the cost/benefit ratio of performing the join. Ideally,
+ * these two things correlate, so that we do the "best" joins first. But
+ * if not, merge them into a new module with a "combined" cost-benefit.
+ *
+ * We know that both must occur next to each other in the optimal solution
+ * (cf paper [2], page 7).
+ *
+ * XXX Note that "optimal" here is with respect to the simplified ASI cost
+ * function used in the IKKBZ algorithm, like C_out.
  */
 static List *
 lindp_normalize_chain(List *chain)

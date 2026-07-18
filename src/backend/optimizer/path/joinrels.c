@@ -952,9 +952,13 @@ enumerate_bloom_filter_build_relids(PlannerInfo *root)
 	root->bloom_build_relids_valid = true;
 	root->bloom_build_relids = NIL;
 
+	/*
+	 * Join levels, indexed by number of relids (starts at 1 for baserels, same
+	 * as in standard_join_search).
+	 */
+	levels = palloc0_array(List *, (bloom_filter_pushdown_max_build_relids + 1));
+
 	/* Level 1: each base relation on its own. */
-	levels = (List **) palloc0((bloom_filter_pushdown_max_build_relids + 1) *
-							   sizeof(List *));
 	levels[1] = NIL;
 	for (i = 1; i < root->simple_rel_array_size; i++)
 	{
@@ -1046,6 +1050,10 @@ enumerate_bloom_filter_build_relids(PlannerInfo *root)
 				levels[level] = lappend(levels[level], joinrelids);
 				result = lappend(result, joinrelids);
 
+				/*
+				 * Stop generating joins once we hit the maximum allowed number
+				 * of join relids (to keep the planning effort under control).
+				 */
 				if (list_length(result) >= bloom_filter_pushdown_max_build_sets)
 				{
 					root->bloom_build_relids = result;

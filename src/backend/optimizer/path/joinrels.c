@@ -650,7 +650,7 @@ join_is_legal(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
 }
 
 /*
- * join_is_legal_relids
+ * simple_join_is_legal
  *	  Relids-only variant of join_is_legal(), used by the Bloom-filter
  *	  build-side enumeration to decide whether a set of base relations can
  *	  legally be joined into a single join relation, without building any
@@ -676,7 +676,7 @@ join_is_legal(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
  * answer only affects planning effort, never correctness).
  */
 static bool
-join_is_legal_relids(PlannerInfo *root, Relids relids1, Relids relids2,
+simple_join_is_legal(PlannerInfo *root, Relids relids1, Relids relids2,
 					 Relids joinrelids)
 {
 	SpecialJoinInfo *match_sjinfo;
@@ -854,7 +854,7 @@ join_is_legal_relids(PlannerInfo *root, Relids relids1, Relids relids2,
 }
 
 /*
- * have_relevant_joinclause_relids
+ * simple_have_relevant_joinclause
  *	  Is there a join clause (or join-order restriction) linking any base
  *	  relation in relids1 to any base relation in relids2?
  *
@@ -866,7 +866,7 @@ join_is_legal_relids(PlannerInfo *root, Relids relids1, Relids relids2,
  * under-generate candidate build sides, which is safe.
  */
 static bool
-have_relevant_joinclause_relids(PlannerInfo *root, Relids relids1,
+simple_have_relevant_joinclause(PlannerInfo *root, Relids relids1,
 								Relids relids2)
 {
 	int			r1;
@@ -939,7 +939,7 @@ have_relevant_joinclause_relids(PlannerInfo *root, Relids relids1,
  * We also don't try to generate more than BLOOM_MAX_BUILD_SETS relids sets
  * (this serves as a "budget").
  *
- * Furthermore, have_relevant_joinclause_relids considers only joins over
+ * Furthermore, simple_have_relevant_joinclause considers only joins over
  * pair-wise clauses. This will skip complex join clauses, i.e. clauses
  * referencing three or more relations.
  *
@@ -984,7 +984,7 @@ enumerate_bloom_filter_build_relids(PlannerInfo *root)
 	/*
 	 * Skip multi-rel enumeration for trivial or very large join problems, and
 	 * when there are LATERAL references (which complicate join legality in
-	 * ways join_is_legal_relids does not model yets).
+	 * ways simple_join_is_legal does not model yets).
 	 *
 	 * We still expose the level-1 singletons, so single-base-rel build sides
 	 * keep working as before; we simply don't combine them into join relations.
@@ -1027,7 +1027,7 @@ enumerate_bloom_filter_build_relids(PlannerInfo *root)
 					continue;
 
 				/* Must be connected by a join clause or order restriction. */
-				if (!have_relevant_joinclause_relids(root, oldrelids,
+				if (!simple_have_relevant_joinclause(root, oldrelids,
 													 singleton))
 					continue;
 
@@ -1050,7 +1050,7 @@ enumerate_bloom_filter_build_relids(PlannerInfo *root)
 				}
 
 				/* Must form a legal join relation. */
-				if (!join_is_legal_relids(root, oldrelids, singleton,
+				if (!simple_join_is_legal(root, oldrelids, singleton,
 										  joinrelids))
 				{
 					bms_free(joinrelids);

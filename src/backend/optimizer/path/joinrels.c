@@ -672,8 +672,12 @@ simple_lateral_relids(PlannerInfo *root, Relids relids)
 	{
 		RelOptInfo *rel = root->simple_rel_array[i];
 
-		if (rel == NULL)
-			continue;
+		/*
+		 * Relids should contain base relations only, and those should all
+		 * have a valid RelOptInfo already.
+		 */
+		Assert(rel != NULL);
+
 		result = bms_add_members(result, rel->lateral_relids);
 	}
 
@@ -698,12 +702,33 @@ simple_direct_lateral_relids(PlannerInfo *root, Relids relids)
 	{
 		RelOptInfo *rel = root->simple_rel_array[i];
 
-		if (rel == NULL)
-			continue;
+		/*
+		 * Relids should contain base relations only, and those should all
+		 * have a valid RelOptInfo already.
+		 */
+		Assert(rel != NULL);
+
 		result = bms_add_members(result, rel->direct_lateral_relids);
 	}
 
 	return bms_del_members(result, relids);
+}
+
+/*
+ * simple_min_join_parameterization
+ *		Like min_join_parameterization(), but operates on Relids directly,
+ *		without having RelOptInfo.
+ */
+static Relids
+simple_min_join_parameterization(PlannerInfo *root, Relids joinrelids,
+								 Relids lateral_relids1, Relids lateral_relids2)
+{
+	Relids		result = NULL;
+
+	result = bms_union(lateral_relids1, lateral_relids2);
+	result = bms_del_members(result, joinrelids);
+
+	return result;
 }
 
 /*
@@ -982,8 +1007,8 @@ simple_join_is_legal(PlannerInfo *root, Relids relids1, Relids relids2,
 		 * are directly on the inner side of an OJ with the joinrel, but also
 		 * ones that are indirectly so, so search to find all such rels.
 		 */
-		join_lateral_rels = bms_union(lateral_relids1, lateral_relids2);
-		join_lateral_rels = bms_del_members(join_lateral_rels, joinrelids);
+		join_lateral_rels = simple_min_join_parameterization(root, joinrelids,
+															 lateral_relids1, lateral_relids2);
 		if (join_lateral_rels)
 		{
 			Relids		join_plus_rhs = bms_copy(joinrelids);

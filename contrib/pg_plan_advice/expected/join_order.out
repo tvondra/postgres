@@ -30,24 +30,24 @@ SELECT * FROM jo_fact f
                   QUERY PLAN                  
 ----------------------------------------------
  Hash Join
-   Hash Cond: (f.dim1_id = d1.id)
+   Hash Cond: (f.dim2_id = d2.id)
    ->  Hash Join
-         Hash Cond: (f.dim2_id = d2.id)
+         Hash Cond: (f.dim1_id = d1.id)
          ->  Seq Scan on jo_fact f
-               Bloom Filter 1: keys=(dim2_id)
-               Bloom Filter 2: keys=(dim1_id)
+               Bloom Filter 1: keys=(dim1_id)
+               Bloom Filter 2: keys=(dim2_id)
          ->  Hash
                Bloom Filter 1
-               ->  Seq Scan on jo_dim2 d2
-                     Filter: (val2 = 1)
+               ->  Seq Scan on jo_dim1 d1
+                     Filter: (val1 = 1)
    ->  Hash
          Bloom Filter 2
-         ->  Seq Scan on jo_dim1 d1
-               Filter: (val1 = 1)
+         ->  Seq Scan on jo_dim2 d2
+               Filter: (val2 = 1)
  Generated Plan Advice:
-   JOIN_ORDER(f d2 d1)
-   HASH_JOIN(d2 d1)
-   SEQ_SCAN(f d2 d1)
+   JOIN_ORDER(f d1 d2)
+   HASH_JOIN(d1 d2)
+   SEQ_SCAN(f d1 d2)
    NO_GATHER(f d1 d2)
 (20 rows)
 
@@ -132,9 +132,7 @@ SELECT * FROM jo_fact f
          Hash Cond: (d1.id = f.dim1_id)
          ->  Seq Scan on jo_dim1 d1
                Filter: (val1 = 1)
-               Bloom Filter 1: keys=(id)
          ->  Hash
-               Bloom Filter 1
                ->  Seq Scan on jo_fact f
    ->  Hash
          ->  Seq Scan on jo_dim2 d2
@@ -146,7 +144,7 @@ SELECT * FROM jo_fact f
    HASH_JOIN(f d2)
    SEQ_SCAN(d1 f d2)
    NO_GATHER(f d1 d2)
-(20 rows)
+(18 rows)
 
 SET LOCAL pg_plan_advice.advice = 'join_order(f (d1 d2))';
 EXPLAIN (COSTS OFF, PLAN_ADVICE)
@@ -314,7 +312,7 @@ SELECT * FROM jo_fact f
 --------------------------------------------------------------
  Nested Loop
    Disabled: true
-   Join Filter: ((d1.id = f.dim1_id) AND (d2.id = f.dim2_id))
+   Join Filter: ((f.dim1_id = d1.id) AND (f.dim2_id = d2.id))
    ->  Nested Loop
          ->  Seq Scan on jo_dim1 d1
                Filter: (val1 = 1)

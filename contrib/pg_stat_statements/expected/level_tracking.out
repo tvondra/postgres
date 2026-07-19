@@ -189,11 +189,9 @@ EXPLAIN (COSTS OFF) MERGE INTO stats_track_tab
    ->  Hash Right Join
          Hash Cond: (stats_track_tab.x = id.id)
          ->  Seq Scan on stats_track_tab
-               Bloom Filter 1: keys=(x)
          ->  Hash
-               Bloom Filter 1
                ->  Function Scan on generate_series id
-(8 rows)
+(6 rows)
 
 EXPLAIN (COSTS OFF) SELECT 1 UNION SELECT 2;
         QUERY PLAN        
@@ -317,11 +315,9 @@ EXPLAIN (COSTS OFF) MERGE INTO stats_track_tab
    ->  Hash Right Join
          Hash Cond: (stats_track_tab.x = id.id)
          ->  Seq Scan on stats_track_tab
-               Bloom Filter 1: keys=(x)
          ->  Hash
-               Bloom Filter 1
                ->  Function Scan on generate_series id
-(8 rows)
+(6 rows)
 
 EXPLAIN (COSTS OFF) SELECT 1 UNION SELECT 2;
         QUERY PLAN        
@@ -540,11 +536,9 @@ EXPLAIN (COSTS OFF) MERGE INTO stats_track_tab
    ->  Hash Right Join
          Hash Cond: (stats_track_tab.x = id.id)
          ->  Seq Scan on stats_track_tab
-               Bloom Filter 1: keys=(x)
          ->  Hash
-               Bloom Filter 1
                ->  Function Scan on generate_series id
-(8 rows)
+(6 rows)
 
  QUERY PLAN 
 ------------
@@ -670,11 +664,9 @@ EXPLAIN (COSTS OFF) MERGE INTO stats_track_tab USING (SELECT id FROM generate_se
    ->  Hash Right Join
          Hash Cond: (stats_track_tab.x = id.id)
          ->  Seq Scan on stats_track_tab
-               Bloom Filter 1: keys=(x)
          ->  Hash
-               Bloom Filter 1
                ->  Function Scan on generate_series id
-(8 rows)
+(6 rows)
 
  QUERY PLAN 
 ------------
@@ -780,11 +772,9 @@ EXPLAIN (COSTS OFF) WITH a AS (SELECT 4) MERGE INTO stats_track_tab
    ->  Hash Right Join
          Hash Cond: (stats_track_tab.x = id.id)
          ->  Seq Scan on stats_track_tab
-               Bloom Filter 1: keys=(x)
          ->  Hash
-               Bloom Filter 1
                ->  Function Scan on generate_series id
-(8 rows)
+(6 rows)
 
 EXPLAIN (COSTS OFF) WITH a AS (select 4) SELECT 1 UNION SELECT 2;
         QUERY PLAN        
@@ -876,11 +866,9 @@ EXPLAIN (COSTS OFF) WITH a AS (SELECT 4) MERGE INTO stats_track_tab
    ->  Hash Right Join
          Hash Cond: (stats_track_tab.x = id.id)
          ->  Seq Scan on stats_track_tab
-               Bloom Filter 1: keys=(x)
          ->  Hash
-               Bloom Filter 1
                ->  Function Scan on generate_series id
-(8 rows)
+(6 rows)
 
 EXPLAIN (COSTS OFF) WITH a AS (select 4) SELECT 1 UNION SELECT 2;
         QUERY PLAN        

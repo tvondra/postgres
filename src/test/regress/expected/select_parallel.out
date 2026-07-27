@@ -1125,19 +1125,18 @@ reset role;
 explain (costs off, verbose)
   select count(*) from tenk1 a where (unique1, two) in
     (select unique1, row_number() over() from tenk1 b);
-                                          QUERY PLAN                                          
-----------------------------------------------------------------------------------------------
+                                                                                         QUERY PLAN                                                                                          
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Aggregate
    Output: count(*)
    ->  Hash Semi Join
          Hash Cond: ((a.unique1 = b.unique1) AND (a.two = (row_number() OVER w1)))
-         ->  Gather
-               Output: a.unique1, a.two
-               Workers Planned: 4
-               ->  Parallel Seq Scan on public.tenk1 a
-                     Output: a.unique1, a.two
+         ->  Seq Scan on public.tenk1 a
+               Output: a.unique1, a.unique2, a.two, a.four, a.ten, a.twenty, a.hundred, a.thousand, a.twothousand, a.fivethous, a.tenthous, a.odd, a.even, a.stringu1, a.stringu2, a.string4
+               Bloom Filter 1: keys=(a.unique1, a.two)
          ->  Hash
                Output: b.unique1, (row_number() OVER w1)
+               Bloom Filter 1
                ->  WindowAgg
                      Output: b.unique1, row_number() OVER w1
                      Window: w1 AS (ROWS UNBOUNDED PRECEDING)
@@ -1146,7 +1145,7 @@ explain (costs off, verbose)
                            Workers Planned: 4
                            ->  Parallel Index Only Scan using tenk1_unique1 on public.tenk1 b
                                  Output: b.unique1
-(19 rows)
+(18 rows)
 
 -- LIMIT/OFFSET within sub-selects can't be pushed to workers.
 explain (costs off)

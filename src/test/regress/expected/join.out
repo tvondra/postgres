@@ -4873,7 +4873,7 @@ where t1.unique1 < i4.f1;
          Hash Cond: (t2.ten = t1.tenthous)
          ->  Seq Scan on public.tenk1 t2
                Output: t2.unique1, t2.unique2, t2.two, t2.four, t2.ten, t2.twenty, t2.hundred, t2.thousand, t2.twothousand, t2.fivethous, t2.tenthous, t2.odd, t2.even, t2.stringu1, t2.stringu2, t2.string4
-               Bloom Filter 1: keys=(t2.ten)
+               Bloom Filter 1: keys=(t2.ten) expected=0.0%
          ->  Hash
                Output: t1.tenthous, t1.unique1, ((64)::information_schema.cardinal_number)
                Bloom Filter 1
@@ -7731,7 +7731,7 @@ where exists (select 1 from t t4
                                  Hash Cond: (t5.b = t4.b)
                                  ->  Seq Scan on pg_temp.t t5
                                        Output: t5.a, t5.b
-                                       Bloom Filter 1: keys=(t5.b)
+                                       Bloom Filter 1: keys=(t5.b) expected=0.5%
                                  ->  Hash
                                        Output: t4.b, t4.a
                                        Bloom Filter 1
@@ -10477,14 +10477,14 @@ select * from j1 inner join j2 on j1.id > j2.id;
 -- ensure non-unique rel is not chosen as inner
 explain (verbose, costs off)
 select * from j1 inner join j3 on j1.id = j3.id;
-              QUERY PLAN              
---------------------------------------
+                     QUERY PLAN                      
+-----------------------------------------------------
  Hash Join
    Output: j1.id, j3.id
    Hash Cond: (j1.id = j3.id)
    ->  Seq Scan on public.j1
          Output: j1.id
-         Bloom Filter 1: keys=(j1.id)
+         Bloom Filter 1: keys=(j1.id) expected=66.7%
    ->  Hash
          Output: j3.id
          Bloom Filter 1
@@ -10579,15 +10579,15 @@ select * from j1 natural join j2;
 explain (verbose, costs off)
 select * from j1
 inner join (select distinct id from j3) j3 on j1.id = j3.id;
-                  QUERY PLAN                   
------------------------------------------------
+                     QUERY PLAN                      
+-----------------------------------------------------
  Hash Join
    Output: j1.id, j3.id
    Inner Unique: true
    Hash Cond: (j1.id = j3.id)
    ->  Seq Scan on public.j1
          Output: j1.id
-         Bloom Filter 1: keys=(j1.id)
+         Bloom Filter 1: keys=(j1.id) expected=33.3%
    ->  Hash
          Output: j3.id
          Bloom Filter 1
@@ -10604,15 +10604,15 @@ inner join (select distinct id from j3) j3 on j1.id = j3.id;
 explain (verbose, costs off)
 select * from j1
 inner join (select id from j3 group by id) j3 on j1.id = j3.id;
-                  QUERY PLAN                   
------------------------------------------------
+                     QUERY PLAN                      
+-----------------------------------------------------
  Hash Join
    Output: j1.id, j3.id
    Inner Unique: true
    Hash Cond: (j1.id = j3.id)
    ->  Seq Scan on public.j1
          Output: j1.id
-         Bloom Filter 1: keys=(j1.id)
+         Bloom Filter 1: keys=(j1.id) expected=33.3%
    ->  Hash
          Output: j3.id
          Bloom Filter 1

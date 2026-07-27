@@ -1671,7 +1671,7 @@ select * from int4_tbl where
 ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Nested Loop Semi Join
    Output: int4_tbl.f1
-   Join Filter: (b.ten = CASE WHEN (ANY (int4_tbl.f1 = (hashed SubPlan any_1).col1)) THEN int4_tbl.f1 ELSE NULL::integer END)
+   Join Filter: (CASE WHEN (ANY (int4_tbl.f1 = (hashed SubPlan any_1).col1)) THEN int4_tbl.f1 ELSE NULL::integer END = b.ten)
    ->  Seq Scan on public.int4_tbl
          Output: int4_tbl.f1
    ->  Seq Scan on public.tenk1 b

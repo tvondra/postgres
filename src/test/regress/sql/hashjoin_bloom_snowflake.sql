@@ -2,7 +2,7 @@
 -- no parallel query support for now
 SET max_parallel_workers_per_gather = 0;
 
--- simple starjoin queries (fact + up to 7 dimensions)
+-- simple snowflake queries (fact + up to 7 dimensions)
 CREATE TABLE bloom_snowflake_dim_1_1 (id int, r real);
 CREATE TABLE bloom_snowflake_dim_1_2 (id int, r real);
 CREATE TABLE bloom_snowflake_dim_1 (id int, id11 int, id12 int, r real);

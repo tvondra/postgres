@@ -1081,7 +1081,7 @@ bloom_build_side_join_ratio(PlannerInfo *root, List *build_sides,
 		}
 	}
 
-	return (nrows / rel->rows);
+	return Min(1.0, Max(0.0, nrows / rel->rows));
 }
 
 /*
@@ -1115,12 +1115,8 @@ find_interesting_bloom_filters(PlannerInfo *root, RelOptInfo *rel)
 {
 	List	   *candidates;
 	List	  **clauses_by_rel; /* clauses per build relations */
-	double	   *sel_by_rel;		/* selectivity per build relation */
-	bool	   *has_rel;		/* XXX redundant with (clauses_by_rel[r] !=
-								 * NIL) */
 	List	   *build_sides;
 	List	   *result = NIL;
-	int			i;
 	ListCell   *lc;
 
 	if (!enable_hashjoin_bloom)
@@ -1167,7 +1163,6 @@ find_interesting_bloom_filters(PlannerInfo *root, RelOptInfo *rel)
 	 * referencing multiple relations? But it's fairly rare case.
 	 */
 	clauses_by_rel = palloc0_array(List *, root->simple_rel_array_size);
-	has_rel = palloc0_array(bool, root->simple_rel_array_size);
 
 	foreach(lc, candidates)
 	{
@@ -1243,67 +1238,6 @@ find_interesting_bloom_filters(PlannerInfo *root, RelOptInfo *rel)
 		Assert(rinfo != NULL);
 
 		clauses_by_rel[buildrel] = lappend(clauses_by_rel[buildrel], rinfo);
-		has_rel[buildrel] = true;
-	}
-
-	/*
-	 * Pre-compute the per-build-relation semijoin selectivity.
-	 *
-	 * A build relation may be joined by multiple clauses (e.g. when the join
-	 * matches a multi-column key). Simply multiplying the per-clause
-	 * selectivities assumes the columns are independent, which is badly wrong
-	 * for such joins - it applies the selectivity of restrictions on the
-	 * build relation once per join clause. So we first match the clauses to
-	 * foreign keys (the same way join size estimates do in
-	 * calc_joinrel_size_estimate), and estimate those using FK semantics.
-	 * Only the clauses not matched to any foreign key are then estimated the
-	 * regular way.
-	 *
-	 * XXX I think we could calculate the selectivity only for semijoin-like
-	 * joins (semijoin, inner join), and ignore the rest. We don't even need
-	 * to calculate interesting filters for those cases.
-	 */
-	sel_by_rel = palloc_array(double, root->simple_rel_array_size);
-	for (i = 0; i < root->simple_rel_array_size; i++)
-	{
-		SpecialJoinInfo sjinfo;
-		Relids		build_relids;
-		List	   *worklist;
-		List	   *clauses = NIL;
-		Selectivity fkselec;
-		ListCell   *lc2;
-
-		/* ignore relations without join clauses */
-		if (!has_rel[i])
-			continue;
-
-		build_relids = bms_make_singleton(i);
-		init_dummy_sjinfo(&sjinfo, rel->relids, build_relids);
-		sjinfo.jointype = JOIN_SEMI;
-
-		/*
-		 * Estimate clauses matching a foreign key using FK semantics. This
-		 * removes the matched clauses from the worklist (which is a copy, the
-		 * original list is left alone).
-		 */
-		worklist = clauses_by_rel[i];
-		fkselec = get_foreign_key_join_selectivity(root, rel->relids,
-												   build_relids, &sjinfo,
-												   &worklist);
-
-		/* strip RestrictInfo from the remaining clauses (see comment above) */
-		foreach(lc2, worklist)
-			clauses = lappend(clauses, ((RestrictInfo *) lfirst(lc2))->clause);
-
-		sel_by_rel[i] = fkselec * clauselist_selectivity(root, clauses, 0,
-														 JOIN_SEMI, &sjinfo);
-
-		CLAMP_PROBABILITY(sel_by_rel[i]);
-
-		list_free(clauses);
-		if (worklist != clauses_by_rel[i])
-			list_free(worklist);
-		bms_free(build_relids);
 	}
 
 	/*
@@ -1361,7 +1295,7 @@ find_interesting_bloom_filters(PlannerInfo *root, RelOptInfo *rel)
 	{
 		SimpleRelOptInfo   *brel = (SimpleRelOptInfo *) lfirst(lc); /* relids on build side */
 		List	   *clauses = NIL;
-		Selectivity sel = 1.0;
+		Selectivity sel;
 		ListCell   *lce;
 		bool		add;
 		int			r;
@@ -1377,11 +1311,7 @@ find_interesting_bloom_filters(PlannerInfo *root, RelOptInfo *rel)
 		r = -1;
 		while ((r = bms_next_member(brel->relids, r)) >= 0)
 		{
-			if (!has_rel[r])
-				continue;
-
 			clauses = list_concat(clauses, list_copy(clauses_by_rel[r]));
-			sel *= sel_by_rel[r];
 		}
 
 		/*
@@ -1407,15 +1337,7 @@ find_interesting_bloom_filters(PlannerInfo *root, RelOptInfo *rel)
 		 * smaller to the larger relation (which is one of the heuristics
 		 * suggested by the paper anyway).
 		 */
-		if (bms_membership(brel->relids) == BMS_MULTIPLE)
-		{
-			Selectivity join_ratio;
-
-			join_ratio = bloom_build_side_join_ratio(root, build_sides, rel, brel->relids);
-
-			if (join_ratio < sel)
-				sel = join_ratio;
-		}
+		sel = bloom_build_side_join_ratio(root, build_sides, rel, brel->relids);
 
 		Assert((sel >= 0.0) && (sel <= 1.0));
 

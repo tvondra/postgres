@@ -1,4 +1,5 @@
 -- tests to validate bloom filter pushdown
+-- no parallel query support for now
 SET max_parallel_workers_per_gather = 0;
 
 -- simple starjoin queries (fact + up to 7 dimensions)

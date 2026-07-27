@@ -1,4 +1,5 @@
 -- tests to validate bloom filter pushdown
+-- no parallel query support for now
 SET max_parallel_workers_per_gather = 0;
 
 -- a couple very simple join queries

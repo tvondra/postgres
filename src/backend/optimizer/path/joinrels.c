@@ -756,6 +756,9 @@ simple_min_join_parameterization(PlannerInfo *root, Relids joinrelids,
  * realizable is later rejected by compute_join_expected_filters(), so it is
  * safe for this test to be conservative (an over-permissive or over-strict
  * answer only affects planning effort, never correctness).
+ *
+ * XXX This could/shoult be adopted to use SimpleRelOptInfo instead of the
+ * raw relids (and also the lateral_relids/direct_lateral_relids fields).
  */
 static bool
 simple_join_is_legal(PlannerInfo *root, Relids relids1, Relids relids2,

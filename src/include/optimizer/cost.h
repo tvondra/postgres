@@ -33,6 +33,14 @@
 #define DEFAULT_RECURSIVE_WORKTABLE_FACTOR  10.0
 #define DEFAULT_EFFECTIVE_CACHE_SIZE  524288	/* measured in pages */
 
+/*
+ * Estimated cost of probing one Bloom filter for one tuple.  A probe (a few
+ * hash evaluations and bit tests) is cheaper than a full hash-table lookup,
+ * so we charge less than cpu_operator_cost per probe; the bottom-up Bloom
+ * filter paper likewise sets its per-filter probe cost below a hash probe.
+ */
+#define BLOOM_FILTER_PROBE_COST (cpu_operator_cost * 0.5)
+
 typedef enum
 {
 	CONSTRAINT_EXCLUSION_OFF,	/* do not use c_e */
@@ -81,22 +89,23 @@ extern PGDLLIMPORT int constraint_exclusion;
 extern double index_pages_fetched(double tuples_fetched, BlockNumber pages,
 								  double index_pages, PlannerInfo *root);
 extern void cost_seqscan(Path *path, PlannerInfo *root, RelOptInfo *baserel,
-						 ParamPathInfo *param_info);
+						 ParamPathInfo *param_info, List *filters);
 extern void cost_samplescan(Path *path, PlannerInfo *root, RelOptInfo *baserel,
-							ParamPathInfo *param_info);
+							ParamPathInfo *param_info, List *filters);
 extern void cost_index(IndexPath *path, PlannerInfo *root,
-					   double loop_count, bool partial_path);
+					   double loop_count, bool partial_path, List *filters);
 extern void cost_bitmap_heap_scan(Path *path, PlannerInfo *root, RelOptInfo *baserel,
-								  ParamPathInfo *param_info,
+								  ParamPathInfo *param_info, List *filters,
 								  Path *bitmapqual, double loop_count);
 extern void cost_bitmap_and_node(BitmapAndPath *path, PlannerInfo *root);
 extern void cost_bitmap_or_node(BitmapOrPath *path, PlannerInfo *root);
 extern void cost_bitmap_tree_node(Path *path, Cost *cost, Selectivity *selec);
 extern void cost_tidscan(Path *path, PlannerInfo *root,
-						 RelOptInfo *baserel, List *tidquals, ParamPathInfo *param_info);
+						 RelOptInfo *baserel, List *tidquals,
+						 ParamPathInfo *param_info, List *filters);
 extern void cost_tidrangescan(Path *path, PlannerInfo *root,
 							  RelOptInfo *baserel, List *tidrangequals,
-							  ParamPathInfo *param_info);
+							  ParamPathInfo *param_info, List *filters);
 extern void cost_subqueryscan(SubqueryScanPath *path, PlannerInfo *root,
 							  RelOptInfo *baserel, ParamPathInfo *param_info,
 							  bool trivial_pathtarget);

@@ -34,14 +34,12 @@ SELECT * FROM jo_fact f
    ->  Hash Join
          Hash Cond: (f.dim1_id = d1.id)
          ->  Seq Scan on jo_fact f
-               Bloom Filter 2: keys=(dim2_id)
-               Bloom Filter 1: keys=(dim1_id)
+               Bloom Filter 1: keys=(dim2_id)
          ->  Hash
-               Bloom Filter 1
                ->  Seq Scan on jo_dim1 d1
                      Filter: (val1 = 1)
    ->  Hash
-         Bloom Filter 2
+         Bloom Filter 1
          ->  Seq Scan on jo_dim2 d2
                Filter: (val2 = 1)
  Generated Plan Advice:
@@ -49,7 +47,7 @@ SELECT * FROM jo_fact f
    HASH_JOIN(d1 d2)
    SEQ_SCAN(f d1 d2)
    NO_GATHER(f d1 d2)
-(20 rows)
+(18 rows)
 
 -- Force a few different join orders. Some of these are very inefficient,
 -- but the planner considers them all viable.
@@ -67,14 +65,12 @@ SELECT * FROM jo_fact f
    ->  Hash Join
          Hash Cond: (f.dim1_id = d1.id)
          ->  Seq Scan on jo_fact f
-               Bloom Filter 2: keys=(dim2_id)
-               Bloom Filter 1: keys=(dim1_id)
+               Bloom Filter 1: keys=(dim2_id)
          ->  Hash
-               Bloom Filter 1
                ->  Seq Scan on jo_dim1 d1
                      Filter: (val1 = 1)
    ->  Hash
-         Bloom Filter 2
+         Bloom Filter 1
          ->  Seq Scan on jo_dim2 d2
                Filter: (val2 = 1)
  Supplied Plan Advice:
@@ -84,7 +80,7 @@ SELECT * FROM jo_fact f
    HASH_JOIN(d1 d2)
    SEQ_SCAN(f d1 d2)
    NO_GATHER(f d1 d2)
-(22 rows)
+(20 rows)
 
 SET LOCAL pg_plan_advice.advice = 'join_order(f d2 d1)';
 EXPLAIN (COSTS OFF, PLAN_ADVICE)
@@ -100,13 +96,11 @@ SELECT * FROM jo_fact f
          Hash Cond: (f.dim2_id = d2.id)
          ->  Seq Scan on jo_fact f
                Bloom Filter 1: keys=(dim2_id)
-               Bloom Filter 2: keys=(dim1_id)
          ->  Hash
                Bloom Filter 1
                ->  Seq Scan on jo_dim2 d2
                      Filter: (val2 = 1)
    ->  Hash
-         Bloom Filter 2
          ->  Seq Scan on jo_dim1 d1
                Filter: (val1 = 1)
  Supplied Plan Advice:
@@ -116,7 +110,7 @@ SELECT * FROM jo_fact f
    HASH_JOIN(d2 d1)
    SEQ_SCAN(f d2 d1)
    NO_GATHER(f d1 d2)
-(22 rows)
+(20 rows)
 
 SET LOCAL pg_plan_advice.advice = 'join_order(d1 f d2)';
 EXPLAIN (COSTS OFF, PLAN_ADVICE)

@@ -460,71 +460,101 @@ expected_filters_selectivity(List *filters)
 }
 
 /*
+ * expected_filters_probes
+ *	  Expected number of Bloom-filter probes per input tuple for a filter set.
+ *
+ * Filters are probed most selective first (see find_bloom_filter_combinations
+ * and, at execution, ExecInitBloomFilters), and a tuple rejected by one filter
+ * is not probed by the later ones.  So the expected number of probes per input
+ * tuple is the sum, over the filters, of the fraction of tuples that survive
+ * all earlier filters -- far fewer than one probe per filter once the filters
+ * are selective.
+ */
+double
+expected_filters_probes(List *filters)
+{
+	double		probes = 0.0;
+	double		surviving = 1.0;
+	ListCell   *lc;
+
+	foreach(lc, filters)
+	{
+		ExpectedFilter *f = (ExpectedFilter *) lfirst(lc);
+
+		probes += surviving;
+		surviving *= f->selectivity;
+	}
+
+	return probes;
+}
+
+/*
+ * apply_expected_filters
+ *	  Attach expected filters to a path costed outside core -- a CustomScan
+ *	  provider's -- and adjust its estimates for them.
+ *
+ * Core's own scan cost functions take the filters as an argument and apply them
+ * themselves, charging the probes on the count of tuples they fetch (the
+ * filters are probed before the scan's own quals; see ExecScanExtended).  We
+ * cannot do that for a path we did not cost, so the probes are charged on
+ * path->rows, which understates them when the provider's scan has quals of its
+ * own.  A provider that knows better should cost its path itself and just set
+ * expected_filters.
+ */
+void
+apply_expected_filters(Path *path, List *filters)
+{
+	if (filters == NIL)
+		return;
+
+	path->total_cost += expected_filters_probes(filters) *
+		BLOOM_FILTER_PROBE_COST * path->rows;
+	path->rows = clamp_row_est(path->rows *
+							   expected_filters_selectivity(filters));
+	path->expected_filters = filters;
+}
+
+/*
  * create_filtered_scan_path
- *	  Build a copy of a base-relation scan path that additionally expects the
- *	  given set of pushed-down Bloom filters.
+ *	  Build a copy of an IndexPath that additionally expects the given set of
+ *	  pushed-down Bloom filters.
  *
  * The clone shares all substructure with the original path (parent,
- * pathtarget, clauses, etc.); only the rows estimate is reduced to reflect
- * the filters' combined selectivity, and expected_filters is set.  This is
- * safe because create_plan() treats the clone identically to the original
- * (it ignores expected_filters), and add_path() may freely pfree the clone.
+ * pathtarget, indexclauses, pathkeys, etc.).  We re-cost it with cost_index()
+ * rather than adjusting the copied costs: cost_index() takes the filters like
+ * the other scan cost functions do, and charges the probes on the tuples the
+ * index fetches.  It recomputes only costs, so the indexclauses and pathkeys we
+ * just copied are reused as before.  This is safe because create_plan() treats
+ * the clone identically to the original (it ignores expected_filters), and
+ * add_path() may freely pfree the clone.
  *
- * Only the plain scan path node types that can receive a pushed-down filter
- * are supported (matching find_bloom_filter_recipient in createplan.c).
- * Returns NULL for unsupported path types.
- *
- * XXX This should probably adjust the CPU cost in some way. It assumes the
- * filter checks are free, which does not seem right.
+ * Other base-relation scan path types are built directly by their real
+ * constructors with the filters passed in (see create_seqscan_path,
+ * create_bitmap_heap_path, etc.); IndexPath is the exception because
+ * create_index_path() would re-derive its indexclauses/pathkeys from scratch
+ * -- see the comment on the T_IndexScan/T_IndexOnlyScan case in
+ * reparameterize_path() for the same tradeoff made there.
  */
 Path *
 create_filtered_scan_path(PlannerInfo *root, Path *subpath, List *filters)
 {
-	Path	   *newpath;
-	size_t		sz;
+	IndexPath  *newpath;
 
-	switch (nodeTag(subpath))
-	{
-		case T_Path:
-			/* plain seqscan/samplescan etc. */
-			sz = sizeof(Path);
-			break;
-		case T_IndexPath:
-			sz = sizeof(IndexPath);
-			break;
-		case T_BitmapHeapPath:
-			sz = sizeof(BitmapHeapPath);
-			break;
-		case T_TidPath:
-			sz = sizeof(TidPath);
-			break;
-		case T_TidRangePath:
-			sz = sizeof(TidRangePath);
-			break;
-		case T_CustomPath:
+	Assert(IsA(subpath, IndexPath));
 
-			/*
-			 * A base-relation CustomScan provider that advertised
-			 * CUSTOMPATH_SUPPORT_BLOOM_FILTERS can receive a pushed-down
-			 * filter and apply it in its own scan loop
-			 * .generate_expected_filter_paths() only offers such paths here,
-			 * so we need not re-check the flag.
-			 */
-			sz = sizeof(CustomPath);
-			break;
-		default:
-			/* unsupported scan path type */
-			return NULL;
-	}
+	newpath = (IndexPath *) palloc(sizeof(IndexPath));
+	memcpy(newpath, subpath, sizeof(IndexPath));
 
-	newpath = (Path *) palloc(sz);
-	memcpy(newpath, subpath, sz);
+	newpath->path.expected_filters = filters;
 
-	newpath->expected_filters = filters;
-	newpath->rows = clamp_row_est(subpath->rows *
-								  expected_filters_selectivity(filters));
+	/*
+	 * generate_expected_filter_paths() only offers us unparameterized paths,
+	 * so the loop count is 1.0 (see get_loop_count).
+	 */
+	Assert(subpath->param_info == NULL);
+	cost_index(newpath, root, 1.0, subpath->parallel_workers > 0, filters);
 
-	return newpath;
+	return (Path *) newpath;
 }
 
 /*
@@ -1254,7 +1284,8 @@ add_partial_path_precheck(RelOptInfo *parent_rel, int disabled_nodes,
  */
 Path *
 create_seqscan_path(PlannerInfo *root, RelOptInfo *rel,
-					Relids required_outer, int parallel_workers)
+					Relids required_outer, int parallel_workers,
+					List *filters)
 {
 	Path	   *pathnode = makeNode(Path);
 
@@ -1268,7 +1299,9 @@ create_seqscan_path(PlannerInfo *root, RelOptInfo *rel,
 	pathnode->parallel_workers = parallel_workers;
 	pathnode->pathkeys = NIL;	/* seqscan has unordered result */
 
-	cost_seqscan(pathnode, root, rel, pathnode->param_info);
+	pathnode->expected_filters = filters;
+
+	cost_seqscan(pathnode, root, rel, pathnode->param_info, filters);
 
 	return pathnode;
 }
@@ -1278,7 +1311,8 @@ create_seqscan_path(PlannerInfo *root, RelOptInfo *rel,
  *	  Creates a path node for a sampled table scan.
  */
 Path *
-create_samplescan_path(PlannerInfo *root, RelOptInfo *rel, Relids required_outer)
+create_samplescan_path(PlannerInfo *root, RelOptInfo *rel,
+					   Relids required_outer, List *filters)
 {
 	Path	   *pathnode = makeNode(Path);
 
@@ -1292,7 +1326,9 @@ create_samplescan_path(PlannerInfo *root, RelOptInfo *rel, Relids required_outer
 	pathnode->parallel_workers = 0;
 	pathnode->pathkeys = NIL;	/* samplescan has unordered result */
 
-	cost_samplescan(pathnode, root, rel, pathnode->param_info);
+	pathnode->expected_filters = filters;
+
+	cost_samplescan(pathnode, root, rel, pathnode->param_info, filters);
 
 	return pathnode;
 }
@@ -1350,7 +1386,8 @@ create_index_path(PlannerInfo *root,
 	pathnode->indexorderbycols = indexorderbycols;
 	pathnode->indexscandir = indexscandir;
 
-	cost_index(pathnode, root, loop_count, partial_path);
+	cost_index(pathnode, root, loop_count, partial_path,
+			   pathnode->path.expected_filters);
 
 	/*
 	 * cost_index will set disabled_nodes to 1 if this rel is not allowed to
@@ -1381,7 +1418,8 @@ create_bitmap_heap_path(PlannerInfo *root,
 						Path *bitmapqual,
 						Relids required_outer,
 						double loop_count,
-						int parallel_degree)
+						int parallel_degree,
+						List *filters)
 {
 	BitmapHeapPath *pathnode = makeNode(BitmapHeapPath);
 
@@ -1397,8 +1435,11 @@ create_bitmap_heap_path(PlannerInfo *root,
 
 	pathnode->bitmapqual = bitmapqual;
 
+	pathnode->path.expected_filters = filters;
+
 	cost_bitmap_heap_scan(&pathnode->path, root, rel,
 						  pathnode->path.param_info,
+						  filters,
 						  bitmapqual, loop_count);
 
 	return pathnode;
@@ -1514,7 +1555,7 @@ create_bitmap_or_path(PlannerInfo *root,
  */
 TidPath *
 create_tidscan_path(PlannerInfo *root, RelOptInfo *rel, List *tidquals,
-					Relids required_outer)
+					Relids required_outer, List *filters)
 {
 	TidPath    *pathnode = makeNode(TidPath);
 
@@ -1530,8 +1571,10 @@ create_tidscan_path(PlannerInfo *root, RelOptInfo *rel, List *tidquals,
 
 	pathnode->tidquals = tidquals;
 
+	pathnode->path.expected_filters = filters;
+
 	cost_tidscan(&pathnode->path, root, rel, tidquals,
-				 pathnode->path.param_info);
+				 pathnode->path.param_info, filters);
 
 	return pathnode;
 }
@@ -1544,7 +1587,7 @@ create_tidscan_path(PlannerInfo *root, RelOptInfo *rel, List *tidquals,
 TidRangePath *
 create_tidrangescan_path(PlannerInfo *root, RelOptInfo *rel,
 						 List *tidrangequals, Relids required_outer,
-						 int parallel_workers)
+						 int parallel_workers, List *filters)
 {
 	TidRangePath *pathnode = makeNode(TidRangePath);
 
@@ -1560,8 +1603,10 @@ create_tidrangescan_path(PlannerInfo *root, RelOptInfo *rel,
 
 	pathnode->tidrangequals = tidrangequals;
 
+	pathnode->path.expected_filters = filters;
+
 	cost_tidrangescan(&pathnode->path, root, rel, tidrangequals,
-					  pathnode->path.param_info);
+					  pathnode->path.param_info, filters);
 
 	return pathnode;
 }
@@ -4178,9 +4223,9 @@ reparameterize_path(PlannerInfo *root, Path *path,
 	switch (path->pathtype)
 	{
 		case T_SeqScan:
-			return create_seqscan_path(root, rel, required_outer, 0);
+			return create_seqscan_path(root, rel, required_outer, 0, NIL);
 		case T_SampleScan:
-			return create_samplescan_path(root, rel, required_outer);
+			return create_samplescan_path(root, rel, required_outer, NIL);
 		case T_IndexScan:
 		case T_IndexOnlyScan:
 			{
@@ -4197,7 +4242,8 @@ reparameterize_path(PlannerInfo *root, Path *path,
 				memcpy(newpath, ipath, sizeof(IndexPath));
 				newpath->path.param_info =
 					get_baserel_parampathinfo(root, rel, required_outer);
-				cost_index(newpath, root, loop_count, false);
+				cost_index(newpath, root, loop_count, false,
+						   newpath->path.expected_filters);
 				return (Path *) newpath;
 			}
 		case T_BitmapHeapScan:
@@ -4208,7 +4254,7 @@ reparameterize_path(PlannerInfo *root, Path *path,
 														rel,
 														bpath->bitmapqual,
 														required_outer,
-														loop_count, 0);
+														loop_count, 0, NIL);
 			}
 		case T_SubqueryScan:
 			{

@@ -306,7 +306,8 @@ clamp_width_est(int64 tuple_width)
  */
 void
 cost_seqscan(Path *path, PlannerInfo *root,
-			 RelOptInfo *baserel, ParamPathInfo *param_info)
+			 RelOptInfo *baserel, ParamPathInfo *param_info,
+			 List *filters)
 {
 	Cost		startup_cost = 0;
 	Cost		cpu_run_cost;
@@ -326,6 +327,15 @@ cost_seqscan(Path *path, PlannerInfo *root,
 	else
 		path->rows = baserel->rows;
 
+	/*
+	 * Expected Bloom filters cut that down further.  The surviving fraction is
+	 * a property of the filter set, so paths of the same parameterization
+	 * expecting the same filters agree on their rows.
+	 */
+	if (filters != NIL)
+		path->rows = clamp_row_est(path->rows *
+								   expected_filters_selectivity(filters));
+
 	/* fetch estimated page cost for tablespace containing table */
 	get_tablespace_page_costs(baserel->reltablespace,
 							  NULL,
@@ -341,6 +351,15 @@ cost_seqscan(Path *path, PlannerInfo *root,
 
 	startup_cost += qpqual_cost.startup;
 	cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
+
+	/*
+	 * Pushed-down Bloom filters are probed before the scan's own quals (see
+	 * ExecScanExtended), so the probes are paid on every tuple fetched.
+	 */
+	if (filters != NIL)
+		cpu_per_tuple += expected_filters_probes(filters) *
+			BLOOM_FILTER_PROBE_COST;
+
 	cpu_run_cost = cpu_per_tuple * baserel->tuples;
 	/* tlist eval costs are paid per output row, not per tuple scanned */
 	startup_cost += path->pathtarget->cost.startup;
@@ -385,7 +404,8 @@ cost_seqscan(Path *path, PlannerInfo *root,
  */
 void
 cost_samplescan(Path *path, PlannerInfo *root,
-				RelOptInfo *baserel, ParamPathInfo *param_info)
+				RelOptInfo *baserel, ParamPathInfo *param_info,
+				List *filters)
 {
 	Cost		startup_cost = 0;
 	Cost		run_cost = 0;
@@ -412,6 +432,15 @@ cost_samplescan(Path *path, PlannerInfo *root,
 		path->rows = param_info->ppi_rows;
 	else
 		path->rows = baserel->rows;
+
+	/*
+	 * Expected Bloom filters cut that down further.  The surviving fraction is
+	 * a property of the filter set, so paths of the same parameterization
+	 * expecting the same filters agree on their rows.
+	 */
+	if (filters != NIL)
+		path->rows = clamp_row_est(path->rows *
+								   expected_filters_selectivity(filters));
 
 	/* fetch estimated page cost for tablespace containing table */
 	get_tablespace_page_costs(baserel->reltablespace,
@@ -440,6 +469,15 @@ cost_samplescan(Path *path, PlannerInfo *root,
 
 	startup_cost += qpqual_cost.startup;
 	cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
+
+	/*
+	 * Pushed-down Bloom filters are probed before the scan's own quals (see
+	 * ExecScanExtended), so the probes are paid on every tuple fetched.
+	 */
+	if (filters != NIL)
+		cpu_per_tuple += expected_filters_probes(filters) *
+			BLOOM_FILTER_PROBE_COST;
+
 	run_cost += cpu_per_tuple * baserel->tuples;
 	/* tlist eval costs are paid per output row, not per tuple scanned */
 	startup_cost += path->pathtarget->cost.startup;
@@ -581,7 +619,7 @@ cost_gather_merge(GatherMergePath *path, PlannerInfo *root,
  */
 void
 cost_index(IndexPath *path, PlannerInfo *root, double loop_count,
-		   bool partial_path)
+		   bool partial_path, List *filters)
 {
 	IndexOptInfo *index = path->indexinfo;
 	RelOptInfo *baserel = index->rel;
@@ -637,6 +675,15 @@ cost_index(IndexPath *path, PlannerInfo *root, double loop_count,
 		qpquals = extract_nonindex_conditions(path->indexinfo->indrestrictinfo,
 											  path->indexclauses);
 	}
+
+	/*
+	 * Expected Bloom filters cut that down further.  The surviving fraction is
+	 * a property of the filter set, so paths of the same parameterization
+	 * expecting the same filters agree on their rows.
+	 */
+	if (filters != NIL)
+		path->path.rows = clamp_row_est(path->path.rows *
+										expected_filters_selectivity(filters));
 
 	/* is this scan type disabled? */
 	enable_mask = (indexonly ? PGS_INDEXONLYSCAN : PGS_INDEXSCAN)
@@ -833,6 +880,14 @@ cost_index(IndexPath *path, PlannerInfo *root, double loop_count,
 
 	startup_cost += qpqual_cost.startup;
 	cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
+
+	/*
+	 * Pushed-down Bloom filters are probed before the scan's own quals (see
+	 * ExecScanExtended), so the probes are paid on every tuple fetched.
+	 */
+	if (filters != NIL)
+		cpu_per_tuple += expected_filters_probes(filters) *
+			BLOOM_FILTER_PROBE_COST;
 
 	cpu_run_cost += cpu_per_tuple * tuples_fetched;
 
@@ -1048,7 +1103,7 @@ get_indexpath_pages(Path *bitmapqual)
  */
 void
 cost_bitmap_heap_scan(Path *path, PlannerInfo *root, RelOptInfo *baserel,
-					  ParamPathInfo *param_info,
+					  ParamPathInfo *param_info, List *filters,
 					  Path *bitmapqual, double loop_count)
 {
 	Cost		startup_cost = 0;
@@ -1075,6 +1130,15 @@ cost_bitmap_heap_scan(Path *path, PlannerInfo *root, RelOptInfo *baserel,
 		path->rows = param_info->ppi_rows;
 	else
 		path->rows = baserel->rows;
+
+	/*
+	 * Expected Bloom filters cut that down further.  The surviving fraction is
+	 * a property of the filter set, so paths of the same parameterization
+	 * expecting the same filters agree on their rows.
+	 */
+	if (filters != NIL)
+		path->rows = clamp_row_est(path->rows *
+								   expected_filters_selectivity(filters));
 
 	pages_fetched = compute_bitmap_pages(root, baserel, bitmapqual,
 										 loop_count, &indexTotalCost,
@@ -1117,6 +1181,15 @@ cost_bitmap_heap_scan(Path *path, PlannerInfo *root, RelOptInfo *baserel,
 
 	startup_cost += qpqual_cost.startup;
 	cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
+
+	/*
+	 * Pushed-down Bloom filters are probed before the scan's own quals (see
+	 * ExecScanExtended), so the probes are paid on every tuple fetched.
+	 */
+	if (filters != NIL)
+		cpu_per_tuple += expected_filters_probes(filters) *
+			BLOOM_FILTER_PROBE_COST;
+
 	cpu_run_cost = cpu_per_tuple * tuples_fetched;
 
 	/* Adjust costing for parallelism, if used. */
@@ -1287,7 +1360,8 @@ cost_bitmap_or_node(BitmapOrPath *path, PlannerInfo *root)
  */
 void
 cost_tidscan(Path *path, PlannerInfo *root,
-			 RelOptInfo *baserel, List *tidquals, ParamPathInfo *param_info)
+			 RelOptInfo *baserel, List *tidquals, ParamPathInfo *param_info,
+			 List *filters)
 {
 	Cost		startup_cost = 0;
 	Cost		run_cost = 0;
@@ -1309,6 +1383,15 @@ cost_tidscan(Path *path, PlannerInfo *root,
 		path->rows = param_info->ppi_rows;
 	else
 		path->rows = baserel->rows;
+
+	/*
+	 * Expected Bloom filters cut that down further.  The surviving fraction is
+	 * a property of the filter set, so paths of the same parameterization
+	 * expecting the same filters agree on their rows.
+	 */
+	if (filters != NIL)
+		path->rows = clamp_row_est(path->rows *
+								   expected_filters_selectivity(filters));
 
 	/* Count how many tuples we expect to retrieve */
 	ntuples = 0;
@@ -1366,6 +1449,15 @@ cost_tidscan(Path *path, PlannerInfo *root,
 	startup_cost += qpqual_cost.startup + tid_qual_cost.per_tuple;
 	cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple -
 		tid_qual_cost.per_tuple;
+
+	/*
+	 * Pushed-down Bloom filters are probed before the scan's own quals (see
+	 * ExecScanExtended), so the probes are paid on every tuple fetched.
+	 */
+	if (filters != NIL)
+		cpu_per_tuple += expected_filters_probes(filters) *
+			BLOOM_FILTER_PROBE_COST;
+
 	run_cost += cpu_per_tuple * ntuples;
 
 	/* tlist eval costs are paid per output row, not per tuple scanned */
@@ -1398,7 +1490,7 @@ cost_tidscan(Path *path, PlannerInfo *root,
 void
 cost_tidrangescan(Path *path, PlannerInfo *root,
 				  RelOptInfo *baserel, List *tidrangequals,
-				  ParamPathInfo *param_info)
+				  ParamPathInfo *param_info, List *filters)
 {
 	Selectivity selectivity;
 	double		pages;
@@ -1423,6 +1515,15 @@ cost_tidrangescan(Path *path, PlannerInfo *root,
 		path->rows = param_info->ppi_rows;
 	else
 		path->rows = baserel->rows;
+
+	/*
+	 * Expected Bloom filters cut that down further.  The surviving fraction is
+	 * a property of the filter set, so paths of the same parameterization
+	 * expecting the same filters agree on their rows.
+	 */
+	if (filters != NIL)
+		path->rows = clamp_row_est(path->rows *
+								   expected_filters_selectivity(filters));
 
 	/* Count how many tuples and pages we expect to scan */
 	selectivity = clauselist_selectivity(root, tidrangequals, baserel->relid,
@@ -1470,6 +1571,15 @@ cost_tidrangescan(Path *path, PlannerInfo *root,
 	startup_cost = qpqual_cost.startup + tid_qual_cost.per_tuple;
 	cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple -
 		tid_qual_cost.per_tuple;
+
+	/*
+	 * Pushed-down Bloom filters are probed before the scan's own quals (see
+	 * ExecScanExtended), so the probes are paid on every tuple fetched.
+	 */
+	if (filters != NIL)
+		cpu_per_tuple += expected_filters_probes(filters) *
+			BLOOM_FILTER_PROBE_COST;
+
 	cpu_run_cost = cpu_per_tuple * ntuples;
 
 	/* tlist eval costs are paid per output row, not per tuple scanned */

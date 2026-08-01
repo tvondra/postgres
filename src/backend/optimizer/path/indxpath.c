@@ -344,7 +344,7 @@ create_index_paths(PlannerInfo *root, RelOptInfo *rel)
 
 		bitmapqual = choose_bitmap_and(root, rel, bitindexpaths);
 		bpath = create_bitmap_heap_path(root, rel, bitmapqual,
-										rel->lateral_relids, 1.0, 0);
+										rel->lateral_relids, 1.0, 0, NIL);
 		add_path(rel, (Path *) bpath);
 
 		/* create a partial bitmap heap path */
@@ -411,7 +411,7 @@ create_index_paths(PlannerInfo *root, RelOptInfo *rel)
 			required_outer = PATH_REQ_OUTER(bitmapqual);
 			loop_count = get_loop_count(root, rel->relid, required_outer);
 			bpath = create_bitmap_heap_path(root, rel, bitmapqual,
-											required_outer, loop_count, 0);
+											required_outer, loop_count, 0, NIL);
 			add_path(rel, (Path *) bpath);
 		}
 	}
@@ -2029,6 +2029,7 @@ bitmap_scan_cost_est(PlannerInfo *root, RelOptInfo *rel, Path *ipath)
 	bpath.path.parent = rel;
 	bpath.path.pathtarget = rel->reltarget;
 	bpath.path.param_info = ipath->param_info;
+	bpath.path.expected_filters = NIL;
 	bpath.path.pathkeys = NIL;
 	bpath.bitmapqual = ipath;
 
@@ -2041,6 +2042,7 @@ bitmap_scan_cost_est(PlannerInfo *root, RelOptInfo *rel, Path *ipath)
 	/* Now we can do cost_bitmap_heap_scan */
 	cost_bitmap_heap_scan(&bpath.path, root, rel,
 						  bpath.path.param_info,
+						  NIL,
 						  ipath,
 						  get_loop_count(root, rel->relid,
 										 PATH_REQ_OUTER(ipath)));

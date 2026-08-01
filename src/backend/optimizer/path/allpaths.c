@@ -877,7 +877,7 @@ set_plain_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 		return;
 
 	/* Consider sequential scan */
-	add_path(rel, create_seqscan_path(root, rel, required_outer, 0));
+	add_path(rel, create_seqscan_path(root, rel, required_outer, 0, NIL));
 
 	/* If appropriate, consider parallel sequential scan */
 	if (rel->consider_parallel && required_outer == NULL)
@@ -904,7 +904,7 @@ create_plain_partial_paths(PlannerInfo *root, RelOptInfo *rel)
 		return;
 
 	/* Add an unordered partial path based on a parallel sequential scan. */
-	add_partial_path(rel, create_seqscan_path(root, rel, NULL, parallel_workers));
+	add_partial_path(rel, create_seqscan_path(root, rel, NULL, parallel_workers, NIL));
 }
 
 /*
@@ -1466,34 +1466,27 @@ find_interesting_bloom_filters(PlannerInfo *root, RelOptInfo *rel)
  *		Generate additional scan paths that anticipate one or more pushed-down
  *		Bloom filters.
  *
- * For each non-empty subset of the interesting filters, we clone every eligible
- * existing scan path, reducing its row estimate by the combined selectivity and
- * attaching the corresponding ExpectedFilter nodes.
+ * For each combination of the interesting filters (see
+ * find_bloom_filter_combinations), we build a new path via the real
+ * constructor for that path's type, passing the filters in so the scan cost
+ * function charges a per-tuple probe cost (on the tuples it fetches) and
+ * shrinks the row estimate by the filters' combined selectivity.
+ *
+ * IndexPath is the one exception: it goes through create_filtered_scan_path,
+ * which clones the source path, because create_index_path() would re-derive
+ * its indexclauses/pathkeys from scratch for no benefit (see the comment on
+ * create_filtered_scan_path).
  *
  * These paths are kept alongside the regular paths (add_path keeps paths with
  * differing expected_filters) and are consumed by join path generation;
  * set_cheapest never selects them.
  *
- * XXX We must not clone paths that already have expected filters.
- *
- * XXX The cloning is a rather dirty way to copy paths. It does not readjust the
- * cost in a reasonable way. For example custom scans could do something smart
- * with the filters, so it should have a chance to deal with that. A cleaner
- * solution might be to actually pass the filters to the various "create"
- * function, like create_seqscan_path/... For CustomScan nodes we can probably
- * do most of this in the set_rel_pathlist_hook, somewhere. Maybe that needs
- * some helper methods, though. And maybe it will need to pass some of the info
- * through the callbacks? Not sure, someone has to try that.
- *
- * XXX This may need some major changes to work with custom scans. Right now we
- * only consider filters exactly matching the hash keys, so if the hashjoin is
- * on (t1.a = t2.a AND t1.b = t2.b), then the filter will be on (a,b). But a
- * custom scan may prefer "split" filters on each column independently. We'd
- * need a way for the custom scan to indicate that, and we'd need to apply this
- * only to the "matching" scan paths (and not to any other scan paths). But
- * we only look at the paths after selecting the "interesting" filters, so we'd
- * need to rethink that - we'd need to make the "interesting" filters specific
- * to a path, or something like that.
+ * CustomPath is not handled here at all.  Core cannot safely copy or construct
+ * a CustomPath, so a provider that wants filter-aware CustomPaths must build
+ * them itself, inside its own set_rel_pathlist_hook, by calling
+ * find_bloom_filter_combinations() directly and costing the result however it
+ * likes -- with real smart costing, or by calling apply_expected_filters() on
+ * its own freshly-built CustomPath if it doesn't want to be smart.
  */
 static void
 generate_expected_filter_paths(PlannerInfo *root, RelOptInfo *rel)
@@ -1531,19 +1524,6 @@ generate_expected_filter_paths(PlannerInfo *root, RelOptInfo *rel)
 			case T_TidPath:
 			case T_TidRangePath:
 				basepaths = lappend(basepaths, path);
-				break;
-			case T_CustomPath:
-
-				/*
-				 * A base-relation CustomScan can receive a pushed-down
-				 * filter, but only if the provider advertised that it knows
-				 * how to consume one (it probes the filter itself inside its
-				 * scan loop; see find_bloom_filter_recipient in createplan.c
-				 * and ExecInitCustomScan).  Providers that don't opt in, like
-				 * heap, are unaffected.
-				 */
-				if (((CustomPath *) path)->flags & CUSTOMPATH_SUPPORT_BLOOM_FILTERS)
-					basepaths = lappend(basepaths, path);
 				break;
 			default:
 				break;
@@ -1614,12 +1594,49 @@ generate_expected_filter_paths(PlannerInfo *root, RelOptInfo *rel)
 		 * list.  That's safe: the list is never modified, and add_path() only
 		 * ever frees the Path node itself, not its expected_filters.
 		 */
-		foreach(lc, basepaths)
+		foreach_ptr(Path, base, basepaths)
 		{
-			Path	   *base = (Path *) lfirst(lc);
-			Path	   *newpath;
+			Path	   *newpath = NULL;
 
-			newpath = create_filtered_scan_path(root, base, subset);
+			switch (nodeTag(base))
+			{
+				case T_Path:
+					if (base->pathtype == T_SeqScan)
+						newpath = create_seqscan_path(root, rel, NULL,
+													  base->parallel_workers,
+													  subset);
+					else if (base->pathtype == T_SampleScan)
+						newpath = create_samplescan_path(root, rel, NULL,
+														 subset);
+					break;
+				case T_IndexPath:
+					newpath = create_filtered_scan_path(root, base, subset);
+					break;
+				case T_BitmapHeapPath:
+					newpath = (Path *)
+						create_bitmap_heap_path(root, rel,
+												((BitmapHeapPath *) base)->bitmapqual,
+												NULL, 1.0,
+												base->parallel_workers,
+												subset);
+					break;
+				case T_TidPath:
+					newpath = (Path *)
+						create_tidscan_path(root, rel,
+											((TidPath *) base)->tidquals,
+											NULL, subset);
+					break;
+				case T_TidRangePath:
+					newpath = (Path *)
+						create_tidrangescan_path(root, rel,
+												 ((TidRangePath *) base)->tidrangequals,
+												 NULL, base->parallel_workers,
+												 subset);
+					break;
+				default:
+					break;
+			}
+
 			if (newpath != NULL)
 				add_path(rel, newpath);
 		}
@@ -1684,7 +1701,7 @@ set_tablesample_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *
 	required_outer = rel->lateral_relids;
 
 	/* Consider sampled scan */
-	path = create_samplescan_path(root, rel, required_outer);
+	path = create_samplescan_path(root, rel, required_outer, NIL);
 
 	/*
 	 * If the sampling method does not support repeatable scans, we must avoid
@@ -5709,7 +5726,7 @@ create_partial_bitmap_paths(PlannerInfo *root, RelOptInfo *rel,
 		return;
 
 	add_partial_path(rel, (Path *) create_bitmap_heap_path(root, rel,
-														   bitmapqual, rel->lateral_relids, 1.0, parallel_workers));
+														   bitmapqual, rel->lateral_relids, 1.0, parallel_workers, NIL));
 }
 
 /*

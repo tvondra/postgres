@@ -10378,18 +10378,16 @@ select * from fkest f1
 -----------------------------------------------------
  Hash Join
    Hash Cond: ((f2.x = f1.x) AND (f2.x10b = f1.x10))
-   ->  Seq Scan on fkest f2
-         Filter: (x100 = 2)
+   ->  Hash Join
+         Hash Cond: (f3.x = f2.x)
+         ->  Seq Scan on fkest f3
+         ->  Hash
+               ->  Seq Scan on fkest f2
+                     Filter: (x100 = 2)
    ->  Hash
-         ->  Hash Join
-               Hash Cond: (f3.x = f1.x)
-               ->  Seq Scan on fkest f3
-                     Bloom Filter 1: keys=(x)
-               ->  Hash
-                     Bloom Filter 1
-                     ->  Seq Scan on fkest f1
-                           Filter: (x100 = 2)
-(13 rows)
+         ->  Seq Scan on fkest f1
+               Filter: (x100 = 2)
+(11 rows)
 
 rollback;
 --

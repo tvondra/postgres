@@ -64,17 +64,15 @@ SELECT * FROM aa_fact f LEFT JOIN aa_dim1 d1 ON f.dim1_id = d1.id
    ->  Hash Join
          Hash Cond: (f.dim1_id = d1.id)
          ->  Seq Scan on aa_fact f
-               Bloom Filter 2: keys=(dim2_id)
-               Bloom Filter 1: keys=(dim1_id)
+               Bloom Filter 1: keys=(dim2_id)
          ->  Hash
-               Bloom Filter 1
                ->  Seq Scan on aa_dim1 d1
                      Filter: (val1 = 1)
    ->  Hash
-         Bloom Filter 2
+         Bloom Filter 1
          ->  Seq Scan on aa_dim2 d2
                Filter: (val2 = 1)
-(15 rows)
+(13 rows)
 
 -- Force an index scan on dim1
 SELECT pg_set_stashed_advice('regress_stash', :'qid',
@@ -95,19 +93,17 @@ EXPLAIN (COSTS OFF) SELECT * FROM aa_fact f
    ->  Hash Join
          Hash Cond: (f.dim1_id = d1.id)
          ->  Seq Scan on aa_fact f
-               Bloom Filter 2: keys=(dim2_id)
-               Bloom Filter 1: keys=(dim1_id)
+               Bloom Filter 1: keys=(dim2_id)
          ->  Hash
-               Bloom Filter 1
                ->  Index Scan using aa_dim1_pkey on aa_dim1 d1
                      Filter: (val1 = 1)
    ->  Hash
-         Bloom Filter 2
+         Bloom Filter 1
          ->  Seq Scan on aa_dim2 d2
                Filter: (val2 = 1)
  Supplied Plan Advice:
    INDEX_SCAN(d1 aa_dim1_pkey) /* matched */
-(17 rows)
+(15 rows)
 
 -- Force an alternative join order
 SELECT pg_set_stashed_advice('regress_stash', :'qid',
@@ -128,19 +124,17 @@ EXPLAIN (COSTS OFF) SELECT * FROM aa_fact f
    ->  Hash Join
          Hash Cond: (f.dim1_id = d1.id)
          ->  Seq Scan on aa_fact f
-               Bloom Filter 2: keys=(dim2_id)
-               Bloom Filter 1: keys=(dim1_id)
+               Bloom Filter 1: keys=(dim2_id)
          ->  Hash
-               Bloom Filter 1
                ->  Seq Scan on aa_dim1 d1
                      Filter: (val1 = 1)
    ->  Hash
-         Bloom Filter 2
+         Bloom Filter 1
          ->  Seq Scan on aa_dim2 d2
                Filter: (val2 = 1)
  Supplied Plan Advice:
    JOIN_ORDER(f d1 d2) /* matched */
-(17 rows)
+(15 rows)
 
 -- Force an alternative join strategy
 SELECT pg_set_stashed_advice('regress_stash', :'qid',
@@ -221,17 +215,15 @@ EXPLAIN (COSTS OFF) SELECT * FROM aa_fact f
    ->  Hash Join
          Hash Cond: (f.dim1_id = d1.id)
          ->  Seq Scan on aa_fact f
-               Bloom Filter 2: keys=(dim2_id)
-               Bloom Filter 1: keys=(dim1_id)
+               Bloom Filter 1: keys=(dim2_id)
          ->  Hash
-               Bloom Filter 1
                ->  Seq Scan on aa_dim1 d1
                      Filter: (val1 = 1)
    ->  Hash
-         Bloom Filter 2
+         Bloom Filter 1
          ->  Seq Scan on aa_dim2 d2
                Filter: (val2 = 1)
-(15 rows)
+(13 rows)
 
 -- Test that we can list each stash individually and all of them together,
 -- but not a nonexistent stash.
@@ -288,17 +280,15 @@ EXPLAIN (COSTS OFF) SELECT * FROM aa_fact f
    ->  Hash Join
          Hash Cond: (f.dim1_id = d1.id)
          ->  Seq Scan on aa_fact f
-               Bloom Filter 2: keys=(dim2_id)
-               Bloom Filter 1: keys=(dim1_id)
+               Bloom Filter 1: keys=(dim2_id)
          ->  Hash
-               Bloom Filter 1
                ->  Seq Scan on aa_dim1 d1
                      Filter: (val1 = 1)
    ->  Hash
-         Bloom Filter 2
+         Bloom Filter 1
          ->  Seq Scan on aa_dim2 d2
                Filter: (val2 = 1)
-(15 rows)
+(13 rows)
 
 SELECT * FROM pg_get_advice_stashes() ORDER BY stash_name;
      stash_name      | num_entries 

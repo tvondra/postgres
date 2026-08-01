@@ -501,7 +501,7 @@ WHERE d1.r < 0.5;
                                              Bloom Filter 1: keys=(id1a, id1b) expected=46.9% checked=99999 rejected=53152 (53.2%)
                                        ->  Hash  (cost=18.50..18.50 rows=469 width=12) (actual rows=470.00 loops=1)
                                              Buckets: 1024  Batches: 1  Memory Usage: 29kB
-                                             Bloom Filter 1: bits=8388608 hashes=10 memory=1024kB checked=99999 rejected=53152
+                                             Bloom Filter 1: bits=8192 hashes=4 memory=1kB checked=99999 rejected=53152
                                              ->  Seq Scan on bloom_star_multi_dim_1 d1  (cost=0.00..18.50 rows=469 width=12) (actual rows=470.00 loops=1)
                                                    Filter: (r < '0.5'::double precision)
                                                    Rows Removed by Filter: 530
@@ -541,24 +541,24 @@ WHERE d1.r < 0.4 AND d7.r < 0.5;
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
  Hash Join  (cost=204.78..3401.16 rows=17888 width=173) (actual rows=17864.00 loops=1)
    Hash Cond: ((f.id7a = d7.a) AND (f.id7b = d7.b))
-   ->  Hash Join  (cost=179.12..3281.60 rows=17888 width=161) (actual rows=17864.00 loops=1)
+   ->  Hash Join  (cost=179.12..3281.60 rows=17888 width=161) (actual rows=17899.00 loops=1)
          Hash Cond: ((f.id6a = d6.a) AND (f.id6b = d6.b))
-         ->  Hash Join  (cost=148.12..3156.69 rows=17888 width=149) (actual rows=17864.00 loops=1)
+         ->  Hash Join  (cost=148.12..3156.69 rows=17888 width=149) (actual rows=17899.00 loops=1)
                Hash Cond: ((f.id5a = d5.a) AND (f.id5b = d5.b))
-               ->  Hash Join  (cost=117.12..3031.77 rows=17888 width=137) (actual rows=17864.00 loops=1)
+               ->  Hash Join  (cost=117.12..3031.77 rows=17888 width=137) (actual rows=17899.00 loops=1)
                      Hash Cond: ((f.id4a = d4.a) AND (f.id4b = d4.b))
-                     ->  Hash Join  (cost=86.12..2906.86 rows=17888 width=125) (actual rows=17864.00 loops=1)
+                     ->  Hash Join  (cost=86.12..2906.86 rows=17888 width=125) (actual rows=17899.00 loops=1)
                            Hash Cond: ((f.id3a = d3.a) AND (f.id3b = d3.b))
-                           ->  Hash Join  (cost=55.12..2781.95 rows=17888 width=113) (actual rows=17864.00 loops=1)
+                           ->  Hash Join  (cost=55.12..2781.95 rows=17888 width=113) (actual rows=17899.00 loops=1)
                                  Hash Cond: ((f.id2a = d2.a) AND (f.id2b = d2.b))
-                                 ->  Hash Join  (cost=24.12..2657.04 rows=17888 width=101) (actual rows=17864.00 loops=1)
+                                 ->  Hash Join  (cost=24.12..2657.04 rows=17888 width=101) (actual rows=17899.00 loops=1)
                                        Hash Cond: ((f.id1a = d1.a) AND (f.id1b = d1.b))
-                                       ->  Seq Scan on bloom_star_multi_fact f  (cost=0.00..2539.00 rows=17888 width=89) (actual rows=17864.00 loops=1)
+                                       ->  Seq Scan on bloom_star_multi_fact f  (cost=0.00..2539.00 rows=17888 width=89) (actual rows=17899.00 loops=1)
                                              Bloom Filter 1: keys=(id1a, id1b) expected=37.5% checked=99999 rejected=62610 (62.6%)
-                                             Bloom Filter 2: keys=(id7a, id7b) expected=47.7% checked=37390 rejected=19526 (52.2%)
+                                             Bloom Filter 2: keys=(id7a, id7b) expected=47.7% checked=37390 rejected=19491 (52.1%)
                                        ->  Hash  (cost=18.50..18.50 rows=375 width=12) (actual rows=376.00 loops=1)
                                              Buckets: 1024  Batches: 1  Memory Usage: 25kB
-                                             Bloom Filter 1: bits=8388608 hashes=10 memory=1024kB checked=99999 rejected=62610
+                                             Bloom Filter 1: bits=8192 hashes=4 memory=1kB checked=99999 rejected=62610
                                              ->  Seq Scan on bloom_star_multi_dim_1 d1  (cost=0.00..18.50 rows=375 width=12) (actual rows=376.00 loops=1)
                                                    Filter: (r < '0.4'::double precision)
                                                    Rows Removed by Filter: 624
@@ -579,7 +579,7 @@ WHERE d1.r < 0.4 AND d7.r < 0.5;
                ->  Seq Scan on bloom_star_multi_dim_6 d6  (cost=0.00..16.00 rows=1000 width=12) (actual rows=1000.00 loops=1)
    ->  Hash  (cost=18.50..18.50 rows=477 width=12) (actual rows=478.00 loops=1)
          Buckets: 1024  Batches: 1  Memory Usage: 29kB
-         Bloom Filter 2: bits=8388608 hashes=10 memory=1024kB checked=37390 rejected=19526
+         Bloom Filter 2: bits=8192 hashes=4 memory=1kB checked=37390 rejected=19491
          ->  Seq Scan on bloom_star_multi_dim_7 d7  (cost=0.00..18.50 rows=477 width=12) (actual rows=478.00 loops=1)
                Filter: (r < '0.5'::double precision)
                Rows Removed by Filter: 522
@@ -609,29 +609,29 @@ WHERE d1.r < 0.3 AND d2.r < 0.35 AND d3.r < 0.4 AND d4.r < 0.45 AND d5.r < 0.5 A
                      Hash Cond: ((f.id4a = d4.a) AND (f.id4b = d4.b))
                      ->  Hash Join  (cost=71.02..2673.53 rows=4032 width=125) (actual rows=3997.00 loops=1)
                            Hash Cond: ((f.id3a = d3.a) AND (f.id3b = d3.b))
-                           ->  Hash Join  (cost=46.69..2628.03 rows=4032 width=113) (actual rows=3997.00 loops=1)
+                           ->  Hash Join  (cost=46.69..2628.03 rows=4032 width=113) (actual rows=4005.00 loops=1)
                                  Hash Cond: ((f.id2a = d2.a) AND (f.id2b = d2.b))
-                                 ->  Hash Join  (cost=22.95..2583.12 rows=4032 width=101) (actual rows=3997.00 loops=1)
+                                 ->  Hash Join  (cost=22.95..2583.12 rows=4032 width=101) (actual rows=4016.00 loops=1)
                                        Hash Cond: ((f.id1a = d1.a) AND (f.id1b = d1.b))
-                                       ->  Seq Scan on bloom_star_multi_fact f  (cost=0.00..2539.00 rows=4032 width=89) (actual rows=3997.00 loops=1)
+                                       ->  Seq Scan on bloom_star_multi_fact f  (cost=0.00..2539.00 rows=4032 width=89) (actual rows=4016.00 loops=1)
                                              Bloom Filter 1: keys=(id1a, id1b) expected=29.7% checked=99991 rejected=70413 (70.4%)
-                                             Bloom Filter 2: keys=(id2a, id2b) expected=34.9% checked=29587 rejected=19399 (65.6%)
-                                             Bloom Filter 3: keys=(id3a, id3b) expected=38.9% checked=10188 rejected=6191 (60.8%)
+                                             Bloom Filter 2: keys=(id2a, id2b) expected=34.9% checked=29587 rejected=19372 (65.5%)
+                                             Bloom Filter 3: keys=(id3a, id3b) expected=38.9% checked=10215 rejected=6199 (60.7%)
                                        ->  Hash  (cost=18.50..18.50 rows=297 width=12) (actual rows=298.00 loops=1)
                                              Buckets: 1024  Batches: 1  Memory Usage: 21kB
-                                             Bloom Filter 1: bits=8388608 hashes=10 memory=1024kB checked=99991 rejected=70413
+                                             Bloom Filter 1: bits=8192 hashes=4 memory=1kB checked=99991 rejected=70413
                                              ->  Seq Scan on bloom_star_multi_dim_1 d1  (cost=0.00..18.50 rows=297 width=12) (actual rows=298.00 loops=1)
                                                    Filter: (r < '0.3'::double precision)
                                                    Rows Removed by Filter: 702
                                  ->  Hash  (cost=18.50..18.50 rows=349 width=12) (actual rows=350.00 loops=1)
                                        Buckets: 1024  Batches: 1  Memory Usage: 24kB
-                                       Bloom Filter 2: bits=8388608 hashes=10 memory=1024kB checked=29587 rejected=19399
+                                       Bloom Filter 2: bits=8192 hashes=4 memory=1kB checked=29587 rejected=19372
                                        ->  Seq Scan on bloom_star_multi_dim_2 d2  (cost=0.00..18.50 rows=349 width=12) (actual rows=350.00 loops=1)
                                              Filter: (r < '0.35'::double precision)
                                              Rows Removed by Filter: 650
                            ->  Hash  (cost=18.50..18.50 rows=389 width=12) (actual rows=391.00 loops=1)
                                  Buckets: 1024  Batches: 1  Memory Usage: 25kB
-                                 Bloom Filter 3: bits=8388608 hashes=10 memory=1024kB checked=10188 rejected=6191
+                                 Bloom Filter 3: bits=8192 hashes=4 memory=1kB checked=10215 rejected=6199
                                  ->  Seq Scan on bloom_star_multi_dim_3 d3  (cost=0.00..18.50 rows=389 width=12) (actual rows=391.00 loops=1)
                                        Filter: (r < '0.4'::double precision)
                                        Rows Removed by Filter: 609
@@ -678,61 +678,61 @@ WHERE d1.r < 0.3 AND d2.r < 0.35 AND d3.r < 0.4 AND d4.r < 0.45 AND d5.r < 0.5 A
          Hash Cond: ((f.id6a = d6.a) AND (f.id6b = d6.b))
          ->  Hash Join  (cost=122.51..2668.94 rows=283 width=149) (actual rows=292.00 loops=1)
                Hash Cond: ((f.id5a = d5.a) AND (f.id5b = d5.b))
-               ->  Hash Join  (cost=96.24..2641.19 rows=283 width=137) (actual rows=292.00 loops=1)
+               ->  Hash Join  (cost=96.24..2641.19 rows=283 width=137) (actual rows=296.00 loops=1)
                      Hash Cond: ((f.id4a = d4.a) AND (f.id4b = d4.b))
-                     ->  Hash Join  (cost=71.02..2614.48 rows=283 width=125) (actual rows=292.00 loops=1)
+                     ->  Hash Join  (cost=71.02..2614.48 rows=283 width=125) (actual rows=296.00 loops=1)
                            Hash Cond: ((f.id3a = d3.a) AND (f.id3b = d3.b))
-                           ->  Hash Join  (cost=46.69..2588.66 rows=283 width=113) (actual rows=292.00 loops=1)
+                           ->  Hash Join  (cost=46.69..2588.66 rows=283 width=113) (actual rows=298.00 loops=1)
                                  Hash Cond: ((f.id2a = d2.a) AND (f.id2b = d2.b))
-                                 ->  Hash Join  (cost=22.95..2563.44 rows=283 width=101) (actual rows=292.00 loops=1)
+                                 ->  Hash Join  (cost=22.95..2563.44 rows=283 width=101) (actual rows=299.00 loops=1)
                                        Hash Cond: ((f.id1a = d1.a) AND (f.id1b = d1.b))
-                                       ->  Seq Scan on bloom_star_multi_fact f  (cost=0.00..2539.00 rows=283 width=89) (actual rows=292.00 loops=1)
+                                       ->  Seq Scan on bloom_star_multi_fact f  (cost=0.00..2539.00 rows=283 width=89) (actual rows=299.00 loops=1)
                                              Bloom Filter 1: keys=(id1a, id1b) expected=29.7% checked=99991 rejected=70413 (70.4%)
-                                             Bloom Filter 2: keys=(id2a, id2b) expected=34.9% checked=29587 rejected=19399 (65.6%)
-                                             Bloom Filter 3: keys=(id3a, id3b) expected=38.9% checked=10188 rejected=6191 (60.8%)
-                                             Bloom Filter 4: keys=(id4a, id4b) expected=44.8% checked=3997 rejected=2223 (55.6%)
-                                             Bloom Filter 5: keys=(id5a, id5b) expected=51.8% checked=1774 rejected=851 (48.0%)
-                                             Bloom Filter 6: keys=(id6a, id6b) expected=53.7% checked=923 rejected=397 (43.0%)
-                                             Bloom Filter 7: keys=(id7a, id7b) expected=56.3% checked=526 rejected=234 (44.5%)
+                                             Bloom Filter 2: keys=(id2a, id2b) expected=34.9% checked=29587 rejected=19372 (65.5%)
+                                             Bloom Filter 3: keys=(id3a, id3b) expected=38.9% checked=10215 rejected=6199 (60.7%)
+                                             Bloom Filter 4: keys=(id4a, id4b) expected=44.8% checked=4016 rejected=2234 (55.6%)
+                                             Bloom Filter 5: keys=(id5a, id5b) expected=51.8% checked=1782 rejected=848 (47.6%)
+                                             Bloom Filter 6: keys=(id6a, id6b) expected=53.7% checked=934 rejected=399 (42.7%)
+                                             Bloom Filter 7: keys=(id7a, id7b) expected=56.3% checked=535 rejected=236 (44.1%)
                                        ->  Hash  (cost=18.50..18.50 rows=297 width=12) (actual rows=298.00 loops=1)
                                              Buckets: 1024  Batches: 1  Memory Usage: 21kB
-                                             Bloom Filter 1: bits=8388608 hashes=10 memory=1024kB checked=99991 rejected=70413
+                                             Bloom Filter 1: bits=8192 hashes=4 memory=1kB checked=99991 rejected=70413
                                              ->  Seq Scan on bloom_star_multi_dim_1 d1  (cost=0.00..18.50 rows=297 width=12) (actual rows=298.00 loops=1)
                                                    Filter: (r < '0.3'::double precision)
                                                    Rows Removed by Filter: 702
                                  ->  Hash  (cost=18.50..18.50 rows=349 width=12) (actual rows=350.00 loops=1)
                                        Buckets: 1024  Batches: 1  Memory Usage: 24kB
-                                       Bloom Filter 2: bits=8388608 hashes=10 memory=1024kB checked=29587 rejected=19399
+                                       Bloom Filter 2: bits=8192 hashes=4 memory=1kB checked=29587 rejected=19372
                                        ->  Seq Scan on bloom_star_multi_dim_2 d2  (cost=0.00..18.50 rows=349 width=12) (actual rows=350.00 loops=1)
                                              Filter: (r < '0.35'::double precision)
                                              Rows Removed by Filter: 650
                            ->  Hash  (cost=18.50..18.50 rows=389 width=12) (actual rows=391.00 loops=1)
                                  Buckets: 1024  Batches: 1  Memory Usage: 25kB
-                                 Bloom Filter 3: bits=8388608 hashes=10 memory=1024kB checked=10188 rejected=6191
+                                 Bloom Filter 3: bits=8192 hashes=4 memory=1kB checked=10215 rejected=6199
                                  ->  Seq Scan on bloom_star_multi_dim_3 d3  (cost=0.00..18.50 rows=389 width=12) (actual rows=391.00 loops=1)
                                        Filter: (r < '0.4'::double precision)
                                        Rows Removed by Filter: 609
                      ->  Hash  (cost=18.50..18.50 rows=448 width=12) (actual rows=449.00 loops=1)
                            Buckets: 1024  Batches: 1  Memory Usage: 28kB
-                           Bloom Filter 4: bits=8388608 hashes=10 memory=1024kB checked=3997 rejected=2223
+                           Bloom Filter 4: bits=8192 hashes=4 memory=1kB checked=4016 rejected=2234
                            ->  Seq Scan on bloom_star_multi_dim_4 d4  (cost=0.00..18.50 rows=448 width=12) (actual rows=449.00 loops=1)
                                  Filter: (r < '0.45'::double precision)
                                  Rows Removed by Filter: 551
                ->  Hash  (cost=18.50..18.50 rows=518 width=12) (actual rows=519.00 loops=1)
                      Buckets: 1024  Batches: 1  Memory Usage: 31kB
-                     Bloom Filter 5: bits=8388608 hashes=10 memory=1024kB checked=1774 rejected=851
+                     Bloom Filter 5: bits=8192 hashes=4 memory=1kB checked=1782 rejected=848
                      ->  Seq Scan on bloom_star_multi_dim_5 d5  (cost=0.00..18.50 rows=518 width=12) (actual rows=519.00 loops=1)
                            Filter: (r < '0.5'::double precision)
                            Rows Removed by Filter: 481
          ->  Hash  (cost=18.50..18.50 rows=537 width=12) (actual rows=538.00 loops=1)
                Buckets: 1024  Batches: 1  Memory Usage: 32kB
-               Bloom Filter 6: bits=8388608 hashes=10 memory=1024kB checked=923 rejected=397
+               Bloom Filter 6: bits=8192 hashes=4 memory=1kB checked=934 rejected=399
                ->  Seq Scan on bloom_star_multi_dim_6 d6  (cost=0.00..18.50 rows=537 width=12) (actual rows=538.00 loops=1)
                      Filter: (r < '0.55'::double precision)
                      Rows Removed by Filter: 462
    ->  Hash  (cost=18.50..18.50 rows=563 width=12) (actual rows=564.00 loops=1)
          Buckets: 1024  Batches: 1  Memory Usage: 33kB
-         Bloom Filter 7: bits=8388608 hashes=10 memory=1024kB checked=526 rejected=234
+         Bloom Filter 7: bits=8192 hashes=4 memory=1kB checked=535 rejected=236
          ->  Seq Scan on bloom_star_multi_dim_7 d7  (cost=0.00..18.50 rows=563 width=12) (actual rows=564.00 loops=1)
                Filter: (r < '0.6'::double precision)
                Rows Removed by Filter: 436

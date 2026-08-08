@@ -1,0 +1,79 @@
+TODO
+----
+
+A list of open questions / possible improvements / ... related to the
+hashjoin bloom filter pushdown. In arbitrary order.
+
+
+* properly sizing the Bloom filter
+
+  Sometimes it's better to use a cheaper less accurate filter, smaller
+  one and/or with fewer hash functions. It's a trade off between false
+  positive rate and cheaper probes (e.g. when it fits into CPU cache).
+  We probably need a simple cost model, or some heuristics. We should
+  also reflect this in the path costing.
+
+
+* cost false positive rate
+
+  Right now we assume the filter makes no errors, but that is not quite
+  corret - the filter will accept some fraction of extra tuples, and
+  those will be discarded by the join realizing the filter. If we start
+  building filters with different false positive rates (e.g. to fit them
+  into L2), it'd matter more.
+
+  I'm not sure how to cost the false positive rate, because it depends
+  on what happens between the scan and the realizing join - there may
+  be other joins, and each "extra" tuple will have to pass through
+  those too. But we don't know the details at the scan level, so we
+  probably need some simple heuristic.
+
+
+* stabilizing the join order
+
+  Pushing down filters, makes the order of the related joins mostly
+  irrelevant, and it can easily change based on tiny estimate changes.
+  That should be mostly harmless (the order really should not matter),
+  but it's a bit annoying for testing (random plan changes). Maybe we
+  should add a bit of hysteresis, to prevent this?
+
+  Maybe if we correctly consider the false positive rate, it would have
+  such effect? 
+
+
+* supporting other kinds of runtime filters
+
+  Right now we only have "Bloom" filters, but there are more kinds of
+  interesting filters. Other databases seem to support minmax and list
+  filters, or possibly various hybrids (eg. starting as list, then
+  morphing to Bloom/minmax). We should make it extensible this way.
+
+  The other interesting option is to build per-attribute filters even
+  for multi-column joins.
+
+  We probably need an "abstract" filter API, implemented by the various
+  filter kinds. With callbacks for adding entries, probing for a hash,
+  estimating false positive rate, etc.
+
+  We need to be careful about selectivity estimates, though. For example,
+  a Bloom filter and minmax will have different selectivities, and the
+  same thing applies to per-attribute filters (which will have a worse
+  selectivity than the combined filter).
+
+
+* do we need to add something for JIT to work?
+
+  AFAIK we need to add some opcodes and handle them.
+
+
+* parallel query support
+
+  Right now we support only serial query, and parallel queries where
+  the filter is built and consumed inside a worker (for a hashjoin that
+  is not parallel-aware). It should be possible to support parallel
+  queries too, with filters merged from workers. One of the earlier
+  patch versions implemented that, actually.
+
+  Another option is a filter built by the leader (in a serial hashjoin),
+  and pushed down to the workers throught the Gather. This filter still
+  needs to be copied into a chunk of shared memory.

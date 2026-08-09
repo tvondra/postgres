@@ -109,6 +109,9 @@ hashjoin bloom filter pushdown. In arbitrary order.
   (because of ordering). Both ends need to use exactly the same ordering
   rules. Ofc, for filters on integers this should not be an issue.
 
+  BTW the Parquet docs might be a good guidance for sizing our filters:
+  https://parquet.apache.org/docs/file-format/bloomfilter/
+
 
 * non-scan filters
 

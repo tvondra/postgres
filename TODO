@@ -77,3 +77,49 @@ hashjoin bloom filter pushdown. In arbitrary order.
   Another option is a filter built by the leader (in a serial hashjoin),
   and pushed down to the workers throught the Gather. This filter still
   needs to be copied into a chunk of shared memory.
+
+
+* filter portability
+
+  If we want to allow pushing filters into "external" executor nodes,
+  we probably need a portable variant, not tied to our implementation
+  details. For example, imagine pushing down a Bloom filter into a
+  Custom Scan reading a Parquet file. Our Bloom filter is built using
+  a custom hash function, both for calculating the initial hash value
+  (from our the data) and then for calculating the filter probes. The
+  Parquet file may contain a Bloom filter too, but it's not compatible
+  with "our" filter - it's using xxHash, etc. It can still call our
+  built-in hash function, but that may be inefficient, and maybe we
+  should allow using a "more compatible" filter?
+
+  In some advanced cases it may be actually hard to call our built-in
+  hash functions - when a filter pushed outside Postgres. Consider for
+  example a scan that pushes the filter into storage, or a foreign scan
+  pushing the filter to a remote non-Postgres database. To support such
+  cases we'd need a portable filter.
+
+  It may be tricky to do, though. A data type may allow multiple binary
+  representations for the same value - all of those must have the same
+  hash. Similarly, our hashes are cross-type safe (so e.g. int2 vs. int4
+  vs. int8 produce the same hash for the "same" value). A simple hash
+  of the bytes won't do. But maybe we could restrict this to some "safe"
+  subset of cases (no cross-type conditions, simple byval types).
+
+  The minmax types may have similar issues, as it relies on collations
+  (because of ordering). Both ends need to use exactly the same ordering
+  rules. Ofc, for filters on integers this should not be an issue.
+
+
+* non-scan filters
+
+  Right now we push filters only to scans, but maybe we could also push
+  them to intermediate nodes, e.g. on top of joins etc. This would help
+  cases where the join clause is complex (references more than 2 rels),
+  or when the node does not allow pushdown (e.g. because of outer join).
+
+  AFAIK we already have some basic building blocks needed for this, like
+  the generation of build relids sets. We'd need to add logic to
+  consider filters when constructing paths for a join relation too,
+  similarly to what we do for scan paths.
+
+  Seems more like a possible future improvement.

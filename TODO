@@ -126,3 +126,13 @@ hashjoin bloom filter pushdown. In arbitrary order.
   similarly to what we do for scan paths.
 
   Seems more like a possible future improvement.
+
+
+* mimicking PARAM_EXEC to pass the filters between plans
+
+  Right now the filters are passed through EState->es_bloom_producers,
+  allowing the consumer node (e.g. the scan) to lookup the filter (or
+  rather the Hash node producing it).
+
+  But maybe it'd be better to do something like PARAM_EXEC, which also
+  passes information between plans?

@@ -52,6 +52,7 @@
 #include "replication/slot.h"
 #include "replication/slotsync.h"
 #include "replication/walreceiver.h"
+#include "storage/checksum.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
@@ -2166,6 +2167,7 @@ CheckRecoveryConsistency(void)
 {
 	XLogRecPtr	lastReplayedEndRecPtr;
 	TimeLineID	lastReplayedTLI;
+	static bool checksum_state_pending_logged = false;
 
 	/*
 	 * During crash recovery, we don't reach a consistent state until we've
@@ -2218,6 +2220,29 @@ CheckRecoveryConsistency(void)
 	if (!reachedConsistency && !backupEndRequired &&
 		minRecoveryPoint <= lastReplayedEndRecPtr)
 	{
+		/*
+		 * If data checksums were changed offline with pg_checksums when this
+		 * node was shut down, the state is pending until the XLOG_CHECKSUMS
+		 * record which the primary wrote for the same operation has been
+		 * replayed.  The data checksum state of this node is not known to
+		 * match the state of the primary until then, so it must not be opened
+		 * up for connections.  Keep replaying and recheck for every record;
+		 * if replay catches up with the primary without the state being
+		 * resolved, recovery is aborted with an error, see
+		 * CheckDataChecksumConsistency.
+		 */
+		if (StandbyMode && DataChecksumsPendingOffline())
+		{
+			if (!checksum_state_pending_logged)
+			{
+				ereport(LOG,
+						errmsg("recovery is waiting for the primary to confirm the offline data checksum state change"));
+				checksum_state_pending_logged = true;
+			}
+
+			return;
+		}
+
 		/*
 		 * Check to see if the XLOG sequence contained any unresolved
 		 * references to uninitialized pages.
@@ -3810,6 +3835,7 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 			case XLOG_FROM_STREAM:
 				{
 					bool		havedata;
+					XLogRecPtr	primaryWalEnd;
 
 					/*
 					 * We should be able to move to XLOG_FROM_STREAM only in
@@ -3993,6 +4019,23 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 						WalRcvRequestApplyReply();
 						streaming_reply_sent = true;
 					}
+
+					/*
+					 * If data checksums were enabled, or disabled, offline on
+					 * this node while it was shut down, the state is pending
+					 * until the XLOG_CHECKSUMS record for the corresponding
+					 * operation on the primary has been replayed.  Now that
+					 * we have received all the WAL which the primary had
+					 * written as of the last message received from it, and
+					 * replayed all of it, the record would have been seen if
+					 * the primary had performed the same operation.  If the
+					 * state is still pending the nodes have diverged, which
+					 * we must not allow.
+					 */
+					primaryWalEnd = GetWalRcvLatestWalEnd();
+					if (XLogRecPtrIsValid(primaryWalEnd) &&
+						flushedUpto >= primaryWalEnd)
+						CheckDataChecksumConsistency();
 
 					/* Do any background tasks that might benefit us later. */
 					KnownAssignedTransactionIdsIdleMaintenance();

@@ -154,6 +154,21 @@ progress_report(bool finished)
 	fputc((!finished && isatty(fileno(stderr))) ? '\r' : '\n', stderr);
 }
 
+/*
+ * data_checksums_enabled
+ *		Returns whether data checksums are enabled in the cluster
+ *
+ * A checksum state change performed offline is recorded with an "inprogress"
+ * state which is resolved when the cluster is started, so such a state must be
+ * interpreted as the state it will be resolved to.
+ */
+static bool
+data_checksums_enabled(void)
+{
+	return (ControlFile->data_checksum_version == PG_DATA_CHECKSUM_VERSION ||
+			ControlFile->data_checksum_version == PG_DATA_CHECKSUM_INPROGRESS_ON_OFFLINE);
+}
+
 static bool
 skipfile(const char *fn)
 {
@@ -229,7 +244,7 @@ scan_file(const char *fn, int segmentno)
 		{
 			if (csum != header->pd_checksum)
 			{
-				if (ControlFile->data_checksum_version == PG_DATA_CHECKSUM_VERSION)
+				if (data_checksums_enabled())
 					pg_log_error("checksum verification failed in file \"%s\", block %u: calculated checksum %X but block contains %X",
 								 fn, blockno, csum, header->pd_checksum);
 				badblocks++;
@@ -586,16 +601,13 @@ main(int argc, char *argv[])
 		ControlFile->state != DB_SHUTDOWNED_IN_RECOVERY)
 		pg_fatal("cluster must be shut down");
 
-	if (ControlFile->data_checksum_version != PG_DATA_CHECKSUM_VERSION &&
-		mode == PG_MODE_CHECK)
+	if (!data_checksums_enabled() && mode == PG_MODE_CHECK)
 		pg_fatal("data checksums are not enabled in cluster");
 
-	if (ControlFile->data_checksum_version == PG_DATA_CHECKSUM_OFF &&
-		mode == PG_MODE_DISABLE)
+	if (!data_checksums_enabled() && mode == PG_MODE_DISABLE)
 		pg_fatal("data checksums are already disabled in cluster");
 
-	if (ControlFile->data_checksum_version == PG_DATA_CHECKSUM_VERSION &&
-		mode == PG_MODE_ENABLE)
+	if (data_checksums_enabled() && mode == PG_MODE_ENABLE)
 		pg_fatal("data checksums are already enabled in cluster");
 
 	/* Operate on all files if checking or enabling checksums */
@@ -646,7 +658,7 @@ main(int argc, char *argv[])
 	if (mode == PG_MODE_ENABLE || mode == PG_MODE_DISABLE)
 	{
 		ControlFile->data_checksum_version =
-			(mode == PG_MODE_ENABLE) ? PG_DATA_CHECKSUM_VERSION : PG_DATA_CHECKSUM_OFF;
+			(mode == PG_MODE_ENABLE) ? PG_DATA_CHECKSUM_INPROGRESS_ON_OFFLINE : PG_DATA_CHECKSUM_INPROGRESS_OFF_OFFLINE;
 
 		if (do_sync)
 		{

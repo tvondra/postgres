@@ -136,7 +136,7 @@ command_fails(
 # Control file should know that checksums are enabled.
 command_like(
 	[ 'pg_controldata', $pgdata ],
-	qr/Data page checksum version:.*1/,
+	qr/Data page checksum version:.*4/,
 	'checksums enabled in control file');
 
 # Disable checksums again.  Flush result here as that should be cheap.
@@ -152,7 +152,7 @@ command_fails(
 # Control file should know that checksums are disabled.
 command_like(
 	[ 'pg_controldata', $pgdata ],
-	qr/Data page checksum version:.*0/,
+	qr/Data page checksum version:.*5/,
 	'checksums disabled in control file');
 
 # Enable checksums again for follow-up tests.
@@ -162,7 +162,7 @@ command_ok([ 'pg_checksums', '--enable', '--no-sync', '--pgdata' => $pgdata ],
 # Control file should know that checksums are enabled.
 command_like(
 	[ 'pg_controldata', $pgdata ],
-	qr/Data page checksum version:.*1/,
+	qr/Data page checksum version:.*4/,
 	'checksums enabled in control file');
 
 # Checksums pass on a newly-created cluster
@@ -207,9 +207,10 @@ command_checks_all(
 		'-o' => '-C data_checksums -c log_min_messages=fatal',
 	],
 	1,
-	[qr/^on$/],
+	[qr/^inprogress-on-offline$/],
 	[qr/could not start server/],
-	'data_checksums=on is reported on an offline cluster');
+	'data_checksums state from the offline operation is reported on an offline cluster'
+);
 
 # Checks cannot happen with an online cluster
 $node->start;

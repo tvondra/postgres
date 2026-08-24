@@ -20,6 +20,7 @@
 /* Prototypes for data checksum state manipulation */
 bool		AbsorbDataChecksumsBarrier(ProcSignalBarrierType barrier);
 void		EmitAndWaitDataChecksumsBarrier(uint32 state);
+bool		ValidateDataChecksumStateTransition(uint32 current, uint32 target);
 
 /* Background worker entrypoints */
 void		DataChecksumsWorkerLauncherMain(Datum arg);

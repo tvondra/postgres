@@ -371,6 +371,24 @@ GetWalRcvFlushRecPtr(XLogRecPtr *latestChunkStart, TimeLineID *receiveTLI)
 }
 
 /*
+ * Returns the end of WAL on the primary, as of the last message received
+ * from it.  InvalidXLogRecPtr is returned if no message has been received
+ * since the walreceiver was started.
+ */
+XLogRecPtr
+GetWalRcvLatestWalEnd(void)
+{
+	WalRcvData *walrcv = WalRcv;
+	XLogRecPtr	recptr;
+
+	SpinLockAcquire(&walrcv->mutex);
+	recptr = walrcv->latestWalEnd;
+	SpinLockRelease(&walrcv->mutex);
+
+	return recptr;
+}
+
+/*
  * Returns the last+1 byte position that walreceiver has written.
  *
  * Use pg_atomic_read_membarrier_u64() to ensure that callers see up-to-date

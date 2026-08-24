@@ -66,6 +66,10 @@ get_checksum_state_string(uint32 state)
 			return "inprogress-off";
 		case PG_DATA_CHECKSUM_INPROGRESS_ON:
 			return "inprogress-on";
+		case PG_DATA_CHECKSUM_INPROGRESS_OFF_OFFLINE:
+			return "inprogress-off-offline";
+		case PG_DATA_CHECKSUM_INPROGRESS_ON_OFFLINE:
+			return "inprogress-on-offline";
 		case PG_DATA_CHECKSUM_OFF:
 			return "off";
 	}

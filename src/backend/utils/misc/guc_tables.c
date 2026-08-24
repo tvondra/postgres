@@ -517,6 +517,8 @@ static const struct config_enum_entry data_checksums_options[] = {
 	{"off", PG_DATA_CHECKSUM_OFF, true},
 	{"inprogress-on", PG_DATA_CHECKSUM_INPROGRESS_ON, true},
 	{"inprogress-off", PG_DATA_CHECKSUM_INPROGRESS_OFF, true},
+	{"inprogress-on-offline", PG_DATA_CHECKSUM_INPROGRESS_ON_OFFLINE, true},
+	{"inprogress-off-offline", PG_DATA_CHECKSUM_INPROGRESS_OFF_OFFLINE, true},
 	{NULL, 0, false}
 };
 

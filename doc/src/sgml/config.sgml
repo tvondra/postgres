@@ -12361,7 +12361,9 @@ dynamic_library_path = '/usr/local/lib/postgresql:$libdir'
        <para>
         Reports the state of data checksums for this cluster.
         Possible values are <literal>on</literal>, <literal>off</literal>,
-        <literal>inprogress-on</literal> and <literal>inprogress-off</literal>.
+        <literal>inprogress-on</literal>, <literal>inprogress-off</literal>,
+        <literal>inprogress-on-offline</literal> and
+        <literal>inprogress-off-offline</literal>.
         See <xref linkend="checksums"/> for more information.
        </para>
       </listitem>

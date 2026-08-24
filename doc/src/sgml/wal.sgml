@@ -298,6 +298,16 @@
       <entry>inprogress-on</entry>
       <entry>3</entry>
      </row>
+
+     <row>
+      <entry>inprogress-on-offline</entry>
+      <entry>4</entry>
+     </row>
+
+     <row>
+      <entry>inprogress-off-offline</entry>
+      <entry>5</entry>
+     </row>
     </tbody>
    </tgroup>
   </table>
@@ -315,6 +325,24 @@
     The <link linkend="app-pgchecksums"><application>pg_checksums</application></link>
     application can be used to enable or disable data checksums, as well as
     verify checksums, on an offline cluster.
+   </para>
+
+   <para>
+    Enabling or disabling checksums offline records the state
+    <literal>inprogress-on-offline</literal>, or
+    <literal>inprogress-off-offline</literal>, in the cluster.  The state is
+    resolved to <literal>on</literal>, or <literal>off</literal>, when the
+    cluster is started again, at which point the change is also recorded in the
+    write-ahead log.
+   </para>
+
+   <para>
+    In a cluster using replication, the operation must be performed on all
+    nodes while they are shut down.  A standby which was changed offline
+    resolves its state by replaying the record which the primary wrote for the
+    same operation.  If the primary didn't perform the operation, the data
+    checksum state of the nodes differ, which is not allowed, and the standby
+    will terminate with an error when it has caught up with the primary.
    </para>
 
   </sect2>

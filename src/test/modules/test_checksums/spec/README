@@ -2,12 +2,22 @@ src/test/modules/test_checksums/spec/README
 
 A formal model of the data checksum state machine
 =================================================
-This directory contains a machine-checked model, written in Lean 4, of the code
-that reads and modifies the data checksum state of a cluster.  It is a
-specification, not a test: nothing here is built or run by "make check" or by
-meson, and no PostgreSQL source file depends on it.
+This directory contains two machine-checked models of the code that reads and
+modifies the data checksum state of a cluster: a Lean 4 development in Spec/,
+and a TLA+ transcription of it in tla/.  They are specifications, not tests:
+nothing here is built or run by "make check" or by meson, and no PostgreSQL
+source file depends on either of them.
 
-The informal specification it formalizes is the header comment of
+The two are complementary, and the division of labour is the one argued for at
+the bottom of this file:
+
+    Spec/ (Lean 4)   safety, for an *arbitrary* number of backends and pages,
+                     plus the audit of checksum_barriers[] that will catch a
+                     future edit to that table
+    tla/  (TLA+)     liveness, counterexample traces, and an independent check
+                     that the Lean inductive invariant really is inductive
+
+The informal specification they formalize is the header comment of
 src/backend/postmaster/datachecksum_state.c, in particular the two rules
 
     all backends MUST calculate and write data checksums during all states
@@ -63,10 +73,72 @@ survive: one backend has absorbed the barrier and verifies checksums while
 another has not and merely writes them.
 
 
+What is model-checked
+=====================
+tla/DataChecksums.tla is a transcription of Spec/Cluster.lean: the same four
+state components, the same six transitions, the same initial predicate.  The
+Lean development already proves safety, so the TLA+ module is aimed at the three
+things a proof assistant is bad at.  Each has a .cfg file of its own.
+
+  DataChecksums.cfg
+      The main run.  Re-checks TypeOK, WriteSafe, ReadSafe, NoSpuriousFailure
+      and the barrier table audit for three backends and two pages, and checks
+      the liveness property.  A few hundred states; finishes instantly.
+
+  Inductive.cfg
+      Not a check of the C code but of the Lean proof.  It uses Inv -- Lean's
+      inductive invariant, transcribed field for field -- as the *initial*
+      predicate, so TLC starts from every state satisfying Inv rather than from
+      the reachable ones, and confirms each transition preserves it.  That is
+      precisely the obligation Spec/Safety.lean's Inv.step discharges, so the
+      two developments cross-validate each other.  A reported search depth of 1
+      is the check passing: every successor of an Inv state is already one.
+
+  BrokenTable.cfg
+      Adds the on -> off shortcut to checksum_barriers[] and prints the
+      interleaving that breaks WriteSafe.  This is onOff_shortcut_unsafe made
+      executable; Lean can tell you the design is broken, TLC tells you how.
+
+  Livelock.cfg
+      Lets the coordinator drive an edge that is *not* in checksum_barriers[],
+      and reports a lasso in which one process is left behind for ever.  This
+      is the property the Lean development cannot even state: a rejected edge
+      makes AbsorbDataChecksumsBarrier() raise an error, procsignal resets the
+      bit and retries, and WaitForProcSignalBarrier() never returns.
+
+The liveness property is
+
+  BarrierRetires == ~Quiescent ~> Quiescent
+
+"whenever some process is behind, the handshake eventually retires".  Only the
+two actions that make up that handshake are fair -- AdvanceControl, and Absorb
+per backend.  BackendStart deliberately is not: a running backend cannot call
+InitLocalDataChecksumState(), only a newly forked one does, and no progress
+argument may lean on new connections arriving.  AdvanceShared is not fair
+either, so nothing here claims a requested enable ever finishes; that would need
+the launcher's goal to be modelled, and is noted below as future work.
+
+Writing the model down this way turned up one thing the Lean development had
+missed.  Lean's advanceShared rule requires the new state to be a barrier table
+edge by construction, so the two tables agreeing is an *assumption* there and
+coordinatorEdges_absorbable is a separate side theorem.  The TLA+ module keeps
+BarrierTable and CoordinatorEdges apart, which is what the C code actually does:
+SetDataChecksums*() and xlog2_redo() assign to XLogCtl->data_checksum_version
+directly, and nothing checks that assignment against the table.  Under
+Livelock.cfg, TLC finds not only the expected livelock but also a WriteSafe
+violation, because InitLocalDataChecksumState() copies the shared value verbatim
+with no validation at all -- so a backend forked after the illegal transition
+adopts the illegal target immediately, while an older one is still verifying.
+An edge outside checksum_barriers[] is therefore a data-corruption bug, not
+merely a hang.  That is a stronger reason to keep coordinatorEdges_absorbable
+true than the Lean development on its own gives.
+
+
 What is modelled
 ================
 The model covers the three copies of the state and every function that reads or
-writes them.
+writes them.  The Lean and TLA+ names are listed together because they are
+transcriptions of each other.
 
   Lean (Spec/)                     C
   -------------------------------  ------------------------------------------
@@ -105,13 +177,18 @@ writes them.
                                    XLOGShmemInit() plus StartupXLOG()
   Init                             initdb and offline pg_checksums
 
-Reads are deliberately not steps.  Every consumer of the state -- PageIsVerified(),
-PageSetChecksum(), XLogHintBitIsNeeded() and its callers in bufmgr.c,
-pruneheap.c, visibilitymap.c and freespace.c, backup_checksums_verifiable(),
-show_data_checksums() -- is a pure function of one process' local copy, so "a
-read misbehaves" is a property of a state rather than of a transition.  That is
-what makes the safety statements above say everything there is to say about the
-readers.
+The TLA+ names are the same modulo capitalisation and the Cluster./Step.
+qualifiers -- Cluster.shared is shared, Step.absorb is Absorb, and so on -- so
+the table above serves for both.  The one deliberate divergence is
+CoordinatorEdges, described under "What is model-checked" above.
+
+Reads are deliberately not steps.  Every consumer of the state --
+PageIsVerified(), PageSetChecksum(), XLogHintBitIsNeeded() and its callers in
+bufmgr.c, pruneheap.c, visibilitymap.c and freespace.c,
+backup_checksums_verifiable(), show_data_checksums() -- is a pure function of
+one process' local copy, so "a read misbehaves" is a property of a state rather
+than of a transition.  That is what makes the safety statements above say
+everything there is to say about the readers.
 
 Splitting advanceShared from advanceControl is what exposes the window that
 SetDataChecksumsOn() reasons about in its comment:
@@ -140,8 +217,9 @@ could therefore hide.
 * One coordinator at a time.  Step.advanceShared requires the cluster to be
   quiescent, which encodes both the WaitForProcSignalBarrier() at the end of
   each SetDataChecksums*() call and the fact that only one process drives
-  transitions: the launcher is a singleton (DataChecksumsState->launcher_running)
-  on a primary, and the startup process is the only replayer on a standby.
+  transitions: the launcher is a singleton on a primary
+  (DataChecksumsState->launcher_running), and the startup process is the only
+  replayer on a standby.
 
 * Barriers are absorbed atomically.  The model has no notion of a backend
   observing shared memory part-way through a writer's update sequence.  This is
@@ -160,19 +238,29 @@ could therefore hide.
   scope: they are about whether a base backup taken across a transition can be
   verified, which is an LSN-ordering question, not a state-machine one.
 
-* Liveness is out of scope.  The model says nothing about the datachecksums
-  worker making progress, about the ereport(ERROR) retry loop in
-  AbsorbDataChecksumsBarrier() terminating, or about the cost-delay throttling.
-  Only safety is proved.
+* Liveness is covered only for the barrier handshake.  BarrierRetires says a
+  pending barrier is always absorbed; nothing says the datachecksums worker
+  makes progress, that a requested enable ever completes, or anything at all
+  about the cost-delay throttling.  Making the first two checkable needs the
+  launcher's goal -- the target state it was asked to reach -- to become part of
+  the state, which is the obvious next extension of the TLA+ module.
+
+* The TLA+ results are bounded.  They hold for the three backends and two pages
+  in DataChecksums.cfg, not in general; that is what the Lean development is
+  for.  Raising the bounds is cheap, and the state count stays in the
+  thousands.
 
 * Pages are abstracted to a single bit, "carries a valid checksum".  Torn pages,
   the pd_checksum field itself and the checksum algorithm are not modelled.
 
 
-Building
-========
-The model is written in plain Lean 4 with no dependencies -- in particular it
-does not use Mathlib -- so it builds offline and checks in a couple of seconds:
+Building and checking
+=====================
+Neither model needs anything from the PostgreSQL build tree, and neither takes
+more than a few seconds.
+
+Lean.  The development is plain Lean 4 with no dependencies -- in particular it
+does not use Mathlib -- so it builds offline:
 
     cd src/test/modules/test_checksums/spec
     lake build
@@ -191,58 +279,85 @@ depend only on propext, which can be confirmed with
 
     #print axioms Spec.reachable_readSafe
 
+TLA+.  TLC needs only a JRE and tla2tools.jar, from
+https://github.com/tlaplus/tlaplus/releases:
 
-Why Lean, and what would be a better fit
-========================================
-Lean was chosen because it was asked for, and it does deliver something no model
-checker can: the theorems hold for an arbitrary number of backends and pages,
-not for three backends and two pages.  reachable_writeSafe is quantified over
-Backend and Page as opaque types, so there is no state explosion to bound and no
-"we checked up to N" caveat.  Lean also lets the finite parts of the argument --
-the barrier table audits -- be discharged by "decide", i.e. by exhaustive
-evaluation inside the proof, so the two styles of reasoning live in one
-artifact.  The negative results are a real benefit of that mix: it is easy to
-state "adding this edge to the table breaks safety" and have the compiler check
-it.
+    cd src/test/modules/test_checksums/spec/tla
+    TLC="java -cp /path/to/tla2tools.jar tlc2.TLC"
 
-That said, TLA+ with the TLC model checker would be the more conventional choice
-for this problem, and would complement rather than replace this development.
-This is a concurrency problem about interleavings and about a handshake
-protocol, which is what TLA+ was designed for, and the community that would have
-to maintain such a spec is far more likely to have seen TLA+ than Lean.  More
-concretely, TLC gives three things this development does not:
+    $TLC DataChecksums
+    $TLC -config Inductive.cfg DataChecksums
+
+Both of those should report "Model checking completed. No error has been found."
+The other two configurations are expected to fail, and their .cfg files describe
+what the failure should look like:
+
+    $TLC -config BrokenTable.cfg DataChecksums
+    $TLC -config Livelock.cfg DataChecksums
+
+
+Why two tools
+=============
+Lean delivers something no model checker can: the theorems hold for an arbitrary
+number of backends and pages, not for three backends and two pages.
+reachable_writeSafe is quantified over Backend and Page as opaque types, so
+there is no state explosion to bound and no "we checked up to N" caveat.  Lean
+also lets the finite parts of the argument -- the barrier table audits -- be
+discharged by "decide", i.e. by exhaustive evaluation inside the proof, so both
+styles of reasoning live in one artifact.  The negative results are a real
+benefit of that mix: it is easy to state "adding this edge to the table breaks
+safety" and have the compiler check it.
+
+But this is a concurrency problem about interleavings and about a handshake
+protocol, which is what TLA+ was designed for, and a maintainer is far more
+likely to have seen TLA+ than Lean.  Concretely, TLC gives three things the Lean
+development does not, and each is now a .cfg file in tla/:
 
 * Liveness.  The livelock risk in AbsorbDataChecksumsBarrier() -- a rejected
   edge raises an error, procsignal retries, and WaitForProcSignalBarrier() never
-  returns -- is a temporal property.  Here it can only be approached indirectly,
-  by proving that the coordinator never emits a rejected edge
-  (coordinatorEdges_absorbable).  TLC would check the real property under
-  fairness assumptions.
+  returns -- is a temporal property.  In Lean it can only be approached
+  indirectly, by proving the coordinator never emits a rejected edge
+  (coordinatorEdges_absorbable).  Livelock.cfg checks the real property under
+  explicit fairness assumptions, and finding that the same defect also breaks
+  safety, via InitLocalDataChecksumState(), is a result that fell straight out
+  of writing it down that way.
 
 * Counterexample traces.  When an invariant fails, TLC prints the interleaving
-  that breaks it.  A failing Lean proof prints an unsolved goal, which is much
-  less useful for finding out what the code actually does wrong.
+  that breaks it (BrokenTable.cfg).  A failing Lean proof prints an unsolved
+  goal, which is much less useful for working out what the code actually does
+  wrong.
 
-* Cost of change.  Extending this model to cover, say, the LSN ordering behind
+* Cost of change.  Extending the model to cover, say, the LSN ordering behind
   backup_checksums_verifiable() means new invariant fields and new proof
   obligations in every case of Inv.step.  In TLA+ it means adding a variable and
   re-running TLC.
 
-Alloy would be a third option, well suited to the finite table audits in
-Spec/Safety.lean, but weaker than either for the temporal parts.
+There is a fourth benefit that only appears once both exist: Inductive.cfg
+model-checks the Lean invariant itself, so the two developments keep each other
+honest.  If someone strengthens Inv in Lean to close a proof and the new
+conjunct is not actually preserved by every transition, or if the Lean and TLA+
+transition relations drift apart, that run fails.
 
-The pragmatic recommendation, if this were to be developed further: keep the
-Lean development for the unbounded safety argument and for the barrier table
-audit, which is the part most likely to catch a future edit to
-checksum_barriers, and add a small TLA+ spec of the same state machine to
-model-check liveness and to produce traces.  The two agree on the state space,
-so the TLA+ spec would be a direct transcription of Spec/Cluster.lean.
+Alloy would be a third option, well suited to the finite table audits, but
+weaker than either for the temporal parts.
+
+The division of labour to keep, then: Lean for the unbounded safety argument and
+the barrier table audit -- the part most likely to catch a future edit to
+checksum_barriers[] -- and TLA+ for liveness, for traces, and as a check on the
+Lean invariant.
 
 
 Files
 =====
-    Spec/State.lean     the four states and the reader API
-    Spec/Barriers.lean  checksum_barriers, the coordinator edges, recovery
-    Spec/Cluster.lean   the cluster and its transition relation
-    Spec/Safety.lean    the table audits, the invariant, the safety theorems
-    Spec/Trace.lean     a concrete execution, so the results are not vacuous
+    Spec/State.lean      the four states and the reader API
+    Spec/Barriers.lean   checksum_barriers, the coordinator edges, recovery
+    Spec/Cluster.lean    the cluster and its transition relation
+    Spec/Safety.lean     the table audits, the invariant, the safety theorems
+    Spec/Trace.lean      a concrete execution, so the results are not vacuous
+
+    tla/DataChecksums.tla  the same state machine, transcribed for TLC
+    tla/DataChecksums.cfg  safety, the table audit, and liveness
+    tla/Inductive.cfg      checks that Lean's Inv really is inductive
+    tla/BrokenTable.cfg    counterexample: a shortcut edge in the table
+    tla/Livelock.cfg       counterexample: a coordinator edge outside the table
+

@@ -31,7 +31,8 @@ variable.
 
 Formal model
 ============
-The spec/ subdirectory contains a machine-checked model, written in Lean 4, of
-the code reading and modifying the checksum state of a cluster.  It is not part
-of the build and is not run by the tests; see spec/README for what it proves and
-how to check it.
+The spec/ subdirectory contains two machine-checked models of the code reading
+and modifying the checksum state of a cluster: a Lean 4 development that proves
+safety for any number of backends, and a TLA+ transcription of it that TLC
+model-checks for liveness.  Neither is part of the build and neither is run by
+the tests; see spec/README for what they establish and how to check them.

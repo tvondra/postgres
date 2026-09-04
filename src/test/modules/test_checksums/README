@@ -28,3 +28,10 @@ NOTE: This test suite requires TAP tests to be enabled, a subset of the tests
 also require injection points to function.  In order to run the extended test
 then "checksum_extended" must be set in the PG_TEST_EXTRA environment
 variable.
+
+Formal model
+============
+The spec/ subdirectory contains a machine-checked model, written in Lean 4, of
+the code reading and modifying the checksum state of a cluster.  It is not part
+of the build and is not run by the tests; see spec/README for what it proves and
+how to check it.

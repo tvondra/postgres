@@ -1,0 +1,8 @@
+name = "datachecksums"
+defaultTargets = ["Spec"]
+
+# The model deliberately has no dependencies (in particular it does not use
+# Mathlib), so that "lake build" works offline and finishes in seconds.
+
+[[lean_lib]]
+name = "Spec"

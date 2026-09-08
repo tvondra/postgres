@@ -1,9 +1,9 @@
 ---------------------------- MODULE DataChecksums ----------------------------
 (***************************************************************************)
 (* A model of the data checksum state machine, transcribed from the Lean   *)
-(* development in the parent directory -- specifically Spec/Cluster.lean,  *)
-(* whose four state components and six transitions appear here one for     *)
-(* one.                                                                    *)
+(* development in the sibling lean/ directory -- specifically              *)
+(* lean/Spec/Cluster.lean, whose four state components and six             *)
+(* transitions appear here one for one.                                    *)
 (*                                                                         *)
 (* The Lean development proves safety for an arbitrary number of backends  *)
 (* and pages.  This module exists for the things a proof assistant is bad  *)
@@ -98,7 +98,8 @@ BaseBarrierTable ==
 (*                                                                         *)
 (*   brokenTable  the edge is added to checksum_barriers[], so a backend   *)
 (*                will happily absorb it.  A safety violation; this is     *)
-(*                Spec/Safety.lean's onOff_shortcut_unsafe made executable.*)
+(*                lean/Spec/Safety.lean's onOff_shortcut_unsafe made       *)
+(*                executable.                                              *)
 (*   livelock     the edge is only driven by the coordinator, so no        *)
 (*                running backend can absorb it and the handshake never    *)
 (*                retires.  A liveness violation, which the Lean           *)
@@ -129,8 +130,8 @@ AbsorbAllowed(a, b) == a = b \/ <<a, b>> \in BarrierTable
 (***************************************************************************)
 (* The transitions the coordinator drives.  Keeping this *separate* from   *)
 (* BarrierTable is the one place where this module is deliberately more    *)
-(* liberal than Spec/Cluster.lean, whose advanceShared rule requires the   *)
-(* edge to be in the barrier table by construction.  The C code has no     *)
+(* liberal than lean/Spec/Cluster.lean, whose advanceShared rule requires  *)
+(* the edge to be in the barrier table by construction.  The C code has no *)
 (* such guarantee -- SetDataChecksums*() and xlog2_redo() assign to        *)
 (* XLogCtl->data_checksum_version directly -- so the agreement between the *)
 (* two tables is a property to be checked, not an assumption.  That is     *)
@@ -190,7 +191,7 @@ Init ==
 
 -----------------------------------------------------------------------------
 (***************************************************************************)
-(* The six transitions of Spec/Cluster.lean's Step relation.               *)
+(* The six transitions of lean/Spec/Cluster.lean's Step relation.          *)
 (*                                                                         *)
 (* Reads are not transitions: DataChecksumsNeedVerify() and friends change *)
 (* nothing, so "a read misbehaves" is a property of a state rather than of *)
@@ -316,7 +317,7 @@ Spec ==
 
 -----------------------------------------------------------------------------
 (***************************************************************************)
-(* Safety.  These are Spec/Safety.lean's reachable_writeSafe,              *)
+(* Safety.  These are lean/Spec/Safety.lean's reachable_writeSafe,         *)
 (* reachable_readSafe and no_spurious_failure, restricted to the finite    *)
 (* Backends and Pages given in the .cfg file.                              *)
 (***************************************************************************)
@@ -349,9 +350,9 @@ NoSpuriousFailure ==
 (***************************************************************************)
 (* The barrier table audit.  These are constant-level facts -- they do not *)
 (* mention the variables -- and correspond to the theorems proved by       *)
-(* `decide` in Spec/Safety.lean.  They are listed as invariants so that    *)
-(* TLC evaluates them; anyone editing checksum_barriers[] should look here *)
-(* first.                                                                  *)
+(* `decide` in lean/Spec/Safety.lean.  They are listed as invariants so    *)
+(* that TLC evaluates them; anyone editing checksum_barriers[] should      *)
+(* look here first.                                                        *)
 (***************************************************************************)
 
 (***************************************************************************)
@@ -401,10 +402,10 @@ BarrierRetires == ~Quiescent ~> Quiescent
 
 -----------------------------------------------------------------------------
 (***************************************************************************)
-(* The inductive invariant of Spec/Safety.lean, field for field.  Checking *)
-(* it with INIT Inv / NEXT Next -- rather than from the real Init -- is an *)
-(* independent test of the Lean Inv.step proof: TLC tries every state      *)
-(* satisfying Inv, not just the reachable ones.                            *)
+(* The inductive invariant of lean/Spec/Safety.lean, field for field.      *)
+(* Checking it with INIT Inv / NEXT Next -- rather than from the real      *)
+(* Init -- is an independent test of the Lean Inv.step proof: TLC tries    *)
+(* every state satisfying Inv, not just the reachable ones.                *)
 (***************************************************************************)
 Inv ==
     /\ TypeOK

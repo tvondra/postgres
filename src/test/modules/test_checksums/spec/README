@@ -3,7 +3,7 @@ src/test/modules/test_checksums/spec/README
 A formal model of the data checksum state machine
 =================================================
 This directory contains two machine-checked models of the code that reads and
-modifies the data checksum state of a cluster: a Lean 4 development in Spec/,
+modifies the data checksum state of a cluster: a Lean 4 development in lean/,
 and a TLA+ transcription of it in tla/.  They are specifications, not tests:
 nothing here is built or run by "make check" or by meson, and no PostgreSQL
 source file depends on either of them.
@@ -11,7 +11,7 @@ source file depends on either of them.
 The two are complementary, and the division of labour is the one argued for at
 the bottom of this file:
 
-    Spec/ (Lean 4)   safety, for an *arbitrary* number of backends and pages,
+    lean/ (Lean 4)   safety, for an *arbitrary* number of backends and pages,
                      plus the audit of checksum_barriers[] that will catch a
                      future edit to that table
     tla/  (TLA+)     liveness, counterexample traces, and an independent check
@@ -31,7 +31,7 @@ underneath running backends.
 What is proved
 ==============
 Two properties, for every reachable cluster state, for an arbitrary number of
-backends and an arbitrary number of pages (Spec/Safety.lean):
+backends and an arbitrary number of pages (lean/Spec/Safety.lean):
 
   reachable_writeSafe
       If any process verifies data checksums, then every process is writing
@@ -66,7 +66,7 @@ the design were weakened: onOff_shortcut_unsafe, offOn_shortcut_unsafe and
 twoStateDesign_unsafe.  The last one is the formal statement of why the two
 'inprogress-*' states have to exist at all.
 
-Finally, Spec/Trace.lean exhibits a concrete nine-step execution of a
+Finally, lean/Spec/Trace.lean exhibits a concrete nine-step execution of a
 two-backend cluster that performs a complete online enable, so the results above
 are not vacuous.  Its state c8 is the situation the whole design exists to
 survive: one backend has absorbed the barrier and verifies checksums while
@@ -75,10 +75,10 @@ another has not and merely writes them.
 
 What is model-checked
 =====================
-tla/DataChecksums.tla is a transcription of Spec/Cluster.lean: the same four
-state components, the same six transitions, the same initial predicate.  The
-Lean development already proves safety, so the TLA+ module is aimed at the three
-things a proof assistant is bad at.  Each has a .cfg file of its own.
+tla/DataChecksums.tla is a transcription of lean/Spec/Cluster.lean: the same
+four state components, the same six transitions, the same initial predicate.
+The Lean development already proves safety, so the TLA+ module is aimed at the
+three things a proof assistant is bad at.  Each has a .cfg file of its own.
 
   DataChecksums.cfg
       The main run.  Re-checks TypeOK, WriteSafe, ReadSafe, NoSpuriousFailure
@@ -90,9 +90,9 @@ things a proof assistant is bad at.  Each has a .cfg file of its own.
       inductive invariant, transcribed field for field -- as the *initial*
       predicate, so TLC starts from every state satisfying Inv rather than from
       the reachable ones, and confirms each transition preserves it.  That is
-      precisely the obligation Spec/Safety.lean's Inv.step discharges, so the
-      two developments cross-validate each other.  A reported search depth of 1
-      is the check passing: every successor of an Inv state is already one.
+      precisely the obligation lean/Spec/Safety.lean's Inv.step discharges, so
+      the two developments cross-validate each other.  A reported search depth
+      of 1 is the check passing: every successor of an Inv state is already one.
 
   BrokenTable.cfg
       Adds the on -> off shortcut to checksum_barriers[] and prints the
@@ -140,7 +140,7 @@ The model covers the three copies of the state and every function that reads or
 writes them.  The Lean and TLA+ names are listed together because they are
 transcriptions of each other.
 
-  Lean (Spec/)                     C
+  Lean (lean/Spec/)                C
   -------------------------------  ------------------------------------------
   ChecksumState                    ChecksumStateType (storage/checksum.h)
   ChecksumState.toVersion          PG_DATA_CHECKSUM_* encoding
@@ -262,7 +262,7 @@ more than a few seconds.
 Lean.  The development is plain Lean 4 with no dependencies -- in particular it
 does not use Mathlib -- so it builds offline:
 
-    cd src/test/modules/test_checksums/spec
+    cd src/test/modules/test_checksums/spec/lean
     lake build
 
 lean-toolchain pins the exact compiler version, which is what the standard Lean
@@ -349,11 +349,13 @@ Lean invariant.
 
 Files
 =====
-    Spec/State.lean      the four states and the reader API
-    Spec/Barriers.lean   checksum_barriers, the coordinator edges, recovery
-    Spec/Cluster.lean    the cluster and its transition relation
-    Spec/Safety.lean     the table audits, the invariant, the safety theorems
-    Spec/Trace.lean      a concrete execution, so the results are not vacuous
+    lean/Spec/State.lean      the four states and the reader API
+    lean/Spec/Barriers.lean   checksum_barriers, the coordinator edges, recovery
+    lean/Spec/Cluster.lean    the cluster and its transition relation
+    lean/Spec/Safety.lean     the table audits, the invariant, the safety
+                              theorems
+    lean/Spec/Trace.lean      a concrete execution, so the results are not
+                              vacuous
 
     tla/DataChecksums.tla  the same state machine, transcribed for TLC
     tla/DataChecksums.cfg  safety, the table audit, and liveness

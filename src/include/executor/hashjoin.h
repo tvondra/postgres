@@ -14,6 +14,7 @@
 #ifndef HASHJOIN_H
 #define HASHJOIN_H
 
+#include "lib/bloomfilter.h"
 #include "nodes/execnodes.h"
 #include "port/atomics.h"
 #include "storage/barrier.h"
@@ -337,6 +338,77 @@ typedef struct HashJoinTableData
 	int			nbatch_outstart;	/* nbatch when we started outer scan */
 
 	bool		growEnabled;	/* flag to shut off nbatch increases */
+
+	/*
+	 * FIXME I dislike the number of new fields added to HashJoinTableData,
+	 * mostly for aesthetics reasons, but maybe it could have perf impact
+	 * too? Or could it be a sign of some design flaw? Do we actually need
+	 * all of the fields? Could we maybe move them out of line, so that the
+	 * cost is paid only when a Bloom filter is used? Maybe at least having
+	 * nested structs would make it easier to understand?
+	 */
+
+	/*
+	 * Whether to use a Bloom filter for this hash table.  The decision is
+	 * made once, when the hash table is created, so that changing
+	 * enable_hashjoin_bloom while the query is running does not affect it in
+	 * a confusing way.
+	 */
+	bool		bloomEnabled;
+
+	/*
+	 * Optional Bloom filter built on the hashes of the inner relation's join
+	 * keys (the same hash values used by the hash table).  When present, it is
+	 * consulted before probing the hash table to discard outer tuples that
+	 * cannot have a match.  It always contains the hashes of every inner
+	 * tuple, so a negative answer is conclusive across all batches.
+	 */
+	bloom_filter *bloomFilter;	/* Bloom filter, or NULL if not used */
+	double		bloomElements;	/* estimated number of inner tuples */
+
+	/*
+	 * Adaptive probing (see the "Bloom filters" comment in nodeHash.c).  When
+	 * the filter does not reject enough tuples we switch to sampling, and
+	 * probe it only for every BLOOM_PROBE_SAMPLE_RATE-th outer tuple.  The
+	 * window counters are reset after each BLOOM_PROBE_WINDOW probes.
+	 */
+	bool		bloomSampling;	/* only probe the filter for a sample? */
+	uint64		bloomSampleCounter; /* outer tuples seen while sampling */
+	uint64		bloomSampleProbes;  /* filter probes in the current window */
+	uint64		bloomSampleMatches; /* matches in the current window */
+
+	/*
+	 * Statistics about hashtable and Bloom filter probes. The counters are
+	 * incremental (tracking deltas): ExecHashAccumInstrumentation() adds them
+	 * to the collected instrumentation (and hashLookups/hashMatches also to
+	 * the *Total fields below) and resets them.  That happens when the node
+	 * is shut down (ExecShutdownHash, which for cursors runs after every
+	 * FETCH), but only if the node is instrumented - otherwise the counters
+	 * simply keep growing for the lifetime of the join.
+	 *
+	 * bloomProbes and bloomMatches track access to the Bloom filter. The
+	 * probes skipped by sampling are not included.
+	 *
+	 * hashLookups counts how many outer tuples actually probed the hash
+	 * table, and hashMatches how many of those found at least one matching
+	 * inner tuple. Outer tuples eliminated by the Bloom filter never probe the
+	 * hash table and so are not counted here.
+	 */
+	int64		bloomProbes;	/* Bloom filter probes */
+	int64		bloomMatches;	/* matches among those probes */
+
+	int64		hashLookups;	/* outer tuples that probed the hash table */
+	int64		hashMatches;	/* probes that found a matching inner tuple */
+
+	/*
+	 * Running totals of hashLookups/hashMatches already accumulated into the
+	 * instrumentation (and reset).  The adaptive build decision looks at
+	 * Total + current, so it sees the whole history of lookups no matter when
+	 * the accumulation happened, while the instrumentation counts each lookup
+	 * only once.
+	 */
+	int64		hashLookupsTotal;
+	int64		hashMatchesTotal;
 
 	/*
 	 * totalTuples is the running total of tuples inserted into either the

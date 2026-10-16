@@ -39,6 +39,13 @@
 #include "lib/bloomfilter.h"
 #include "port/pg_bitutils.h"
 
+/*
+ * Default minimum size of the bitset, in bytes. bloom_create() won't create
+ * a bitset smaller than this, even when the caller's total_elems estimate would
+ * suggest a smaller one.
+ */
+#define DEFAULT_MIN_BITSET_BYTES	(1024 * 1024)
+
 #define MAX_HASH_FUNCS		10
 
 struct bloom_filter
@@ -53,9 +60,48 @@ struct bloom_filter
 
 static int	my_bloom_power(uint64 target_bitset_bits);
 static int	optimal_k(uint64 bitset_bits, int64 total_elems);
+static uint64 bloom_bitset_bytes(int64 total_elems, int bloom_work_mem,
+								 size_t min_filter_size);
 static void k_hashes(bloom_filter *filter, uint32 *hashes, unsigned char *elem,
 					 size_t len);
 static inline uint32 mod_m(uint32 val, uint64 m);
+
+/*
+ * Determine the size of the bitset (in bytes) that bloom_create()/bloom_init()
+ * will use for the given parameters.  The bitset is always a power-of-two
+ * number of bits; see bloom_create() for the rationale behind the sizing.
+ *
+ * min_filter_size is the minimum size of the bitset, in bytes.  The bitset
+ * will never be sized below this, even when the total_elems estimate would
+ * suggest a smaller one.
+ */
+static uint64
+bloom_bitset_bytes(int64 total_elems, int bloom_work_mem, size_t min_filter_size)
+{
+	uint64		bitset_bytes;
+	uint64		bitset_bits;
+	int			bloom_power;
+
+	/*
+	 * Aim for two bytes per element; this is sufficient to get a false
+	 * positive rate below 1%, independent of the size of the bitset or total
+	 * number of elements.  Also, if rounding down the size of the bitset to
+	 * the next lowest power of two turns out to be a significant drop, the
+	 * false positive rate still won't exceed 2% in almost all cases.
+	 */
+	bitset_bytes = Min(bloom_work_mem * UINT64CONST(1024), total_elems * 2);
+	bitset_bytes = Max(min_filter_size, bitset_bytes);
+
+	/*
+	 * Size in bits should be the highest power of two <= target.  bitset_bits
+	 * is uint64 because PG_UINT32_MAX is 2^32 - 1, not 2^32
+	 */
+	bloom_power = my_bloom_power(bitset_bytes * BITS_PER_BYTE);
+	bitset_bits = UINT64CONST(1) << bloom_power;
+	bitset_bytes = bitset_bits / BITS_PER_BYTE;
+
+	return bitset_bytes;
+}
 
 /*
  * Create Bloom filter in caller's memory context.  We aim for a false positive
@@ -74,40 +120,33 @@ static inline uint32 mod_m(uint32 val, uint64 m);
  * bits, and the largest possible bitset is 512MB (2^32 bits).  The
  * implementation allocates only enough memory to target its standard false
  * positive rate, using a simple formula with caller's total_elems estimate as
- * an input.  The bitset might be as small as 1MB, even when bloom_work_mem is
- * much higher.
+ * an input.  The bitset might be as small as min_bitset_bytes, even when
+ * bloom_work_mem is much higher.
  *
  * The Bloom filter is seeded using a value provided by the caller.  Using a
  * distinct seed value on every call makes it unlikely that the same false
  * positives will reoccur when the same set is fingerprinted a second time.
  * Callers that don't care about this pass a constant as their seed, typically
  * 0.  Callers can also use a pseudo-random seed, eg from pg_prng_uint64().
+ *
+ * min_bitset_bytes is the minimum bitset size. This is useful for callers
+ * that want to allow filters smaller than the default DEFAULT_MIN_BITSET_BYTES
+ * (1MB), for example when fingerprinting small sets where the 1MB minimum
+ * would waste memory and would not fit into CPU caches. The bitset is still
+ * sized as a power of two number of bits, and is never smaller than this
+ * minimum (subject to that rounding).
  */
 bloom_filter *
-bloom_create(int64 total_elems, int bloom_work_mem, uint64 seed)
+bloom_create_custom(int64 total_elems, int bloom_work_mem,
+					size_t min_filter_size, uint64 seed)
 {
 	bloom_filter *filter;
-	int			bloom_power;
 	uint64		bitset_bytes;
 	uint64		bitset_bits;
 
-	/*
-	 * Aim for two bytes per element; this is sufficient to get a false
-	 * positive rate below 1%, independent of the size of the bitset or total
-	 * number of elements.  Also, if rounding down the size of the bitset to
-	 * the next lowest power of two turns out to be a significant drop, the
-	 * false positive rate still won't exceed 2% in almost all cases.
-	 */
-	bitset_bytes = Min(bloom_work_mem * UINT64CONST(1024), total_elems * 2);
-	bitset_bytes = Max(1024 * 1024, bitset_bytes);
-
-	/*
-	 * Size in bits should be the highest power of two <= target.  bitset_bits
-	 * is uint64 because PG_UINT32_MAX is 2^32 - 1, not 2^32
-	 */
-	bloom_power = my_bloom_power(bitset_bytes * BITS_PER_BYTE);
-	bitset_bits = UINT64CONST(1) << bloom_power;
-	bitset_bytes = bitset_bits / BITS_PER_BYTE;
+	bitset_bytes = bloom_bitset_bytes(total_elems, bloom_work_mem,
+									  min_filter_size);
+	bitset_bits = bitset_bytes * BITS_PER_BYTE;
 
 	/* Allocate bloom filter with unset bitset */
 	filter = palloc0(offsetof(bloom_filter, bitset) +
@@ -117,6 +156,17 @@ bloom_create(int64 total_elems, int bloom_work_mem, uint64 seed)
 	filter->m = bitset_bits;
 
 	return filter;
+}
+
+/*
+ * Create Bloom filter in caller's memory context, like bloom_create_custom(),
+ * but with the minimum bitset size set to DEFAULT_MIN_BITSET_BYTES (i.e. 1MB).
+ */
+bloom_filter *
+bloom_create(int64 total_elems, int bloom_work_mem, uint64 seed)
+{
+	return bloom_create_custom(total_elems, bloom_work_mem,
+							   DEFAULT_MIN_BITSET_BYTES, seed);
 }
 
 /*
@@ -190,6 +240,39 @@ bloom_prop_bits_set(bloom_filter *filter)
 	uint64		bits_set = pg_popcount((char *) filter->bitset, bitset_bytes);
 
 	return bits_set / (double) filter->m;
+}
+
+/*
+ * Returns the number of hash functions used by this Bloom filter.
+ */
+int
+bloom_num_hash_funcs(bloom_filter *filter)
+{
+	return filter->k_hash_funcs;
+}
+
+/*
+ * Returns the total size of the Bloom filter's bitset, in bits.
+ */
+uint64
+bloom_total_bits(bloom_filter *filter)
+{
+	return filter->m;
+}
+
+/*
+ * Estimate the current false positive rate of the Bloom filter.
+ *
+ * For a filter that uses k hash functions, the probability that a membership
+ * test for an element that was never added still reports "possibly present" is
+ * approximately p^k, where p is the proportion of bits currently set. This
+ * reflects the actual contents of the filter rather than the target rate aimed
+ * for at creation time.
+ */
+double
+bloom_false_positive_rate(bloom_filter *filter)
+{
+	return pow(bloom_prop_bits_set(filter), filter->k_hash_funcs);
 }
 
 /*

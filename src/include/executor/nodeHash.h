@@ -36,6 +36,7 @@ extern void ExecParallelHashTableSetCurrentBatch(HashJoinTable hashtable,
 extern void ExecHashTableInsert(HashJoinTable hashtable,
 								TupleTableSlot *slot,
 								uint32 hashvalue);
+extern bool ExecHashBloomReject(HashJoinTable hashtable, uint32 hashvalue);
 extern void ExecParallelHashTableInsert(HashJoinTable hashtable,
 										TupleTableSlot *slot,
 										uint32 hashvalue);

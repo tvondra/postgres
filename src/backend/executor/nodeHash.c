@@ -849,7 +849,10 @@ ExecHashTableCreate(HashState *state)
 			if (nbatch > 1 && hashtable->bloomEnabled)
 			{
 				pstate->bloom_nelems = Max((int64) rows, 1000);
-				pstate->bloom_nelems *= 2.0;
+				pstate->bloom_nelems *= 2.0;	/* FIXME can overflow in int64 */
+
+				/* same minimum as elsewhere */
+				pstate->bloom_nelems = Max(pstate->bloom_nelems, 1000);
 
 				pstate->bloom_filter =
 					dsa_allocate(hashtable->area,
@@ -2074,7 +2077,7 @@ ExecParallelHashIncreaseNumBatches(HashJoinTable hashtable)
 						 * we have).
 						 */
 						pstate->bloom_nelems = Max(pstate->bloom_nelems, ntuples);
-						pstate->bloom_nelems *= 2.0;
+						pstate->bloom_nelems *= 2.0;	/* FIXME can overflow in int64 */
 
 						/* same minimum as elsewhere */
 						pstate->bloom_nelems = Max(pstate->bloom_nelems, 1000);

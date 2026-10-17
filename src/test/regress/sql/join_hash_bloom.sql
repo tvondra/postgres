@@ -24,6 +24,12 @@ VACUUM ANALYZE hash_bloom_dimension;
 -- at least some outer tuples.  Only the structure of the output is checked,
 -- because the exact probe counts depend on the false positives, and so on
 -- the hash values and the byte order.
+--
+-- hash_bloom_node() returns the Hash node of the EXPLAIN ANALYZE output as
+-- json, for tests that need to look at individual counters.
+--
+-- hash_bloom_spill() returns the number of temporary blocks written by a
+-- query with Bloom filters disabled and enabled.
 CREATE FUNCTION hash_bloom_find_node(node json, node_type text)
 RETURNS json LANGUAGE plpgsql
 AS
@@ -70,6 +76,39 @@ BEGIN
       (hash_node->'Bloom Filter'->>'Matches')::bigint < (hash_node->'Bloom Filter'->>'Probes')::bigint;
     RETURN NEXT;
   END LOOP;
+END;
+$$;
+
+CREATE FUNCTION hash_bloom_node(query text)
+RETURNS json LANGUAGE plpgsql
+AS
+$$
+DECLARE
+  whole_plan json;
+BEGIN
+  EXECUTE 'EXPLAIN (ANALYZE, VERBOSE, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || query
+    INTO whole_plan;
+  RETURN hash_bloom_find_node(json_extract_path(whole_plan, '0', 'Plan'), 'Hash');
+END;
+$$;
+
+CREATE FUNCTION hash_bloom_spill(query text,
+                                 OUT bloom_off bigint,
+                                 OUT bloom_on bigint)
+RETURNS record LANGUAGE plpgsql
+AS
+$$
+DECLARE
+  whole_plan json;
+BEGIN
+  SET LOCAL enable_hashjoin_bloom = off;
+  EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF, FORMAT JSON) ' || query
+    INTO whole_plan;
+  bloom_off := (hash_bloom_find_node(json_extract_path(whole_plan, '0', 'Plan'), 'Hash Join')->>'Temp Written Blocks')::bigint;
+  SET LOCAL enable_hashjoin_bloom = on;
+  EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF, FORMAT JSON) ' || query
+    INTO whole_plan;
+  bloom_on := (hash_bloom_find_node(json_extract_path(whole_plan, '0', 'Plan'), 'Hash Join')->>'Temp Written Blocks')::bigint;
 END;
 $$;
 
@@ -385,12 +424,297 @@ SELECT * FROM hash_bloom_explain($$SELECT * FROM hash_bloom_fact f JOIN hash_blo
 SET enable_hashjoin_bloom = on;
 SELECT * FROM hash_bloom_explain($$SELECT * FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id) WHERE d.r < 0.5$$);
 
+-- Parallel-aware hash joins (Parallel Hash) build and probe the filter
+-- cooperatively.  Only the shape of the plans and the results are checked,
+-- as the rest depends on the number of workers that were launched.
+ALTER TABLE hash_bloom_dimension SET (parallel_workers = 2);
+ALTER TABLE hash_bloom_probe SET (parallel_workers = 2);
+ALTER TABLE hash_bloom_underestimated SET (parallel_workers = 2);
+SET enable_parallel_hash = on;
+SET work_mem = '512kB';
+
+-- a non-selective in-memory join does not use a filter, a selective one does
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id);
+SELECT * FROM hash_bloom_stats($$
+  SELECT count(*) FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id)
+$$);
+SELECT * FROM hash_bloom_stats($$
+  SELECT count(*) FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id) WHERE d.r < 0.5
+$$);
+
+-- outer and anti joins in a single batch (filter built adaptively)
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM hash_bloom_probe p LEFT JOIN hash_bloom_dimension d ON (p.did = d.id);
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM hash_bloom_probe p FULL JOIN hash_bloom_dimension d ON (p.did = d.id);
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM hash_bloom_probe p WHERE NOT EXISTS (SELECT 1 FROM hash_bloom_dimension d WHERE p.did = d.id);
+SELECT * FROM hash_bloom_stats($$
+  SELECT count(*) FROM hash_bloom_probe p LEFT JOIN hash_bloom_dimension d ON (p.did = d.id)
+$$);
+SELECT * FROM hash_bloom_count($$
+  SELECT count(*) FROM hash_bloom_probe p JOIN hash_bloom_dimension d ON (p.did = d.id)
+$$);
+SELECT * FROM hash_bloom_count($$
+  SELECT count(*) FROM hash_bloom_probe p LEFT JOIN hash_bloom_dimension d ON (p.did = d.id)
+$$);
+SELECT * FROM hash_bloom_count($$
+  SELECT count(*) FROM hash_bloom_probe p FULL JOIN hash_bloom_dimension d ON (p.did = d.id)
+$$);
+SELECT * FROM hash_bloom_count($$
+  SELECT count(*) FROM hash_bloom_dimension d LEFT JOIN hash_bloom_probe p ON (p.did = d.id)
+$$);
+SELECT * FROM hash_bloom_count($$
+  SELECT count(*) FROM hash_bloom_probe p WHERE EXISTS (SELECT 1 FROM hash_bloom_dimension d WHERE p.did = d.id)
+$$);
+SELECT * FROM hash_bloom_count($$
+  SELECT count(*) FROM hash_bloom_probe p WHERE NOT EXISTS (SELECT 1 FROM hash_bloom_dimension d WHERE p.did = d.id)
+$$);
+
+-- The same with batching (filter built up front).  A parallel hash table
+-- may use the memory of all the participants, so it takes a smaller limit
+-- to make it batch.
+SET work_mem = '64kB';
+SET hash_mem_multiplier = 1.0;
+SELECT * FROM hash_bloom_stats($$
+  SELECT count(*) FROM hash_bloom_probe p LEFT JOIN hash_bloom_dimension d ON (p.did = d.id)
+$$);
+SELECT * FROM hash_bloom_count($$
+  SELECT count(*) FROM hash_bloom_probe p JOIN hash_bloom_dimension d ON (p.did = d.id)
+$$);
+SELECT * FROM hash_bloom_count($$
+  SELECT count(*) FROM hash_bloom_probe p LEFT JOIN hash_bloom_dimension d ON (p.did = d.id)
+$$);
+SELECT * FROM hash_bloom_count($$
+  SELECT count(*) FROM hash_bloom_probe p FULL JOIN hash_bloom_dimension d ON (p.did = d.id)
+$$);
+SELECT * FROM hash_bloom_count($$
+  SELECT count(*) FROM hash_bloom_dimension d LEFT JOIN hash_bloom_probe p ON (p.did = d.id)
+$$);
+SELECT * FROM hash_bloom_count($$
+  SELECT count(*) FROM hash_bloom_probe p WHERE EXISTS (SELECT 1 FROM hash_bloom_dimension d WHERE p.did = d.id)
+$$);
+SELECT * FROM hash_bloom_count($$
+  SELECT count(*) FROM hash_bloom_probe p WHERE NOT EXISTS (SELECT 1 FROM hash_bloom_dimension d WHERE p.did = d.id)
+$$);
+
+-- a single-batch hash table that has to add batches while being built
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM hash_bloom_probe p JOIN hash_bloom_underestimated d ON (p.did = d.id);
+SELECT * FROM hash_bloom_stats($$
+  SELECT count(*) FROM hash_bloom_probe p JOIN hash_bloom_underestimated d ON (p.did = d.id)
+$$);
+SELECT * FROM hash_bloom_count($$
+  SELECT count(*) FROM hash_bloom_probe p JOIN hash_bloom_underestimated d ON (p.did = d.id)
+$$);
+SELECT * FROM hash_bloom_count($$
+  SELECT count(*) FROM hash_bloom_probe p LEFT JOIN hash_bloom_underestimated d ON (p.did = d.id)
+$$);
+SELECT * FROM hash_bloom_count($$
+  SELECT count(*) FROM hash_bloom_probe p WHERE NOT EXISTS (SELECT 1 FROM hash_bloom_underestimated d WHERE p.did = d.id)
+$$);
+
+-- no filter is built at that point with Bloom filters disabled
+SET enable_hashjoin_bloom = off;
+SELECT * FROM hash_bloom_stats($$
+  SELECT count(*) FROM hash_bloom_probe p JOIN hash_bloom_underestimated d ON (p.did = d.id)
+$$);
+SELECT count(*) FROM hash_bloom_probe p LEFT JOIN hash_bloom_underestimated d ON (p.did = d.id);
+SET enable_hashjoin_bloom = on;
+RESET hash_mem_multiplier;
+
+-- Rescans of a parallel hash join, which rebuild the hash table (and the
+-- filter) every time.  First in a single batch, then with batching.
+SET work_mem = '512kB';
+SET enable_nestloop = on;
+SET enable_material = off;
+EXPLAIN (COSTS OFF)
+SELECT v.x, ss.id FROM (VALUES (10), (15), (99990)) v(x)
+  LEFT JOIN (SELECT p.id FROM hash_bloom_probe p JOIN hash_bloom_dimension d ON (p.did = d.id)) ss
+  ON v.x < ss.id + 1 AND v.x > ss.id - 1;
+SELECT v.x, ss.id FROM (VALUES (10), (15), (99990)) v(x)
+  LEFT JOIN (SELECT p.id FROM hash_bloom_probe p JOIN hash_bloom_dimension d ON (p.did = d.id)) ss
+  ON v.x < ss.id + 1 AND v.x > ss.id - 1;
+SELECT * FROM hash_bloom_stats($$
+  SELECT v.x, ss.id FROM (VALUES (10), (15), (99990)) v(x)
+    LEFT JOIN (SELECT p.id FROM hash_bloom_probe p JOIN hash_bloom_dimension d ON (p.did = d.id)) ss
+    ON v.x < ss.id + 1 AND v.x > ss.id - 1
+$$);
+SET work_mem = '64kB';
+SET hash_mem_multiplier = 1.0;
+EXPLAIN (COSTS OFF)
+SELECT v.x, ss.id FROM (VALUES (10), (15), (99990)) v(x)
+  LEFT JOIN (SELECT p.id FROM hash_bloom_probe p JOIN hash_bloom_dimension d ON (p.did = d.id)) ss
+  ON v.x < ss.id + 1 AND v.x > ss.id - 1;
+SELECT v.x, ss.id FROM (VALUES (10), (15), (99990)) v(x)
+  LEFT JOIN (SELECT p.id FROM hash_bloom_probe p JOIN hash_bloom_dimension d ON (p.did = d.id)) ss
+  ON v.x < ss.id + 1 AND v.x > ss.id - 1;
+SELECT * FROM hash_bloom_stats($$
+  SELECT v.x, ss.id FROM (VALUES (10), (15), (99990)) v(x)
+    LEFT JOIN (SELECT p.id FROM hash_bloom_probe p JOIN hash_bloom_dimension d ON (p.did = d.id)) ss
+    ON v.x < ss.id + 1 AND v.x > ss.id - 1
+$$);
+RESET hash_mem_multiplier;
+SET enable_nestloop = off;
+RESET enable_material;
+
+-- A serial plan that debug_parallel_query = regress puts under a Gather runs
+-- in a worker whose details EXPLAIN hides, but the statistics the worker
+-- collected must still be reported.
+ALTER TABLE hash_bloom_dimension SET (parallel_workers = 0);
+ALTER TABLE hash_bloom_probe SET (parallel_workers = 0);
+SET work_mem = '512kB';
+SET debug_parallel_query = regress;
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM hash_bloom_probe p LEFT JOIN hash_bloom_dimension d ON (p.did = d.id);
+SELECT * FROM hash_bloom_stats($$
+  SELECT count(*) FROM hash_bloom_probe p LEFT JOIN hash_bloom_dimension d ON (p.did = d.id)
+$$);
+SELECT * FROM hash_bloom_count($$
+  SELECT count(*) FROM hash_bloom_probe p LEFT JOIN hash_bloom_dimension d ON (p.did = d.id)
+$$);
+RESET debug_parallel_query;
+
+-- Regression tests for bugs found during review.  Each block says what it
+-- guards against.  The counters are only visible in EXPLAIN ANALYZE, which
+-- runs the plan in a single ExecutorRun(), so how the counters survive the
+-- shutdown at the end of a run (cursors, SPI) cannot be tested here.
+
+-- serial joins again
+SET max_parallel_workers_per_gather = 0;
+SET work_mem = '512kB';
+
+-- #6: an outer tuple with several hash-equal inner tuples that all fail the
+-- join filter was counted as a match once per inner tuple.  Every fact row
+-- with did <= 2000 finds five hash-equal rows in hash_bloom_dups, none of
+-- which passes the join filter: exactly 20000 matches.  The over-count also
+-- made the match rate look like 100%, which prevented the adaptive filter
+-- from being built.
+CREATE TABLE hash_bloom_dups AS
+  SELECT d.id, d.r FROM hash_bloom_dimension d, generate_series(1, 5) WHERE d.id <= 2000;
+VACUUM ANALYZE hash_bloom_dups;
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM hash_bloom_fact f JOIN hash_bloom_dups d ON (f.did = d.id AND d.r > f.id);
+SELECT (n->>'Hash Matches')::bigint AS hash_matches,
+       (n->'Bloom Filter') IS NOT NULL AS bloom_used
+  FROM hash_bloom_node($$
+    SELECT count(*) FROM hash_bloom_fact f JOIN hash_bloom_dups d ON (f.did = d.id AND d.r > f.id)
+  $$) n;
+
+-- #21: the fields that carry the parameters of a destroyed hash table's
+-- filter to EXPLAIN were not initialized.  With the filter disabled nothing
+-- assigns them, and a hash table rebuilt for each rescan is likely to be
+-- allocated where the previous one was freed, so garbage was reported (on
+-- assert-enabled builds, the pattern pfree() leaves behind).
+SET enable_hashjoin_bloom = off;
+SELECT * FROM hash_bloom_stats($$
+  SELECT t.thr, (SELECT count(*) FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id) WHERE d.r < t.thr)
+    FROM (VALUES (1.0), (0.5)) t(thr)
+$$);
+SET enable_hashjoin_bloom = on;
+
+-- #9: outer tuples rejected by the filter must not be written to the batch
+-- files.  Most of hash_bloom_probe has no match, so a batched join with the
+-- filter writes much less temporary data than one without.  The serial
+-- join always did this, and is the baseline for the parallel one below.
+SET work_mem = '128kB';
+SELECT bloom_on > 0 AS spills, bloom_on * 2 < bloom_off AS filter_reduces_spill
+  FROM hash_bloom_spill($$
+    SELECT count(*) FROM hash_bloom_probe p JOIN hash_bloom_dimension d ON (p.did = d.id)
+  $$);
+
+-- parallel joins again
+SET max_parallel_workers_per_gather = 2;
+ALTER TABLE hash_bloom_dimension SET (parallel_workers = 2);
+ALTER TABLE hash_bloom_probe SET (parallel_workers = 2);
+SET work_mem = '64kB';
+SET hash_mem_multiplier = 1.0;
+
+-- #8: with parallel_leader_participation = off the leader never touches the
+-- hash table, and EXPLAIN reported no Bloom filter at all, because only the
+-- leader's statistics decided whether to print it.  (When no worker can be
+-- launched the leader runs the join itself, and the test passes trivially.)
+SET parallel_leader_participation = off;
+SELECT * FROM hash_bloom_stats($$
+  SELECT count(*) FROM hash_bloom_probe p JOIN hash_bloom_dimension d ON (p.did = d.id)
+$$);
+RESET parallel_leader_participation;
+
+-- #9: a batched parallel hash join partitions the whole outer relation into
+-- shared batch files before probing, and used to write the tuples the filter
+-- rejects too.
+SELECT bloom_on > 0 AS spills, bloom_on * 2 < bloom_off AS filter_reduces_spill
+  FROM hash_bloom_spill($$
+    SELECT count(*) FROM hash_bloom_probe p JOIN hash_bloom_dimension d ON (p.did = d.id)
+  $$);
+
+-- #21: the same for a parallel rescan, which rebuilds the hash table too
+SET enable_hashjoin_bloom = off;
+SET enable_nestloop = on;
+SET enable_material = off;
+SELECT * FROM hash_bloom_stats($$
+  SELECT v.x, ss.id FROM (VALUES (10), (15), (99990)) v(x)
+    LEFT JOIN (SELECT p.id FROM hash_bloom_probe p JOIN hash_bloom_dimension d ON (p.did = d.id)) ss
+    ON v.x < ss.id + 1 AND v.x > ss.id - 1
+$$);
+SET enable_hashjoin_bloom = on;
+SET enable_nestloop = off;
+RESET enable_material;
+
+-- #23: a parallel rescan frees the shared filter before the leader
+-- accumulates the statistics of the hash table being destroyed, so the
+-- filter built by an earlier scan was lost when the last one built none.
+-- The inner side is restricted by an InitPlan that depends on the outer
+-- row: the first scan hashes a tenth of the dimension (the first lookups
+-- find no match, so a filter is built adaptively), the second all of it
+-- (every lookup matches, no filter).  The statistics reported by workers
+-- are kept across rescans, so the leader has to probe alone for the loss to
+-- be visible: max_parallel_workers = 0 leaves the plan unchanged but
+-- launches no worker.  The reversed order, which ends with a filter, is the
+-- control.
+SET work_mem = '512kB';
+RESET hash_mem_multiplier;
+SET max_parallel_workers = 0;
+EXPLAIN (COSTS OFF)
+SELECT t.i, (SELECT count(*) FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id) WHERE d.id > (SELECT 9000 * (2 - t.i)))
+  FROM (VALUES (1), (2)) t(i);
+SELECT t.i, (SELECT count(*) FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id) WHERE d.id > (SELECT 9000 * (2 - t.i)))
+  FROM (VALUES (1), (2)) t(i);
+SELECT * FROM hash_bloom_stats($$
+  SELECT t.i, (SELECT count(*) FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id) WHERE d.id > (SELECT 9000 * (2 - t.i)))
+    FROM (VALUES (1), (2)) t(i)
+$$);
+SELECT * FROM hash_bloom_stats($$
+  SELECT t.i, (SELECT count(*) FROM hash_bloom_fact f JOIN hash_bloom_dimension d ON (f.did = d.id) WHERE d.id > (SELECT 9000 * (t.i - 1)))
+    FROM (VALUES (1), (2)) t(i)
+$$);
+
+-- #29: the participant that built the shared adaptive filter published it
+-- for the others but did not start probing it itself until its next window
+-- of lookups, so its first 1000 outer tuples after the build went to the
+-- hash table for nothing.  Probing alone, the leader must use the filter for
+-- every outer tuple after the window that builds it, exactly like the serial
+-- join: hash_bloom_probe has 99000 non-NULL keys, 1000 are looked up before
+-- the filter exists and 98000 are probed after.
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM hash_bloom_probe p JOIN hash_bloom_dimension d ON (p.did = d.id);
+SELECT (n->'Bloom Filter'->>'Probes')::bigint AS bloom_probes,
+       (n->>'Hash Lookups')::bigint - (n->'Bloom Filter'->>'Matches')::bigint AS lookups_before_filter
+  FROM hash_bloom_node($$
+    SELECT count(*) FROM hash_bloom_probe p JOIN hash_bloom_dimension d ON (p.did = d.id)
+  $$) n;
+RESET max_parallel_workers;
+
 DROP TABLE hash_bloom_fact;
 DROP TABLE hash_bloom_dimension;
 DROP TABLE hash_bloom_probe;
 DROP TABLE hash_bloom_underestimated;
+DROP TABLE hash_bloom_dups;
 DROP FUNCTION hash_bloom_count(text);
 DROP FUNCTION hash_bloom_toggle(text, bool);
 DROP FUNCTION hash_bloom_stats(text);
+DROP FUNCTION hash_bloom_node(text);
+DROP FUNCTION hash_bloom_spill(text);
 DROP FUNCTION hash_bloom_find_node(json, text);
 DROP FUNCTION hash_bloom_explain(text, bool);

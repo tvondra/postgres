@@ -70,6 +70,8 @@ test: brin gin gist spgist privileges init_privs security_label collate matview 
 
 # ----------
 # Additional BRIN tests
+# join_hash_bloom runs parallel hash joins and is kept in this small group
+# so that it is unlikely to run out of parallel workers
 # ----------
 test: brin_bloom brin_multi join_hash_bloom
 

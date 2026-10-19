@@ -86,10 +86,10 @@ static void ExecParallelHashCloseBatchAccessors(HashJoinTable hashtable);
 static void ExecParallelHashBloomCreateFilter(HashJoinTable hashtable, int64 nelems);
 static void ExecParallelHashBloomBuildFilter(HashJoinTable hashtable);
 
-/* FIXME would it make sense to mark some of these inline? */
 static void ExecHashBloomCreateFilter(HashJoinTable hashtable, bool complete);
 static void ExecHashBloomBuildFilter(HashJoinTable hashtable, bool complete);
-static void ExecHashBloomAdaptiveCreate(HashJoinTable hashtable);
+static pg_always_inline void ExecHashBloomAdaptiveCreate(HashJoinTable hashtable);
+static pg_noinline void ExecHashBloomAdaptiveBuild(HashJoinTable hashtable);
 static void ExecHashBloomSamplingUpdate(HashJoinTable hashtable, bool match);
 
 
@@ -1056,33 +1056,23 @@ ExecHashBloomBuildFilter(HashJoinTable hashtable, bool complete)
 }
 
 /*
- * ExecHashBloomReject
- *		Should this hash value (for an outer tuple) be rejected?
+ * ExecHashBloomProbeFilter
+ *		Probe the Bloom filter for the hash value of an outer tuple.
  *
- * Returns true if a Bloom filter is in use and it proves that the given hash
- * value (and therefore the outer tuple) cannot match any inner tuple.
+ * This is the out-of-line part of ExecHashBloomReject() (see nodeHash.h),
+ * called only when the hash table has a filter.  Returns true if the filter
+ * proves that the hash value (and therefore the outer tuple) cannot match
+ * any inner tuple.
  *
  * When sampling the filter probes, most tuples bypass the filter and the
  * function returns false without consulting it.
- *
- * The caller is responsible for probing each outer tuple only once.  Tuples
- * written to a batch file have already been checked (either while processing
- * batch 0 of a serial join, or while partitioning the outer relation of a
- * Parallel Hash join), so there's no point in checking them again when they
- * are read back.  Doing so would waste cycles and distort the probe counters
- * used to drive the adaptive sampling.
- *
- * XXX We can't mark it inline, it's called from a different translation unit.
- * Maybe we could optimize it in some other way?
  */
 bool
-ExecHashBloomReject(HashJoinTable hashtable, uint32 hashvalue)
+ExecHashBloomProbeFilter(HashJoinTable hashtable, uint32 hashvalue)
 {
 	bool	reject = false;
 
-	/* If there's no filter, all tuples should pass. */
-	if (hashtable->bloomFilter == NULL)
-		return false;
+	Assert(hashtable->bloomFilter != NULL);
 
 	/*
 	 * Probe the filter for the hash value, unless it should be skipped due to
@@ -1158,19 +1148,21 @@ ExecHashBloomSamplingUpdate(HashJoinTable hashtable, bool match)
  * every BLOOM_BUILD_WINDOW lookups, build the filter if sufficiently few of
  * the lookups so far found a match.
  *
- * XXX It's a bit unfortunate that when not inlined, we get to call this even
- * with enable_hashjoin_bloom=off, only to bail out on bloomEnabled. So we pay
- * for the call even when disabled, which may skew comparisons. Should we try
- * to do better? Or is it not measurable. Same thing probably applies to the
- * other ExecHashBloom methods.
+ * As this runs for every outer tuple, the cases that need no action - Bloom
+ * filters are disabled, the filter already exists, or the lookup does not
+ * complete a window - are handled here, inline.  Only the lookup completing
+ * a window pays for the out-of-line call to ExecHashBloomAdaptiveBuild(),
+ * which makes the decision and builds the filter.
+ *
+ * We force the inlining: left to its own devices, gcc's partial inlining
+ * keeps only the first two tests inline and moves the window test into the
+ * out-of-line part, so that a join which never builds the filter (because
+ * the match rate is too high) would still pay for a call per outer tuple.
  */
-static void
+static pg_always_inline void
 ExecHashBloomAdaptiveCreate(HashJoinTable hashtable)
 {
-	int64		hashLookups,
-				hashMatches;
-
-	ParallelHashJoinState *pstate = hashtable->parallel_state;
+	int64		hashLookups;
 
 	/* Bail out if Bloom filters are disabled. */
 	if (!hashtable->bloomEnabled)
@@ -1183,31 +1175,58 @@ ExecHashBloomAdaptiveCreate(HashJoinTable hashtable)
 	/* All batched runs should have a filter created automatically. */
 	Assert(hashtable->nbatch == 1);
 
+	/*
+	 * Reconsider only once every BLOOM_BUILD_WINDOW lookups, counting the
+	 * lookups already accumulated into the total too.
+	 */
+	hashLookups = hashtable->hashLookupsTotal + hashtable->hashLookups;
+	if (likely((hashLookups % BLOOM_BUILD_WINDOW) != 0))
+		return;
+
+	ExecHashBloomAdaptiveBuild(hashtable);
+}
+
+/*
+ * ExecHashBloomAdaptiveBuild
+ *		Build the Bloom filter if the join has been selective enough so far.
+ *
+ * This is the out-of-line part of ExecHashBloomAdaptiveCreate(), called at
+ * the end of each window of BLOOM_BUILD_WINDOW lookups while the hash table
+ * has no filter yet.  If sufficiently few of the lookups so far found a
+ * match, build the filter from the tuples in the hash table (or, in a
+ * parallel join, make sure one participant does so).
+ *
+ * Marked pg_noinline so that none of this cold code ends up in the probe
+ * loop of the bucket-scan functions.
+ */
+static pg_noinline void
+ExecHashBloomAdaptiveBuild(HashJoinTable hashtable)
+{
+	int64		hashLookups,
+				hashMatches;
+
+	ParallelHashJoinState *pstate = hashtable->parallel_state;
+
+	Assert(hashtable->bloomEnabled);
+	Assert(hashtable->bloomFilter == NULL);
+
 	/* use the total counts, including the not-yet-accumulated part */
 	hashLookups = hashtable->hashLookupsTotal + hashtable->hashLookups;
 	hashMatches = hashtable->hashMatchesTotal + hashtable->hashMatches;
 
+	Assert((hashLookups % BLOOM_BUILD_WINDOW) == 0);
+
 	/*
 	 * Build a filter if the hash table lookups found sufficiently few matches
-	 * so far. We recheck regularly, once every BLOOM_BUILD_WINDOW lookups,
-	 * but we look at the whole lookup history.
+	 * so far. We get here once every BLOOM_BUILD_WINDOW lookups, but we look
+	 * at the whole lookup history.
 	 *
 	 * XXX Maybe we should reset the counters, just like we do for probes? That
 	 * would mean we look at individual windows instead, or some variant (to
 	 * eventually ignore very old lookups).Not sure if one of these is a "more
 	 * right". Looking at the whole history should not prevent creation of a
 	 * useful filter forever, but it can delay it of course.
-	 *
-	 * XXX If the modulo and multiplication turn out to be expensive, we
-	 * could rewrite that to bitmasks. For example (hashLookups & 0x3FF) is
-	 * fairly close to this, because 0x3FF is 1023. Not sure about the
-	 * multiplication, though. But maybe the compilers already optimize that
-	 * in some way (multiply-high?).
 	 */
-
-	/* haven't collected enough probe samples yet */
-	if ((hashLookups % BLOOM_BUILD_WINDOW) != 0)
-		return;
 
 	/* have enough samples, but there are too many matches */
 	if (hashMatches > hashLookups * BLOOM_BUILD_THRESHOLD)

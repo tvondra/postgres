@@ -842,6 +842,7 @@ WHERE t1.unique1 &lt; 100 AND t1.unique2 = t2.unique2 ORDER BY t1.fivethous;
                Buffers: shared hit=345
          -&gt;  Hash  (cost=224.98..224.98 rows=100 width=244) (actual time=0.476..0.477 rows=100.00 loops=1)
                Buckets: 1024  Batches: 1  Memory Usage: 35kB
+               Bloom Filter: Size: 8kB  Hash Functions: 10  False Positive Rate: 0.000%
                Buffers: shared hit=92
                -&gt;  Bitmap Heap Scan on tenk1 t1  (cost=5.06..224.98 rows=100 width=244) (actual time=0.030..0.450 rows=100.00 loops=1)
                      Recheck Cond: (unique1 &lt; 100)
@@ -862,7 +863,65 @@ WHERE t1.unique1 &lt; 100 AND t1.unique2 = t2.unique2 ORDER BY t1.fivethous;
     The Hash node shows the number of hash buckets and batches as well as the
     peak amount of memory used for the hash table.  (If the number of batches
     exceeds one, there will also be disk space usage involved, but that is not
-    shown.)
+    shown.)  The <quote>Bloom Filter</quote> line appears when the Hash node
+    built a Bloom filter on the join keys of the rows in the hash table, which
+    allows the join to reject rows from the other side without looking them
+    up in the hash table (see <xref linkend="guc-enable-hashjoin-bloom"/>).
+    It shows the size of the filter, the number of hash functions it uses,
+    and its false positive rate, estimated from the fraction of bits set in
+    the filter at the end of the join.  In this example only 100 of the 10000
+    rows of <literal>tenk2</literal> have a match, so the join built the
+    filter once the first lookups showed that most rows have none.
+   </para>
+
+   <para>
+    With the <literal>VERBOSE</literal> option, the Hash node also reports
+    how many rows were looked up in the hash table and probed against the
+    Bloom filter, and how many of those lookups found a match or passed the
+    filter:
+
+<screen>
+EXPLAIN (ANALYZE, VERBOSE, BUFFERS OFF) SELECT t1.unique1, t2.unique2
+FROM tenk1 t1, tenk2 t2
+WHERE t1.unique1 &lt; 1000 AND t1.unique2 = t2.unique2;
+                                                                                                                                           QUERY PLAN
+-------------------------------------------------------------------&zwsp;-------------------------------------------------------------------&zwsp;-----------------
+ Hash Join  (cost=390.32..703.82 rows=1000 width=8) (actual time=0.743..2.481 rows=1000.00 loops=1)
+   Output: t1.unique1, t2.unique2
+   Hash Cond: (t2.unique2 = t1.unique2)
+   -&gt;  Index Only Scan using tenk2_unique2 on public.tenk2 t2  (cost=0.29..266.29 rows=10000 width=4) (actual time=0.021..1.021 rows=10000.00 loops=1)
+         Output: t2.unique2
+         Heap Fetches: 0
+         Index Searches: 1
+   -&gt;  Hash  (cost=377.54..377.54 rows=1000 width=8) (actual time=0.706..0.709 rows=1000.00 loops=1)
+         Output: t1.unique1, t1.unique2
+         Buckets: 1024  Batches: 1  Memory Usage: 48kB
+         Hash Lookups: 1914  Matches: 1000  Match Rate: 52.247%
+         Bloom Filter: Size: 8kB  Hash Functions: 10  False Positive Rate: 0.000%
+         Bloom Filter Probes: 9000  Matches: 914  Match Rate: 10.156%
+         -&gt;  Bitmap Heap Scan on public.tenk1 t1  (cost=20.04..377.54 rows=1000 width=8) (actual time=0.122..0.547 rows=1000.00 loops=1)
+               Output: t1.unique1, t1.unique2
+               Recheck Cond: (t1.unique1 &lt; 1000)
+               Heap Blocks: exact=333
+               -&gt;  Bitmap Index Scan on tenk1_unique1  (cost=0.00..19.79 rows=1000 width=0) (actual time=0.087..0.087 rows=1000.00 loops=1)
+                     Index Cond: (t1.unique1 &lt; 1000)
+                     Index Searches: 1
+ Planning Time: 0.919 ms
+ Execution Time: 2.573 ms
+</screen>
+
+    The hash table was expected to fit in memory, so the join started without
+    a filter and looked up the first 1000 rows of <literal>tenk2</literal>
+    directly.  Only about a tenth of them had a match, so the Hash node built
+    a Bloom filter from the 1000 keys in the hash table and checked the
+    remaining 9000 rows against it before looking them up.  The filter
+    rejected all but 914 rows, and those were all true matches, consistent
+    with the negligible false positive rate.  The <quote>Hash Lookups</quote>
+    line counts only the rows that actually reached the hash table, so it
+    does not include the rows the filter rejected.  Conversely, if a filter
+    turns out to reject few rows, most rows skip it and go straight to the
+    hash table, and the number of filter probes falls well below the number
+    of rows the join had to process.
    </para>
 
    <para>

@@ -5983,6 +5983,39 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-enable-hashjoin-bloom" xreflabel="enable_hashjoin_bloom">
+      <term><varname>enable_hashjoin_bloom</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>enable_hashjoin_bloom</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Enables or disables the use of Bloom filters in hash joins.  When
+        enabled, a hash join may build a Bloom filter on the join keys of the
+        rows stored in the hash table, and check the rows from the other side
+        of the join against the filter before looking them up in the hash
+        table.  Rows rejected by the filter cannot have a match, so they skip
+        the lookup entirely, and if the hash table does not fit into memory
+        and the join has to be processed in batches, they are not written to
+        the temporary batch files either.  This can speed up joins in which
+        only a small fraction of the rows has a matching row in the hash table,
+        and has little effect otherwise.
+       </para>
+       <para>
+        The filter is built right away if the hash table is expected to need
+        more than one batch, and otherwise only after the first lookups show
+        that fewer than 90% of the rows have a match; a filter that turns out
+        to reject few rows is mostly bypassed.  The filter needs between 8kB
+        and <xref linkend="guc-work-mem"/> of memory, in addition to the hash
+        table itself.  This parameter does not affect the plans chosen by the
+        query planner.  <command>EXPLAIN ANALYZE</command> shows whether a
+        hash join used a filter; see <xref linkend="using-explain-analyze"/>.
+        The default is <literal>on</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-enable-incremental-sort" xreflabel="enable_incremental_sort">
       <term><varname>enable_incremental_sort</varname> (<type>boolean</type>)
       <indexterm>

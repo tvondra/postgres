@@ -3197,6 +3197,13 @@ ERROR:  type "intr_multirange" already exists
 DETAIL:  Failed while creating a multirange type for type "intr".
 HINT:  You can manually specify a multirange type name using the "multirange_type_name" attribute.
 drop type intr_multirange;
+---
+-- Check that numeric overflow during analyze does not make it fail
+---
+create table multirange_analyze_test (r nummultirange);
+insert into multirange_analyze_test values ('{[1e1000, 2e1000], [-9e131071, 9e131071]}'::nummultirange);
+analyze multirange_analyze_test;
+drop table multirange_analyze_test;
 --
 -- Test multiple multirange types over the same subtype and manual naming of
 -- the multirange type.

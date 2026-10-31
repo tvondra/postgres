@@ -2279,6 +2279,46 @@ select * from int8_tbl t1 left join int8_tbl t2 on t1.q2 = t2.q1,
   lateral (select * from int8_tbl t3 where t2.q1 = t2.q2) ss;
 
 --
+-- check deductions from FULL JOIN clauses and COALESCE() = constant: the
+-- join clause's operands may appear in either order, but must come from
+-- different inputs of the join
+--
+
+-- the gating qual must be applied to the join's left input
+explain (costs off)
+select * from (int4_tbl a join int4_tbl b on a.f1 = b.f1 and a.f1 = (select 1))
+  full join int4_tbl c on c.f1 = a.f1
+  where coalesce(c.f1, a.f1) = 0;
+
+select * from (int4_tbl a join int4_tbl b on a.f1 = b.f1 and a.f1 = (select 1))
+  full join int4_tbl c on c.f1 = a.f1
+  where coalesce(c.f1, a.f1) = 0;
+
+-- nothing can be deduced from a clause relating two vars of the same input
+explain (costs off)
+select * from (int4_tbl a cross join int4_tbl b)
+  full join int4_tbl c on a.f1 = b.f1 and a.f1 = c.f1
+  where coalesce(a.f1, b.f1) = 0
+  order by b.f1;
+
+select * from (int4_tbl a cross join int4_tbl b)
+  full join int4_tbl c on a.f1 = b.f1 and a.f1 = c.f1
+  where coalesce(a.f1, b.f1) = 0
+  order by b.f1;
+
+-- ... nor from a clause with an operand that references both inputs
+explain (costs off)
+select * from (int4_tbl a cross join int4_tbl b)
+  full join int4_tbl c on a.f1 - c.f1 = b.f1 and a.f1 = c.f1
+  where coalesce(a.f1 - c.f1, b.f1) = 123456
+  order by a.f1;
+
+select * from (int4_tbl a cross join int4_tbl b)
+  full join int4_tbl c on a.f1 - c.f1 = b.f1 and a.f1 = c.f1
+  where coalesce(a.f1 - c.f1, b.f1) = 123456
+  order by a.f1;
+
+--
 -- check handling of join aliases when flattening multiple levels of subquery
 --
 

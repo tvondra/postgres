@@ -5398,10 +5398,32 @@ enable_statement_timeout(void)
 
 /*
  * Disable statement timeout, if active.
+ *
+ * If the statement timeout has already fired, but the statement completed
+ * without reaching a CHECK_FOR_INTERRUPTS() afterwards, the query cancel
+ * request sent by the timeout is still pending.  Discard it, as otherwise
+ * it would cancel whatever we do next.  This also discards a cancel request
+ * from the user that arrived at about the same time, since we can't tell
+ * them apart, but that seems acceptable: the statement has completed anyway.
  */
 static void
 disable_statement_timeout(void)
 {
+	bool		lock_timeout_occurred;
+	bool		stmt_timeout_occurred;
+
+	/* Keep the indicator in case the timeout fires right now; see below */
 	if (get_timeout_active(STATEMENT_TIMEOUT))
-		disable_timeout(STATEMENT_TIMEOUT, false);
+		disable_timeout(STATEMENT_TIMEOUT, true);
+
+	/*
+	 * A lock timeout that fired just as the lock was granted can leave a
+	 * pending cancel request behind in the same way (see ProcSleep()). Always
+	 * fetch and reset both indicators, as in ProcessInterrupts().
+	 */
+	lock_timeout_occurred = get_timeout_indicator(LOCK_TIMEOUT, true);
+	stmt_timeout_occurred = get_timeout_indicator(STATEMENT_TIMEOUT, true);
+
+	if (lock_timeout_occurred || stmt_timeout_occurred)
+		QueryCancelPending = false;
 }

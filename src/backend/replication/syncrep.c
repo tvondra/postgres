@@ -85,6 +85,7 @@
 #include "tcop/tcopprot.h"
 #include "utils/guc_hooks.h"
 #include "utils/ps_status.h"
+#include "utils/timeout.h"
 #include "utils/wait_event.h"
 
 /* User-settable parameters for sync rep */
@@ -323,10 +324,20 @@ SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)
 		 * can't actually abort at this point, but ignoring the interrupt
 		 * altogether is not helpful, so we just terminate the wait with a
 		 * suitable warning.
+		 *
+		 * The request may have come from the statement or lock timeout, so
+		 * reset their indicators, as ProcessInterrupts() does.  We do this
+		 * for two reasons.  First, enable_statement_timeout() doesn't start
+		 * the timer while the statement timeout's indicator is set, so the
+		 * next statement would run without a statement timeout. Second, a
+		 * query cancel arriving while waiting for the next message would be
+		 * reported as a timeout, rather than ignored.
 		 */
 		if (QueryCancelPending)
 		{
 			QueryCancelPending = false;
+			(void) get_timeout_indicator(LOCK_TIMEOUT, true);
+			(void) get_timeout_indicator(STATEMENT_TIMEOUT, true);
 			ereport(WARNING,
 					(errmsg("canceling wait for synchronous replication due to user request"),
 					 errdetail("The transaction has already committed locally, but might not have been replicated to the standby.")));

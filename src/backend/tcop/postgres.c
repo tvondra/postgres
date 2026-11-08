@@ -5375,7 +5375,10 @@ log_disconnections(int code, Datum arg)
  *
  * If there's already a timeout running, don't restart the timer.  That
  * enables compromises between accuracy of timeouts and cost of starting a
- * timeout.
+ * timeout.  Likewise, don't restart it if it has already fired, but the query
+ * cancel request it sent hasn't been serviced yet (e.g. because it fired
+ * while parsing a long query string).  Restarting it would reset its
+ * indicator, causing the request to be reported as a user request.
  */
 static void
 enable_statement_timeout(void)
@@ -5386,7 +5389,8 @@ enable_statement_timeout(void)
 	if (StatementTimeout > 0
 		&& (StatementTimeout < TransactionTimeout || TransactionTimeout == 0))
 	{
-		if (!get_timeout_active(STATEMENT_TIMEOUT))
+		if (!get_timeout_active(STATEMENT_TIMEOUT) &&
+			!get_timeout_indicator(STATEMENT_TIMEOUT, false))
 			enable_timeout_after(STATEMENT_TIMEOUT, StatementTimeout);
 	}
 	else
@@ -5399,12 +5403,13 @@ enable_statement_timeout(void)
 /*
  * Disable statement timeout, if active.
  *
- * If the statement timeout has already fired, but the statement completed
- * without reaching a CHECK_FOR_INTERRUPTS() afterwards, the query cancel
- * request sent by the timeout is still pending.  Discard it, as otherwise
- * it would cancel whatever we do next.  This also discards a cancel request
- * from the user that arrived at about the same time, since we can't tell
- * them apart, but that seems acceptable: the statement has completed anyway.
+ * This is called whenever a statement completes.  If the statement timeout
+ * has already fired, but the statement completed without reaching a
+ * CHECK_FOR_INTERRUPTS() afterwards, the query cancel request sent by the
+ * timeout is still pending.  Discard it, as otherwise it would cancel
+ * whatever we do next.  This also discards a cancel request from the user
+ * that arrived at about the same time, since we can't tell them apart, but
+ * that seems acceptable: the statement has completed anyway.
  */
 static void
 disable_statement_timeout(void)

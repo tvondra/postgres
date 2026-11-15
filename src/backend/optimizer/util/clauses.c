@@ -1161,6 +1161,14 @@ contain_nonstrict_functions_walker(Node *node, void *context)
 		return true;
 	else if (IsA(node, FieldStore))
 		return true;
+	else if (IsA(node, CoerceToDomain))
+	{
+		/*
+		 * Domain constraints can reject NULL.  Pull-up or strict-function
+		 * inlining must not introduce new constraint violations.
+		 */
+		return true;
+	}
 	else if (IsA(node, CoerceViaIO))
 	{
 		/*

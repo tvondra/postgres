@@ -124,6 +124,8 @@ static bool contain_volatile_functions_not_nextval_walker(Node *node, void *cont
 static bool max_parallel_hazard_walker(Node *node,
 									   max_parallel_hazard_context *context);
 static bool contain_nonstrict_functions_walker(Node *node, void *context);
+static bool jsonexpr_has_nonstrict_inputs(JsonExpr *jsexpr);
+static bool contain_var_or_param_walker(Node *node, void *context);
 static bool contain_exec_param_walker(Node *node, List *param_ids);
 static bool contain_context_dependent_node(Node *clause);
 static bool contain_context_dependent_node_walker(Node *node, int *flags);
@@ -1199,11 +1201,9 @@ contain_nonstrict_functions_walker(Node *node, void *context)
 		return true;
 	else if (IsA(node, JsonExpr))
 	{
-		/*
-		 * PASSING and defaults are not strict inputs.  Callers may find
-		 * their only Var or Param there, so skipping them is unsafe.
-		 */
-		return true;
+		if (jsonexpr_has_nonstrict_inputs((JsonExpr *) node))
+			return true;
+		/* else fall through to check args */
 	}
 	else
 	{
@@ -1215,6 +1215,38 @@ contain_nonstrict_functions_walker(Node *node, void *context)
 
 	return expression_tree_walker(node, contain_nonstrict_functions_walker,
 								  context);
+}
+
+/*
+ * jsonexpr_has_nonstrict_inputs
+ *		Check for variable inputs in non-strict parts of a JsonExpr.
+ *
+ * A JsonExpr is strict in its context item and path specification, whose
+ * subexpressions the caller checks separately.  It is not strict in PASSING
+ * arguments or ON EMPTY / ON ERROR defaults.  Callers may find their only
+ * Var, PlaceHolderVar or Param there, so reject those cases.  Variable-free
+ * inputs such as DEFAULT 0 do not preclude strictness.
+ */
+static bool
+jsonexpr_has_nonstrict_inputs(JsonExpr *jsexpr)
+{
+	if (contain_var_or_param_walker((Node *) jsexpr->passing_values, NULL))
+		return true;
+	if (contain_var_or_param_walker((Node *) jsexpr->on_empty, NULL))
+		return true;
+	if (contain_var_or_param_walker((Node *) jsexpr->on_error, NULL))
+		return true;
+	return false;
+}
+
+static bool
+contain_var_or_param_walker(Node *node, void *context)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, Var) || IsA(node, PlaceHolderVar) || IsA(node, Param))
+		return true;
+	return expression_tree_walker(node, contain_var_or_param_walker, context);
 }
 
 /*****************************************************************************

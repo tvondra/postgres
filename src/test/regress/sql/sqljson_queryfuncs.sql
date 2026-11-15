@@ -868,3 +868,38 @@ FROM (VALUES (1), (NULL)) v(x);
 DROP FUNCTION queryfuncs_strict_passing_query, queryfuncs_strict_passing_exists,
   queryfuncs_strict_default_query;
 DROP FUNCTION queryfuncs_strict_passing, queryfuncs_strict_default;
+
+-- A NULL context item is still coerced to a domain RETURNING type, and if the
+-- domain rejects NULL, ON ERROR applies.  So with a non-NULL ON ERROR value,
+-- the JsonExpr is not strict even in its context item.
+CREATE DOMAIN queryfuncs_int_notnull AS int NOT NULL;
+CREATE DOMAIN queryfuncs_jsonb_notnull AS jsonb NOT NULL;
+-- the ON ERROR values are returned for a NULL context item
+SELECT JSON_VALUE(NULL::jsonb, '$' RETURNING queryfuncs_int_notnull DEFAULT 0 ON ERROR),
+       JSON_QUERY(NULL::jsonb, '$' RETURNING queryfuncs_jsonb_notnull EMPTY ARRAY ON ERROR);
+-- so it must not be treated as strict when pulling up a subquery: jv and jq
+-- must be NULL for the unmatched x = 1
+SELECT x, y, jv, jq
+FROM (VALUES (1), (2)) a(x)
+     LEFT JOIN (SELECT y,
+                       JSON_VALUE(j, '$' RETURNING queryfuncs_int_notnull
+                                  DEFAULT 0 ON ERROR) AS jv,
+                       JSON_QUERY(j, '$' RETURNING queryfuncs_jsonb_notnull
+                                  EMPTY ARRAY ON ERROR) AS jq
+                FROM (VALUES (2, jsonb '2'), (3, jsonb '3')) b(y, j)) ss ON x = y
+ORDER BY x;
+-- nor when inlining a STRICT SQL function: it must return NULL for NULL input
+CREATE FUNCTION queryfuncs_strict_domain(jsonb) RETURNS int
+  LANGUAGE sql IMMUTABLE STRICT
+  AS $$ SELECT JSON_VALUE($1, '$' RETURNING queryfuncs_int_notnull
+                          DEFAULT 0 ON ERROR) $$;
+SELECT x, queryfuncs_strict_domain(x) FROM (VALUES ('1'::jsonb), (NULL)) v(x);
+-- the same for JSON_QUERY()
+CREATE FUNCTION queryfuncs_strict_domain_query(jsonb) RETURNS jsonb
+  LANGUAGE sql IMMUTABLE STRICT
+  AS $$ SELECT JSON_QUERY($1, '$' RETURNING queryfuncs_jsonb_notnull
+                          EMPTY ARRAY ON ERROR) $$;
+SELECT x, queryfuncs_strict_domain_query(x)
+FROM (VALUES ('[1]'::jsonb), (NULL)) v(x);
+DROP FUNCTION queryfuncs_strict_domain, queryfuncs_strict_domain_query;
+DROP DOMAIN queryfuncs_int_notnull, queryfuncs_jsonb_notnull;

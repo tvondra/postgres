@@ -959,6 +959,52 @@ drop function dom_coerce_strict_unconstrained(int);
 drop domain dom_unconstrained;
 
 --
+-- A coercion to a domain without constraints is strict, so a subquery
+-- output applying it may be pulled up and computed above an outer join, and
+-- a STRICT SQL function applying it may be inlined.  Such plans depend on the
+-- domain, and adding a constraint to the domain must invalidate them, so that
+-- the rebuilt plans treat the coercion as not strict.
+--
+
+create domain dom_inval as int;
+create temp table dom_inval_tab (y int);
+insert into dom_inval_tab values (2), (3);
+analyze dom_inval_tab;
+create function dom_inval_strict(int) returns int
+  language sql immutable strict
+  as $$ select $1::dom_inval::int $$;
+
+-- generic plans, cached until invalidated
+set plan_cache_mode = force_generic_plan;
+prepare dom_inval_pullup as
+  select x, y, d
+    from (values (1), (2)) a(x)
+         left join (select y, y::dom_inval as d from dom_inval_tab) ss on x = y
+   order by x;
+prepare dom_inval_inline(int) as select dom_inval_strict($1);
+
+-- the coercion is computed above the join, and the function is inlined
+explain (verbose, costs off) execute dom_inval_pullup;
+explain (verbose, costs off) execute dom_inval_inline(null);
+
+alter domain dom_inval set not null;
+
+-- the plans are rebuilt, computing the coercion below the join, and not
+-- inlining the function
+explain (verbose, costs off) execute dom_inval_pullup;
+explain (verbose, costs off) execute dom_inval_inline(null);
+-- so d is NULL for the unmatched x = 1, and the function returns NULL
+execute dom_inval_pullup;
+execute dom_inval_inline(null);
+
+deallocate dom_inval_pullup;
+deallocate dom_inval_inline;
+reset plan_cache_mode;
+drop function dom_inval_strict(int);
+drop table dom_inval_tab;
+drop domain dom_inval;
+
+--
 -- Renaming
 --
 

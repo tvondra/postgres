@@ -906,6 +906,59 @@ drop domain inotnull;
 drop function sql_is_distinct_from(anyelement, anyelement);
 
 --
+-- Coercion to a domain rejecting NULL raises an error for NULL input, so it is
+-- not strict.  The planner must not evaluate the coercion on NULL inputs the
+-- query never coerces: on rows null-extended by an outer join, after pulling
+-- up a subquery from its nullable side, or for a NULL argument of an inlined
+-- STRICT SQL function.
+--
+
+create domain dom_notnull as int not null;
+create temp table dom_coerce_tab (y int);
+insert into dom_coerce_tab values (2), (3);
+analyze dom_coerce_tab;
+
+-- subquery pull-up, the coercion must be computed below the join
+explain (verbose, costs off)
+select x, y, d
+  from (values (1), (2)) a(x)
+       left join (select y, y::dom_notnull as d from dom_coerce_tab) ss on x = y
+ order by x;
+
+-- a CHECK constraint may reject NULL too, but CHECK constraints are satisfied
+-- by a NULL result, so most of them accept NULL
+create domain dom_check_notnull as int check (value is not null);
+-- dom_check_notnull rejects NULL, but d must be NULL for the unmatched x = 1
+select x, y, d
+  from (values (1), (2)) a(x)
+       left join (select y, y::dom_check_notnull as d from dom_coerce_tab) ss
+       on x = y
+ order by x;
+
+-- inlining of a STRICT SQL function
+create function dom_coerce_strict(int) returns dom_notnull
+  language sql immutable strict
+  as $$ select $1::dom_notnull $$;
+-- the SQL function must not be inlined, as the coercion is not strict
+explain (verbose, costs off)
+select x, dom_coerce_strict(x) from (values (1), (null)) v(x);
+
+drop function dom_coerce_strict(int);
+drop table dom_coerce_tab;
+drop domain dom_notnull, dom_check_notnull;
+
+-- Coercions to unconstrained domains are strict and must not prevent
+-- inlining of STRICT SQL functions.
+create domain dom_unconstrained as int;
+create function dom_coerce_strict_unconstrained(int) returns int
+  language sql immutable strict
+  as $$ select $1::dom_unconstrained::int $$;
+explain (verbose, costs off)
+select dom_coerce_strict_unconstrained(x) from (values (1), (null)) v(x);
+drop function dom_coerce_strict_unconstrained(int);
+drop domain dom_unconstrained;
+
+--
 -- Renaming
 --
 

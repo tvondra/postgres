@@ -901,5 +901,88 @@ CREATE FUNCTION queryfuncs_strict_domain_query(jsonb) RETURNS jsonb
                           EMPTY ARRAY ON ERROR) $$;
 SELECT x, queryfuncs_strict_domain_query(x)
 FROM (VALUES ('[1]'::jsonb), (NULL)) v(x);
+-- With NULL ON ERROR (the default) or ERROR ON ERROR, the result for a NULL
+-- context item is an error, as for a coercion to the domain.
+SELECT JSON_VALUE(NULL::jsonb, '$' RETURNING queryfuncs_int_notnull);
+-- the same for JSON_QUERY()
+SELECT JSON_QUERY(NULL::jsonb, '$' RETURNING queryfuncs_jsonb_notnull);
+-- so it must not be treated as strict either: jv must be NULL for the
+-- unmatched x = 1
+SELECT x, y, jv
+FROM (VALUES (1), (2)) a(x)
+     LEFT JOIN (SELECT y, JSON_VALUE(j, '$' RETURNING queryfuncs_int_notnull) AS jv
+                FROM (VALUES (2, jsonb '2'), (3, jsonb '3')) b(y, j)) ss ON x = y
+ORDER BY x;
+-- OFFSET 0 prevents the pull-up, so jv is NULL for the unmatched x = 1
+SELECT x, y, jv
+FROM (VALUES (1), (2)) a(x)
+     LEFT JOIN (SELECT y, JSON_VALUE(j, '$' RETURNING queryfuncs_int_notnull) AS jv
+                FROM (VALUES (2, jsonb '2'), (3, jsonb '3')) b(y, j)
+                OFFSET 0) ss ON x = y
+ORDER BY x;
+-- the same for JSON_QUERY(): jq must be NULL for the unmatched x = 1
+SELECT x, y, jq
+FROM (VALUES (1), (2)) a(x)
+     LEFT JOIN (SELECT y, JSON_QUERY(j, '$' RETURNING queryfuncs_jsonb_notnull) AS jq
+                FROM (VALUES (2, jsonb '[2]'), (3, jsonb '[3]')) b(y, j)) ss ON x = y
+ORDER BY x;
+-- ERROR ON ERROR must not expose the coercion to null-extended rows either.
+SELECT x, y, jv, jq
+FROM (VALUES (1), (2)) a(x)
+     LEFT JOIN (SELECT y,
+                       JSON_VALUE(j, '$' RETURNING queryfuncs_int_notnull
+                                  ERROR ON ERROR) AS jv,
+                       JSON_QUERY(j, '$' RETURNING queryfuncs_jsonb_notnull
+                                  ERROR ON ERROR) AS jq
+                FROM (VALUES (2, jsonb '2'), (3, jsonb '3')) b(y, j)) ss ON x = y
+ORDER BY x;
+-- A NULL argument must still bypass the STRICT function's body.
+CREATE OR REPLACE FUNCTION queryfuncs_strict_domain(jsonb) RETURNS int
+  LANGUAGE sql IMMUTABLE STRICT
+  AS $$ SELECT JSON_VALUE($1, '$' RETURNING queryfuncs_int_notnull
+                          ERROR ON ERROR) $$;
+CREATE OR REPLACE FUNCTION queryfuncs_strict_domain_query(jsonb) RETURNS jsonb
+  LANGUAGE sql IMMUTABLE STRICT
+  AS $$ SELECT JSON_QUERY($1, '$' RETURNING queryfuncs_jsonb_notnull
+                          ERROR ON ERROR) $$;
+SELECT x, queryfuncs_strict_domain(x) AS jv,
+       queryfuncs_strict_domain_query(x) AS jq
+FROM (VALUES ('1'::jsonb), (NULL)) v(x);
 DROP FUNCTION queryfuncs_strict_domain, queryfuncs_strict_domain_query;
 DROP DOMAIN queryfuncs_int_notnull, queryfuncs_jsonb_notnull;
+
+-- SQL/JSON domain coercions must be treated as nonstrict even without
+-- constraints, since cached plans may lack a dependency on the domain.
+CREATE DOMAIN queryfuncs_jsonb_inval AS jsonb;
+-- Avoid domain dependencies from coercing ON EMPTY / ON ERROR defaults.
+CREATE FUNCTION queryfuncs_strict_domain_inval(jsonb) RETURNS jsonb
+  LANGUAGE sql IMMUTABLE STRICT
+  AS $$ SELECT JSON_QUERY($1, '$' RETURNING queryfuncs_jsonb_inval
+                          ERROR ON EMPTY ERROR ON ERROR) $$;
+SET plan_cache_mode = force_generic_plan;
+PREPARE queryfuncs_domain_pullup AS
+  SELECT x, y, jq
+  FROM (VALUES (1), (2)) a(x)
+       LEFT JOIN (SELECT y,
+                         JSON_QUERY(j, '$' RETURNING queryfuncs_jsonb_inval
+                                    ERROR ON EMPTY ERROR ON ERROR) AS jq
+                  FROM (VALUES (2, jsonb '[2]'), (3, jsonb '[3]')) b(y, j)) ss
+       ON x = y
+  ORDER BY x;
+PREPARE queryfuncs_domain_inline(jsonb) AS
+  SELECT queryfuncs_strict_domain_inval($1) AS jq;
+
+-- Cache both plans while the domain has no constraints.
+EXECUTE queryfuncs_domain_pullup;
+EXECUTE queryfuncs_domain_inline(NULL);
+
+ALTER DOMAIN queryfuncs_jsonb_inval SET NOT NULL;
+-- Adding NOT NULL must not expose the coercion to NULL inputs.
+EXECUTE queryfuncs_domain_pullup;
+EXECUTE queryfuncs_domain_inline(NULL);
+
+DEALLOCATE queryfuncs_domain_pullup;
+DEALLOCATE queryfuncs_domain_inline;
+RESET plan_cache_mode;
+DROP FUNCTION queryfuncs_strict_domain_inval(jsonb);
+DROP DOMAIN queryfuncs_jsonb_inval;

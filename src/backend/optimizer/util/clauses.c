@@ -1062,7 +1062,8 @@ max_parallel_hazard_walker(Node *node, max_parallel_hazard_context *context)
  *	  Recursively search for nonstrict functions within a clause.
  *
  * Returns true if any nonstrict construct is found --- ie, anything that
- * could produce non-NULL output with a NULL input.
+ * could produce non-NULL output with a NULL input, or raise an error for it
+ * (like a coercion to a domain rejecting NULL).
  *
  * The idea here is that the caller has verified that the expression contains
  * one or more Var or Param nodes (as appropriate for the caller's need), and
@@ -1163,11 +1164,25 @@ contain_nonstrict_functions_walker(Node *node, void *context)
 		return true;
 	else if (IsA(node, CoerceToDomain))
 	{
+		CoerceToDomain *cdomain = (CoerceToDomain *) node;
+
 		/*
-		 * Domain constraints can reject NULL.  Pull-up or strict-function
-		 * inlining must not introduce new constraint violations.
+		 * A coercion to a domain fails for NULL input if the domain has a NOT
+		 * NULL constraint, or a CHECK constraint that is false for NULL.  We
+		 * don't analyze the constraints, and treat the coercion as nonstrict
+		 * if there are any.  Relying on the current constraints is fine, as
+		 * eval_const_expressions() replaces a coercion to a domain without
+		 * constraints by a RelabelType, and makes the plan depend on the
+		 * domain, so that it gets rebuilt if constraints are added.
+		 *
+		 * XXX eval_const_expressions() replaces unconstrained coercions
+		 * with RelabelType and records a dependency on the domain. This
+		 * handles later changes to that domain, but not concurrent DDL
+		 * during planning or changes to a base domain.
 		 */
-		return true;
+		if (DomainHasConstraints(cdomain->resulttype, NULL))
+			return true;
+		/* else fall through to check args */
 	}
 	else if (IsA(node, CoerceViaIO))
 	{
@@ -1227,47 +1242,32 @@ contain_nonstrict_functions_walker(Node *node, void *context)
 
 /*
  * jsonexpr_has_nonstrict_inputs
- *		Check for variable inputs in non-strict parts of a JsonExpr.
+ *      Check JsonExpr-specific reasons to reject strictness.
  *
- * A JsonExpr is strict in its context item and path specification, whose
- * subexpressions the caller checks separately.  It is not strict in PASSING
- * arguments or ON EMPTY / ON ERROR defaults.  Callers may find their only
- * Var, PlaceHolderVar or Param there, so reject those cases.  Variable-free
- * inputs such as DEFAULT 0 do not preclude strictness.
+ * Except for the domain case below, JsonExpr propagates NULL from its
+ * evaluated context item or path.  The caller must still check
+ * subexpressions for nonstrict constructs.
  *
- * So the JsonExpr has to be considered nonstrict if any of those contains a
- * Var, PlaceHolderVar or Param. Constants are harmless there, and common
- * enough that we don't want to reject them (e.g. it would prevent inlining
- * SQL functions with DEFAULT 0).
+ * PASSING values and ON EMPTY / ON ERROR defaults need not propagate
+ * NULL.  Reject Vars, PlaceHolderVars and Params there; constants alone
+ * do not preclude strictness.
  *
- * NULL propagation from the evaluated context/path does not prove strictness
- * of arbitrary subexpressions inside them.
- *
- * The exception is a JsonExpr with use_json_coercion and a domain RETURNING
- * type, as ExecEvalJsonExprPath() coerces even the NULL result to the domain
- * to check its constraints.  If the domain rejects NULL, ON ERROR applies,
- * so a NULL context item or path specification may produce a non-NULL ON
- * ERROR value, and the JsonExpr is not strict in any of its inputs.  We
- * don't check whether the domain actually rejects NULL, as its constraints
- * might change after planning.  If ON ERROR is ERROR or a NULL constant, the
- * result is either NULL or an error, which is fine (we treat CoerceToDomain
- * as strict too).
+ * With use_json_coercion and a domain RETURNING type, even a NULL result
+ * is checked against the domain.  A rejected NULL can raise an error or
+ * produce a non-NULL ON ERROR value.  Treat this case as nonstrict
+ * regardless of current constraints, since this coercion records no
+ * domain dependency.
  */
 static bool
 jsonexpr_has_nonstrict_inputs(JsonExpr *jsexpr)
 {
-	JsonBehavior *on_error = jsexpr->on_error;
-
 	if (contain_var_or_param_walker((Node *) jsexpr->passing_values, NULL))
 		return true;
 	if (contain_var_or_param_walker((Node *) jsexpr->on_empty, NULL))
 		return true;
-	if (contain_var_or_param_walker((Node *) on_error, NULL))
+	if (contain_var_or_param_walker((Node *) jsexpr->on_error, NULL))
 		return true;
 	if (jsexpr->use_json_coercion &&
-		on_error->btype != JSON_BEHAVIOR_ERROR &&
-		!(IsA(on_error->expr, Const) &&
-		  ((Const *) on_error->expr)->constisnull) &&
 		get_typtype(jsexpr->returning->typid) == TYPTYPE_DOMAIN)
 		return true;
 	return false;

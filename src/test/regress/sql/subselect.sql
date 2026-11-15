@@ -1225,8 +1225,8 @@ select * from json_tab t1 left join (select json_array(1, a) from json_tab t2) s
 rollback;
 
 --
--- Verify that a PlaceHolderVar around a subquery output domain cast
--- doesn't prevent index use after outer-join reduction
+-- Verify that we correctly flatten cases involving a subquery output
+-- expression that doesn't need to be wrapped in a PlaceHolderVar
 --
 
 explain (costs off)

@@ -1226,15 +1226,41 @@ contain_nonstrict_functions_walker(Node *node, void *context)
  * arguments or ON EMPTY / ON ERROR defaults.  Callers may find their only
  * Var, PlaceHolderVar or Param there, so reject those cases.  Variable-free
  * inputs such as DEFAULT 0 do not preclude strictness.
+ *
+ * So the JsonExpr has to be considered nonstrict if any of those contains a
+ * Var, PlaceHolderVar or Param. Constants are harmless there, and common
+ * enough that we don't want to reject them (e.g. it would prevent inlining
+ * SQL functions with DEFAULT 0).
+ *
+ * NULL propagation from the evaluated context/path does not prove strictness
+ * of arbitrary subexpressions inside them.
+ *
+ * The exception is a JsonExpr with use_json_coercion and a domain RETURNING
+ * type, as ExecEvalJsonExprPath() coerces even the NULL result to the domain
+ * to check its constraints.  If the domain rejects NULL, ON ERROR applies,
+ * so a NULL context item or path specification may produce a non-NULL ON
+ * ERROR value, and the JsonExpr is not strict in any of its inputs.  We
+ * don't check whether the domain actually rejects NULL, as its constraints
+ * might change after planning.  If ON ERROR is ERROR or a NULL constant, the
+ * result is either NULL or an error, which is fine (we treat CoerceToDomain
+ * as strict too).
  */
 static bool
 jsonexpr_has_nonstrict_inputs(JsonExpr *jsexpr)
 {
+	JsonBehavior *on_error = jsexpr->on_error;
+
 	if (contain_var_or_param_walker((Node *) jsexpr->passing_values, NULL))
 		return true;
 	if (contain_var_or_param_walker((Node *) jsexpr->on_empty, NULL))
 		return true;
-	if (contain_var_or_param_walker((Node *) jsexpr->on_error, NULL))
+	if (contain_var_or_param_walker((Node *) on_error, NULL))
+		return true;
+	if (jsexpr->use_json_coercion &&
+		on_error->btype != JSON_BEHAVIOR_ERROR &&
+		!(IsA(on_error->expr, Const) &&
+		  ((Const *) on_error->expr)->constisnull) &&
+		get_typtype(jsexpr->returning->typid) == TYPTYPE_DOMAIN)
 		return true;
 	return false;
 }

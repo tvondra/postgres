@@ -737,6 +737,74 @@ drop table nulltest;
 drop domain dnotnull restrict;
 drop domain dnull restrict;
 drop domain dcheck restrict;
+-- NULL-rejecting domain coercions must not be evaluated on null-extended rows.
+CREATE TEMP TABLE coerce_to_domain_input (x int);
+INSERT INTO coerce_to_domain_input VALUES (1), (3);
+CREATE DOMAIN pg_temp.nnint AS int NOT NULL;
+-- OFFSET 0 keeps the coercion below the join.
+SELECT a.x, b.d
+FROM (VALUES (1), (2)) AS a(x)
+LEFT JOIN (
+  SELECT x, x::pg_temp.nnint AS d
+  FROM coerce_to_domain_input
+  OFFSET 0
+) AS b ON a.x = b.x
+ORDER BY a.x;
+ x | d 
+---+---
+ 1 | 1
+ 2 |  
+(2 rows)
+
+-- Pull-up must preserve the NULL result for the unmatched row.
+SELECT a.x, b.d
+FROM (VALUES (1), (2)) AS a(x)
+LEFT JOIN (
+  SELECT x, x::pg_temp.nnint AS d
+  FROM coerce_to_domain_input
+) AS b ON a.x = b.x
+ORDER BY a.x;
+ x | d 
+---+---
+ 1 | 1
+ 2 |  
+(2 rows)
+
+-- STRICT SQL functions must not check domain constraints for NULL inputs.
+CREATE FUNCTION pg_temp.coerce_to_domain_strict(int) RETURNS int
+LANGUAGE sql IMMUTABLE STRICT AS $$
+  SELECT $1::pg_temp.nnint::int
+$$;
+-- A SET clause prevents inlining.
+CREATE FUNCTION pg_temp.coerce_to_domain_noinline(int) RETURNS int
+LANGUAGE sql IMMUTABLE STRICT SET search_path = pg_catalog AS $$
+  SELECT $1::pg_temp.nnint::int
+$$;
+-- Without inlining, a NULL argument must bypass the domain coercion.
+SELECT x, pg_temp.coerce_to_domain_noinline(x) AS d
+FROM (VALUES (NULL::int), (1)) AS v(x)
+ORDER BY x NULLS FIRST;
+ x | d 
+---+---
+   |  
+ 1 | 1
+(2 rows)
+
+-- Inlining must not expose the coercion to a NULL argument.
+-- Use a Var rather than a constant NULL to exercise the inlining check.
+SELECT x, pg_temp.coerce_to_domain_strict(x) AS d
+FROM (VALUES (NULL::int), (1)) AS v(x)
+ORDER BY x NULLS FIRST;
+ x | d 
+---+---
+   |  
+ 1 | 1
+(2 rows)
+
+DROP FUNCTION pg_temp.coerce_to_domain_strict(int),
+              pg_temp.coerce_to_domain_noinline(int);
+DROP DOMAIN pg_temp.nnint;
+DROP TABLE coerce_to_domain_input;
 create domain ddef1 int4 DEFAULT 3;
 create domain ddef2 oid DEFAULT '12';
 -- Type mixing, function returns int8

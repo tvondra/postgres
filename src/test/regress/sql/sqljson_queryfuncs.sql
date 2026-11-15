@@ -649,10 +649,83 @@ LEFT JOIN (
 ) AS b ON a.x = b.x
 ORDER BY a.x;
 
+-- Constant PASSING and default inputs must not prevent inlining when the
+-- function's parameter is used as the context item or path specification.
+CREATE FUNCTION sqljson_strict_context(jsonb) RETURNS int
+LANGUAGE sql IMMUTABLE STRICT AS $$
+  SELECT JSON_VALUE($1, '$.a' PASSING 1 AS p
+                    RETURNING int DEFAULT 0 ON EMPTY DEFAULT -1 ON ERROR)
+$$;
+CREATE FUNCTION sqljson_strict_path(jsonpath) RETURNS int
+LANGUAGE sql STABLE STRICT AS $$
+  SELECT JSON_VALUE('{"a": 1}'::jsonb, $1
+                    RETURNING int DEFAULT 0 ON EMPTY DEFAULT -1 ON ERROR)
+$$;
+
+-- Verify inlining with constant PASSING arguments and default values.
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT sqljson_strict_context(js), sqljson_strict_path(p)
+FROM (VALUES (NULL::jsonb, NULL::jsonpath),
+             ('{}', '$.missing'),
+             ('{"a": 1}', '$.a'),
+             ('{"a": "bad"}', 'strict $.missing')) AS v(js, p);
+
+-- Check NULL propagation and successful, ON EMPTY, and ON ERROR results.
+SELECT sqljson_strict_context(js), sqljson_strict_path(p)
+FROM (VALUES (NULL::jsonb, NULL::jsonpath),
+             ('{}', '$.missing'),
+             ('{"a": 1}', '$.a'),
+             ('{"a": "bad"}', 'strict $.missing')) AS v(js, p);
+
+DROP FUNCTION sqljson_strict_context(jsonb), sqljson_strict_path(jsonpath);
+
+-- Wrappers and constant behavior clauses do not prevent strictness in the
+-- context item and path specification for JSON_QUERY and JSON_EXISTS either.
+CREATE FUNCTION sqljson_query_strict(jsonb, jsonpath) RETURNS jsonb
+LANGUAGE sql STABLE STRICT AS $$
+  SELECT JSON_QUERY($1, $2 PASSING 0 AS p RETURNING jsonb WITH ARRAY WRAPPER
+                    EMPTY ARRAY ON EMPTY EMPTY OBJECT ON ERROR)
+$$;
+CREATE FUNCTION sqljson_exists_strict(jsonb, jsonpath) RETURNS bool
+LANGUAGE sql STABLE STRICT AS $$
+  SELECT JSON_EXISTS($1, $2 PASSING 0 AS p TRUE ON ERROR)
+$$;
+
+-- Wrappers and constant behavior clauses must not prevent inlining.
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT sqljson_query_strict(js, p), sqljson_exists_strict(js, p)
+FROM (VALUES (NULL::jsonb, '$'::jsonpath),
+             ('0', NULL),
+             ('[]', '$[*]'),
+             ('[1]', '$[*] ? (@ > $p)'),
+             ('{}', 'strict $.missing'),
+             ('null', '$')) AS v(js, p);
+
+-- Check NULL inputs, matches, empty/error behavior, and wrapped JSON null.
+SELECT sqljson_query_strict(js, p), sqljson_exists_strict(js, p)
+FROM (VALUES (NULL::jsonb, '$'::jsonpath),
+             ('0', NULL),
+             ('[]', '$[*]'),
+             ('[1]', '$[*] ? (@ > $p)'),
+             ('{}', 'strict $.missing'),
+             ('null', '$')) AS v(js, p);
+
+DROP FUNCTION sqljson_query_strict(jsonb, jsonpath),
+              sqljson_exists_strict(jsonb, jsonpath);
+
 -- A NULL PASSING argument or DEFAULT expression doesn't force a NULL result,
 -- so the planner must not consider them strict.  When a subquery is pulled up
 -- from the nullable side of an outer join, its output expressions must be
 -- evaluated below the join.
+-- the PASSING value is not referenced by the path, and the DEFAULT expression
+-- is not evaluated as the path yields an item, so the results are not NULL
+SELECT JSON_VALUE(jsonb '1', '$' PASSING NULL::int AS v RETURNING int),
+       JSON_VALUE(jsonb '{"a": 1}', '$.a' RETURNING int DEFAULT NULL ON EMPTY);
+-- the same for JSON_QUERY() and JSON_EXISTS(), for which a NULL PASSING value
+-- is a JSON null even if the path references it
+SELECT JSON_QUERY(jsonb '[1]', '$' PASSING NULL::int AS v),
+       JSON_EXISTS(jsonb '1', '$ ? (@ == $v)' PASSING NULL::int AS v),
+       JSON_QUERY(jsonb '{"a": [1]}', '$.a' DEFAULT NULL ON ERROR);
 -- pull-up with a PASSING argument: JSON_VALUE() is computed below the join
 EXPLAIN (VERBOSE, COSTS OFF)
 SELECT x, y, jv
@@ -665,6 +738,12 @@ SELECT x, y, jv
 FROM (VALUES (1), (2)) a(x)
      LEFT JOIN (SELECT y, JSON_VALUE(jsonb '1', '$' PASSING y AS v RETURNING int) AS jv
                 FROM (VALUES (2), (3)) b(y)) ss ON x = y
+ORDER BY x;
+-- OFFSET 0 prevents the pull-up, so jv is NULL for the unmatched x = 1
+SELECT x, y, jv
+FROM (VALUES (1), (2)) a(x)
+     LEFT JOIN (SELECT y, JSON_VALUE(jsonb '1', '$' PASSING y AS v RETURNING int) AS jv
+                FROM (VALUES (2), (3)) b(y) OFFSET 0) ss ON x = y
 ORDER BY x;
 -- JSON_QUERY() and JSON_EXISTS() with PASSING are computed below the join too
 EXPLAIN (VERBOSE, COSTS OFF)
@@ -702,6 +781,16 @@ FROM (VALUES (1), (2)) a(x)
                                                 DEFAULT y + 0 ON EMPTY) AS jv) s) ss
      ON x = y
 ORDER BY x;
+-- OFFSET 0 prevents the pull-up, so jv is NULL for the unmatched x = 1
+SELECT x, y, jv
+FROM (VALUES (1), (2)) a(x)
+     LEFT JOIN (SELECT y, jv
+                FROM (VALUES (2), (3)) b(y),
+                     LATERAL (SELECT JSON_VALUE(jsonb '{"a": 1}', '$.a' RETURNING int
+                                                DEFAULT y + 0 ON EMPTY) AS jv) s
+                OFFSET 0) ss
+     ON x = y
+ORDER BY x;
 -- JSON_QUERY() with DEFAULT ... ON ERROR is computed below the join too
 EXPLAIN (VERBOSE, COSTS OFF)
 SELECT x, y, jq
@@ -736,6 +825,22 @@ FROM (VALUES (1), (NULL)) v(x);
 -- so they are not called for NULL input, and the results are NULL
 SELECT x, queryfuncs_strict_passing(x), queryfuncs_strict_default('{"a": 1}', x)
 FROM (VALUES (1), (NULL)) v(x);
+-- the same functions in PL/pgSQL are never inlined, and give the same results
+CREATE FUNCTION queryfuncs_strict_passing_plpgsql(int) RETURNS int
+  LANGUAGE plpgsql IMMUTABLE STRICT
+  AS $$ BEGIN
+    RETURN JSON_VALUE(jsonb '1', '$' PASSING $1 AS v RETURNING int);
+  END $$;
+CREATE FUNCTION queryfuncs_strict_default_plpgsql(jsonb, int) RETURNS int
+  LANGUAGE plpgsql IMMUTABLE STRICT
+  AS $$ BEGIN
+    RETURN JSON_VALUE($1, '$.a' RETURNING int DEFAULT $2 + 0 ON EMPTY);
+  END $$;
+SELECT x, queryfuncs_strict_passing_plpgsql(x),
+       queryfuncs_strict_default_plpgsql('{"a": 1}', x)
+FROM (VALUES (1), (NULL)) v(x);
+DROP FUNCTION queryfuncs_strict_passing_plpgsql,
+  queryfuncs_strict_default_plpgsql;
 -- STRICT SQL functions using JSON_QUERY() and JSON_EXISTS() (with variable
 -- PASSING/default inputs) must not be inlined either.  The one calling
 -- to_jsonb() is STABLE, as IMMUTABLE functions with STABLE expressions are

@@ -1197,6 +1197,14 @@ contain_nonstrict_functions_walker(Node *node, void *context)
 		return true;
 	else if (IsA(node, JsonConstructorExpr))
 		return true;
+	else if (IsA(node, JsonExpr))
+	{
+		/*
+		 * PASSING and defaults are not strict inputs.  Callers may find
+		 * their only Var or Param there, so skipping them is unsafe.
+		 */
+		return true;
+	}
 	else
 	{
 		/* Check other function-containing nodes */

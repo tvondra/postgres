@@ -625,3 +625,141 @@ SELECT JSON_VALUE(x, '$' RETURNING json) FROM (VALUES ('1'::json), ('null'), ('2
 SELECT JSON_VALUE(x, '$.a' RETURNING jsonb) FROM (VALUES ('{"a": 1}'::jsonb), ('{}'), ('{"a": 2}')) v(x);
 SELECT JSON_VALUE(x, 'strict $.a' RETURNING jsonb) FROM (VALUES ('{"a": 1}'::jsonb), ('[]'), ('{"a": 2}')) v(x);
 SELECT JSON_VALUE(x, '$' RETURNING jsonb) FROM (VALUES ('1'::jsonb), (NULL), ('2')) v(x);
+
+-- Non-strict context and path expressions need null-extension protection.
+SELECT a.x, b.context_expr, b.path_expr
+FROM (VALUES (0), (1)) AS a(x)
+LEFT JOIN (
+  SELECT v.x,
+         JSON_VALUE(COALESCE(v.js, '0'::jsonb), '$' RETURNING int) AS context_expr,
+         JSON_VALUE('0'::jsonb, COALESCE(v.p, '$'::jsonpath)
+                    RETURNING int) AS path_expr
+  FROM (VALUES (0, '0'::jsonb, '$'::jsonpath), (2, '2', '$')) AS v(x, js, p)
+) AS b ON a.x = b.x
+ORDER BY a.x;
+
+-- A constant-valued PlaceHolderVar in PASSING still counts as a nullable
+-- input; inspecting only its expression would miss null-extension.
+SELECT a.x, b.j
+FROM (VALUES (0), (1)) AS a(x)
+LEFT JOIN (
+  SELECT v.x, JSON_VALUE('0'::jsonb, '$' PASSING p.k AS p RETURNING int) AS j
+  FROM (VALUES (0), (2)) AS v(x)
+  LEFT JOIN (SELECT x, 1 AS k FROM (VALUES (0), (2)) AS w(x)) AS p USING (x)
+) AS b ON a.x = b.x
+ORDER BY a.x;
+
+-- A NULL PASSING argument or DEFAULT expression doesn't force a NULL result,
+-- so the planner must not consider them strict.  When a subquery is pulled up
+-- from the nullable side of an outer join, its output expressions must be
+-- evaluated below the join.
+-- pull-up with a PASSING argument: JSON_VALUE() is computed below the join
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT x, y, jv
+FROM (VALUES (1), (2)) a(x)
+     LEFT JOIN (SELECT y, JSON_VALUE(jsonb '1', '$' PASSING y AS v RETURNING int) AS jv
+                FROM (VALUES (2), (3)) b(y)) ss ON x = y
+ORDER BY x;
+-- so jv is NULL for the unmatched x = 1
+SELECT x, y, jv
+FROM (VALUES (1), (2)) a(x)
+     LEFT JOIN (SELECT y, JSON_VALUE(jsonb '1', '$' PASSING y AS v RETURNING int) AS jv
+                FROM (VALUES (2), (3)) b(y)) ss ON x = y
+ORDER BY x;
+-- JSON_QUERY() and JSON_EXISTS() with PASSING are computed below the join too
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT x, y, jq, je
+FROM (VALUES (1), (2)) a(x)
+     LEFT JOIN (SELECT y, JSON_QUERY(jsonb '[1]', '$' PASSING y AS v) AS jq,
+                       JSON_EXISTS(jsonb '2', '$ ? (@ == $v)' PASSING y AS v) AS je
+                FROM (VALUES (2), (3)) b(y)) ss ON x = y
+ORDER BY x;
+-- so jq and je are NULL for the unmatched x = 1
+SELECT x, y, jq, je
+FROM (VALUES (1), (2)) a(x)
+     LEFT JOIN (SELECT y, JSON_QUERY(jsonb '[1]', '$' PASSING y AS v) AS jq,
+                       JSON_EXISTS(jsonb '2', '$ ? (@ == $v)' PASSING y AS v) AS je
+                FROM (VALUES (2), (3)) b(y)) ss ON x = y
+ORDER BY x;
+-- pull-up with a DEFAULT expression: JSON_VALUE() is computed below the join.
+-- DEFAULT can only reference outer-level columns, which become columns of the
+-- parent query once the inner subquery is pulled up.
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT x, y, jv
+FROM (VALUES (1), (2)) a(x)
+     LEFT JOIN (SELECT y, jv
+                FROM (VALUES (2), (3)) b(y),
+                     LATERAL (SELECT JSON_VALUE(jsonb '{"a": 1}', '$.a' RETURNING int
+                                                DEFAULT y + 0 ON EMPTY) AS jv) s) ss
+     ON x = y
+ORDER BY x;
+-- so jv is NULL for the unmatched x = 1
+SELECT x, y, jv
+FROM (VALUES (1), (2)) a(x)
+     LEFT JOIN (SELECT y, jv
+                FROM (VALUES (2), (3)) b(y),
+                     LATERAL (SELECT JSON_VALUE(jsonb '{"a": 1}', '$.a' RETURNING int
+                                                DEFAULT y + 0 ON EMPTY) AS jv) s) ss
+     ON x = y
+ORDER BY x;
+-- JSON_QUERY() with DEFAULT ... ON ERROR is computed below the join too
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT x, y, jq
+FROM (VALUES (1), (2)) a(x)
+     LEFT JOIN (SELECT y, jq
+                FROM (VALUES (2), (3)) b(y),
+                     LATERAL (SELECT JSON_QUERY(jsonb '{"a": [1]}', '$.a'
+                                                DEFAULT to_jsonb(y) ON ERROR) AS jq) s) ss
+     ON x = y
+ORDER BY x;
+-- so jq is NULL for the unmatched x = 1
+SELECT x, y, jq
+FROM (VALUES (1), (2)) a(x)
+     LEFT JOIN (SELECT y, jq
+                FROM (VALUES (2), (3)) b(y),
+                     LATERAL (SELECT JSON_QUERY(jsonb '{"a": [1]}', '$.a'
+                                                DEFAULT to_jsonb(y) ON ERROR) AS jq) s) ss
+     ON x = y
+ORDER BY x;
+-- STRICT SQL functions using arguments in PASSING or DEFAULT must not be
+-- inlined, as that would make them return non-NULL for NULL input
+CREATE FUNCTION queryfuncs_strict_passing(int) RETURNS int
+  LANGUAGE sql IMMUTABLE STRICT
+  AS $$ SELECT JSON_VALUE(jsonb '1', '$' PASSING $1 AS v RETURNING int) $$;
+CREATE FUNCTION queryfuncs_strict_default(jsonb, int) RETURNS int
+  LANGUAGE sql IMMUTABLE STRICT
+  AS $$ SELECT JSON_VALUE($1, '$.a' RETURNING int DEFAULT $2 + 0 ON EMPTY) $$;
+-- the plan shows the functions are not inlined
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT x, queryfuncs_strict_passing(x), queryfuncs_strict_default('{"a": 1}', x)
+FROM (VALUES (1), (NULL)) v(x);
+-- so they are not called for NULL input, and the results are NULL
+SELECT x, queryfuncs_strict_passing(x), queryfuncs_strict_default('{"a": 1}', x)
+FROM (VALUES (1), (NULL)) v(x);
+-- STRICT SQL functions using JSON_QUERY() and JSON_EXISTS() (with variable
+-- PASSING/default inputs) must not be inlined either.  The one calling
+-- to_jsonb() is STABLE, as IMMUTABLE functions with STABLE expressions are
+-- never inlined.
+CREATE FUNCTION queryfuncs_strict_passing_query(int) RETURNS jsonb
+  LANGUAGE sql IMMUTABLE STRICT
+  AS $$ SELECT JSON_QUERY(jsonb '[1]', '$' PASSING $1 AS v) $$;
+CREATE FUNCTION queryfuncs_strict_passing_exists(int) RETURNS bool
+  LANGUAGE sql IMMUTABLE STRICT
+  AS $$ SELECT JSON_EXISTS(jsonb '1', '$ ? (@ == $v)' PASSING $1 AS v) $$;
+CREATE FUNCTION queryfuncs_strict_default_query(jsonb, int) RETURNS jsonb
+  LANGUAGE sql STABLE STRICT
+  AS $$ SELECT JSON_QUERY($1, '$.a' DEFAULT to_jsonb($2) ON ERROR) $$;
+-- the plan shows the functions are not inlined
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT x, queryfuncs_strict_passing_query(x),
+       queryfuncs_strict_passing_exists(x),
+       queryfuncs_strict_default_query('{"a": [1]}', x)
+FROM (VALUES (1), (NULL)) v(x);
+-- so the results are NULL for NULL input
+SELECT x, queryfuncs_strict_passing_query(x),
+       queryfuncs_strict_passing_exists(x),
+       queryfuncs_strict_default_query('{"a": [1]}', x)
+FROM (VALUES (1), (NULL)) v(x);
+DROP FUNCTION queryfuncs_strict_passing_query, queryfuncs_strict_passing_exists,
+  queryfuncs_strict_default_query;
+DROP FUNCTION queryfuncs_strict_passing, queryfuncs_strict_default;

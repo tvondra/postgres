@@ -4112,10 +4112,8 @@ check_memoizable(RestrictInfo *restrictinfo)
 	}
 }
 
-
-
 /*
- * starjoins_canonicalize
+ * generate_starjoin_clusters
  *		Detect star-shaped sub-joins and determine canonical join order.
  *
  * A starjoin cluster is a fact relation joined to two or more dimensions

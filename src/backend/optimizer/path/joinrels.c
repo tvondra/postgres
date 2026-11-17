@@ -32,6 +32,9 @@ static void make_rels_by_clause_joins(PlannerInfo *root,
 static void make_rels_by_clauseless_joins(PlannerInfo *root,
 										  RelOptInfo *old_rel,
 										  List *other_rels);
+static bool starjoin_order_invalid(PlannerInfo *root,
+								   RelOptInfo *rel1,
+								   RelOptInfo *rel2);
 static bool has_join_restriction(PlannerInfo *root, RelOptInfo *rel);
 static bool has_legal_joinclause(PlannerInfo *root, RelOptInfo *rel);
 static bool restriction_is_constant_false(List *restrictlist,
@@ -755,6 +758,14 @@ make_join_rel(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
 
 	/* We should never try to join two overlapping sets of rels. */
 	Assert(!bms_overlap(rel1->relids, rel2->relids));
+
+	/*
+	 * If this join would be a redundant ordering of a previously detected
+	 * starjoin cluster, skip it. All cluster orderings have identical cost;
+	 * we keep only the canonical one chosen when building starjoin clusters.
+	 */
+	if (starjoin_order_invalid(root, rel1, rel2))
+		return NULL;
 
 	/* Construct Relids set that identifies the joinrel (without OJ as yet). */
 	joinrelids = bms_union(rel1->relids, rel2->relids);
@@ -2158,4 +2169,108 @@ get_matching_part_pairs(PlannerInfo *root, RelOptInfo *joinrel,
 		*parts1 = lappend(*parts1, child_rel1);
 		*parts2 = lappend(*parts2, child_rel2);
 	}
+}
+
+/*
+ * starjoin_order_invalid
+ *		Return true if the proposed join (rel1, rel2) would build a
+ *		non-canonical ordering of a starjoin cluster.
+ *
+ * For every star cluster in root->starjoin_clusters, we enforce the canonical
+ * decomposition of any joinrel containinig the fact and at least one cluster
+ * dimension - the dimensions must form a prefix of the order determined when
+ * collecting the starjoin clusters.
+ *
+ * This rule preserves exactly one decomposition per joinrel relid set, so
+ * each canonical joinrel is still built; redundant orderings are pruned.
+ *
+ * We might forbid additional joins, for example we might forbid joinrels
+ * containing a cluster dimension without the fact.
+ */
+static bool
+starjoin_order_invalid(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
+{
+	ListCell   *lc;
+	Relids		join_relids;
+	bool		violates = false;
+
+	/* No starjoin optimization outside the stardard DP join search. */
+	if (root->join_rel_level == NULL)
+		return false;
+
+	/* no starjoins found (maybe because the option is disabled) */
+	if (root->starjoin_clusters == NIL)
+		return false;
+
+	/* relids of the result */
+	join_relids = bms_union(rel1->relids, rel2->relids);
+
+	/* does this contradict any of the clusters we know about */
+	foreach(lc, root->starjoin_clusters)
+	{
+		StarJoinClusterInfo *c = (StarJoinClusterInfo *) lfirst(lc);
+		Relids	dims;
+		int		ndims;
+		int		idx;
+
+		/*
+		 * If all dimensions are on one side of the join, we've already
+		 * checked the canonical order earlier, when building it. No need
+		 * to redo the check again.
+		 */
+		dims = bms_intersect(rel1->relids, c->dim_relids);
+		if (bms_is_empty(dims))
+		{
+			bms_free(dims);
+			continue;
+		}
+		bms_free(dims);
+
+		dims = bms_intersect(rel2->relids, c->dim_relids);
+		if (bms_is_empty(dims))
+		{
+			bms_free(dims);
+			continue;
+		}
+		bms_free(dims);
+
+		/* the canonical ordering has to include the fact */
+		if (!bms_is_member(c->fact_relid, join_relids))
+		{
+			violates = true;
+			break;
+		}
+
+		/*
+		 * Count the prefix length covered by this join. We simply use the
+		 * bitmap of cluster dimensions. For now that's fine, but it we
+		 * choose to allow snowflake joins, we'll need to rethink it and use
+		 * a list or something where the order is not determined by relid
+		 * (probably?)
+		 */
+		ndims = 0;
+		idx = -1;
+		while ((idx = bms_next_member(c->dim_relids, idx)) >= 0)
+		{
+			/* found end of dimension prefix */
+			if (!bms_is_member(idx, join_relids))
+				break;
+
+			ndims++;
+		}
+
+		dims = bms_intersect(join_relids, c->dim_relids);
+		if (bms_num_members(dims) != ndims)
+		{
+			bms_free(dims);
+			violates = true;
+			break;
+		}
+
+		bms_free(dims);
+	}
+
+	bms_free(join_relids);
+
+	return violates;
 }

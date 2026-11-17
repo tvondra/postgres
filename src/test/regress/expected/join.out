@@ -13319,3 +13319,60 @@ WHERE s.x = s.c;
 (1 row)
 
 ROLLBACK;
+--
+-- Star-join collapse: FK-unique star clusters get a canonical join order
+--
+CREATE TABLE sj_d1 (id int PRIMARY KEY, v text);
+CREATE TABLE sj_d2 (id int PRIMARY KEY, v text);
+CREATE TABLE sj_d3 (id int PRIMARY KEY, v text);
+CREATE TABLE sj_f (
+    id int PRIMARY KEY,
+    d1 int NOT NULL REFERENCES sj_d1,
+    d2 int NOT NULL REFERENCES sj_d2,
+    d3 int NOT NULL REFERENCES sj_d3
+);
+ANALYZE sj_f, sj_d1, sj_d2, sj_d3;
+-- With the collapse enabled (default), the resulting plan must be identical
+-- to the plan produced with the optimization disabled.
+SET enable_starjoin_ordering = on;
+EXPLAIN (COSTS OFF)
+SELECT * FROM sj_f
+  JOIN sj_d1 ON sj_f.d1 = sj_d1.id
+  JOIN sj_d2 ON sj_f.d2 = sj_d2.id
+  JOIN sj_d3 ON sj_f.d3 = sj_d3.id;
+                   QUERY PLAN                    
+-------------------------------------------------
+ Nested Loop
+   Join Filter: (sj_d3.id = sj_f.d3)
+   ->  Nested Loop
+         Join Filter: (sj_d2.id = sj_f.d2)
+         ->  Nested Loop
+               Join Filter: (sj_d1.id = sj_f.d1)
+               ->  Seq Scan on sj_f
+               ->  Seq Scan on sj_d1
+         ->  Seq Scan on sj_d2
+   ->  Seq Scan on sj_d3
+(10 rows)
+
+SET enable_starjoin_ordering = off;
+EXPLAIN (COSTS OFF)
+SELECT * FROM sj_f
+  JOIN sj_d1 ON sj_f.d1 = sj_d1.id
+  JOIN sj_d2 ON sj_f.d2 = sj_d2.id
+  JOIN sj_d3 ON sj_f.d3 = sj_d3.id;
+                   QUERY PLAN                    
+-------------------------------------------------
+ Nested Loop
+   Join Filter: (sj_d3.id = sj_f.d3)
+   ->  Nested Loop
+         Join Filter: (sj_d2.id = sj_f.d2)
+         ->  Nested Loop
+               Join Filter: (sj_d1.id = sj_f.d1)
+               ->  Seq Scan on sj_f
+               ->  Seq Scan on sj_d1
+         ->  Seq Scan on sj_d2
+   ->  Seq Scan on sj_d3
+(10 rows)
+
+RESET enable_starjoin_ordering;
+DROP TABLE sj_f, sj_d1, sj_d2, sj_d3;

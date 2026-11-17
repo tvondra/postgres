@@ -4111,3 +4111,260 @@ check_memoizable(RestrictInfo *restrictinfo)
 			restrictinfo->right_hasheqoperator = typentry->eq_opr;
 	}
 }
+
+
+
+/*
+ * starjoins_canonicalize
+ *		Detect star-shaped sub-joins and determine canonical join order.
+ *
+ * A starjoin cluster is a fact relation joined to two or more dimensions
+ * via an equality condition matching a foreign key, satisfying these
+ * conditions:
+ *
+ *	1. The dimension is a plain base relation (RELOPT_BASEREL).
+ *
+ *	2. All join columns on the fact are NOT NULL.
+ *
+ *	3. The dimension has no local restriction quals (baserestrictinfo).
+ *
+ *	4. The dimension has no relevant join clauses to any rel other than
+ *	   the fact (checked via have_relevant_joinclause, which also covers
+ *	   equivalence-class joins).
+ *
+ *	5. The dimension does not participate in any SpecialJoinInfo.
+ *
+ *	6. The dimension has no lateral references in or out.
+ *
+ *	7. The dimension is not constrained by any PlaceHolderInfo.
+ *
+ * Under these conditions, the join is strictly cardinality-preserving with
+ * respect to the fact table. And all join orderings for a cluster produce
+ * identical row counts and identical per-step costs. The join_search can
+ * therefore consider only a single canonical ordering without losing the
+ * optimal plan.
+ *
+ * Dimensions that fail the preconditions are simply not added to any
+ * cluster; the planner then handles them in the ordinary way.  A fact
+ * with fewer than two qualifying dimensions produces no cluster (there
+ * is nothing to deduplicate).
+ *
+ * Must be called after match_foreign_keys_to_quals(), and after lateral,
+ * PHV and SpecialJoinInfo information have been finalized.
+ */
+void
+generate_starjoin_clusters(PlannerInfo *root)
+{
+	int			nrels;
+	List	  **fact_dims;
+	int			f;
+	ListCell   *lc;
+
+	/* do nothing if optimization not enabled */
+	if (!enable_starjoin_ordering)
+		return;
+
+	/* also, do nothing if there are no foreign key joins */
+	if (root->fkey_list == NIL)
+		return;
+
+	nrels = root->simple_rel_array_size;
+	fact_dims = (List **) palloc0(nrels * sizeof(List *));
+
+	/*
+	 * Group fully-matched FKs by referencing (fact) relid, collecting
+	 * candidate dimension relids. match_foreign_keys_to_quals() has
+	 * already filtered fkey_list to fully-matched FKs.
+	 */
+	foreach(lc, root->fkey_list)
+	{
+		ForeignKeyOptInfo *fkinfo = (ForeignKeyOptInfo *) lfirst(lc);
+		Index		fact_rti = fkinfo->con_relid;
+		Index		dim_rti = fkinfo->ref_relid;
+
+		/*
+		 * Expect valid RTI on both sides (otherwise should not have kept
+		 * this foreign key. Similarly, we shouldn't get a FK with the
+		 * same RTI on both ends.
+		 */
+		Assert(fact_rti < root->simple_rel_array_size);
+		Assert(dim_rti < root->simple_rel_array_size);
+		Assert(fact_rti != dim_rti);
+
+		/*
+		 * With duplicate foreign keys we might have already included this
+		 * candidate dimension.
+		 */
+		if (list_member_int(fact_dims[fact_rti], dim_rti))
+			continue;
+
+		/* found a candidate dimension, stash it to the list */
+		fact_dims[fact_rti] = lappend_int(fact_dims[fact_rti], dim_rti);
+	}
+
+	/*
+	 * For each candidate fact, validate which dimensions meet the other
+	 * requirements, and build a StarJoinClusterInfo if at least two
+	 * dimensions qualify.
+	 */
+	for (f = 1; f < nrels; f++)
+	{
+		RelOptInfo *fact_rel;
+		Relids		dim_relids = NULL;
+		int			ndims = 0;
+		ListCell   *lc2;
+		StarJoinClusterInfo *cluster;
+
+		/*
+		 * Can't be a fact if there are no potential dimensions (we need
+		 * at least two for a starjoin optimization to matter).
+		 */
+		if (list_length(fact_dims[f]) < 2)
+			continue;
+
+		/* has to be a baserel (how else could it be, if it has a FK?) */
+		fact_rel = root->simple_rel_array[f];
+		if (fact_rel == NULL || fact_rel->reloptkind != RELOPT_BASEREL)
+			continue;
+
+		/* count dimensions matching the requirements */
+		foreach(lc2, fact_dims[f])
+		{
+			Index		d = (Index) lfirst_int(lc2);
+			RelOptInfo *dim_rel = root->simple_rel_array[d];
+			ForeignKeyOptInfo *fkinfo = NULL;
+			ListCell   *lc3;
+			bool		ok = true;
+			int			colno;
+			int			r;
+
+			/* has to be a baserel (it's referenced by a FK, so?) */
+			if (dim_rel == NULL || dim_rel->reloptkind != RELOPT_BASEREL)
+				continue;
+
+			/* No local restriction quals on the dimension. */
+			if (dim_rel->baserestrictinfo != NIL)
+				continue;
+
+			/* No lateral references in or out. */
+			if (!bms_is_empty(dim_rel->lateral_relids))
+				continue;
+			if (!bms_is_empty(dim_rel->lateral_referencers))
+				continue;
+
+			/* Find the matching FK so we can check NOT NULL on conkey cols */
+			foreach(lc3, root->fkey_list)
+			{
+				ForeignKeyOptInfo *fki = (ForeignKeyOptInfo *) lfirst(lc3);
+
+				if ((fki->con_relid == f) && (fki->ref_relid == d))
+				{
+					fkinfo = fki;
+					break;
+				}
+			}
+
+			/* we should have found a FK, that's how we got the array */
+			Assert(fkinfo != NULL);
+
+			/*
+			 * Make sure all columns on the fact side are NOT NULL. We
+			 * know the FK is fully matched by the join, so use that.
+			 */
+			for (colno = 0; colno < fkinfo->nkeys; colno++)
+			{
+				if (!bms_is_member(fkinfo->conkey[colno],
+								   fact_rel->notnullattnums))
+				{
+					ok = false;
+					break;
+				}
+			}
+			if (!ok)
+				continue;
+
+			/*
+			 * Should not be involved in any SpecialJoinInfo (for now the
+			 * starjoin is done only for inner joins).
+			 *
+			 * XXX We could relax this, and allow left joins, as long as the
+			 * target has a unique constraint.
+			 */
+			foreach(lc3, root->join_info_list)
+			{
+				SpecialJoinInfo *sjinfo = (SpecialJoinInfo *) lfirst(lc3);
+
+				if (bms_is_member(d, sjinfo->min_lefthand) ||
+					bms_is_member(d, sjinfo->min_righthand) ||
+					bms_is_member(d, sjinfo->syn_lefthand) ||
+					bms_is_member(d, sjinfo->syn_righthand))
+				{
+					ok = false;
+					break;
+				}
+			}
+			if (!ok)
+				continue;
+
+			/* Not constrained by any PlaceHolderInfo. */
+			foreach(lc3, root->placeholder_list)
+			{
+				PlaceHolderInfo *phi = (PlaceHolderInfo *) lfirst(lc3);
+
+				if (bms_is_member((int) d, phi->ph_eval_at) ||
+					bms_is_member((int) d, phi->ph_lateral) ||
+					bms_is_member((int) d, phi->ph_needed))
+				{
+					ok = false;
+					break;
+				}
+			}
+			if (!ok)
+				continue;
+
+			/*
+			 * The dimension must have no relevant join clause to any rel
+			 * other than the fact.  have_relevant_joinclause() also covers
+			 * equivalence-class joins.
+			 */
+			for (r = 1; r < nrels; r++)
+			{
+				RelOptInfo *other_rel;
+
+				if (r == (int) d || r == f)
+					continue;
+				other_rel = root->simple_rel_array[r];
+				if (other_rel == NULL ||
+					other_rel->reloptkind != RELOPT_BASEREL)
+					continue;
+				if (have_relevant_joinclause(root, dim_rel, other_rel))
+				{
+					ok = false;
+					break;
+				}
+			}
+			if (!ok)
+				continue;
+
+			/* Qualifies as a dimension. */
+			dim_relids = bms_add_member(dim_relids, (int) d);
+			ndims++;
+		}
+
+		/* we need at least 2 dimensions for this optimization to matter */
+		if (ndims < 2)
+		{
+			bms_free(dim_relids);
+			continue;
+		}
+
+		/* remember this cluster */
+		cluster = makeNode(StarJoinClusterInfo);
+		cluster->fact_relid = (Index) f;
+		cluster->dim_relids = dim_relids;
+
+		root->starjoin_clusters = lappend(root->starjoin_clusters, cluster);
+	}
+
+	pfree(fact_dims);
+}

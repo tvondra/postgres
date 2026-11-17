@@ -1041,6 +1041,14 @@
   boot_val => 'true',
 },
 
+{ name => 'enable_starjoin_ordering', type => 'bool', context => 'PGC_USERSET', group => 'QUERY_TUNING_METHOD',
+  short_desc => 'Enables collapsing of redundant join orderings in star-shaped queries.',
+  long_desc => 'When enabled, the planner detects star joins (a fact table joined to multiple dimension tables via foreign keys referencing unique keys, with NOT NULL FK columns and no dimension-side restrictions) and avoids enumerating equivalent join orderings, since they have identical cost.',
+  flags => 'GUC_EXPLAIN',
+  variable => 'enable_starjoin_ordering',
+  boot_val => 'true',
+},
+
 { name => 'enable_tidscan', type => 'bool', context => 'PGC_USERSET', group => 'QUERY_TUNING_METHOD',
   short_desc => 'Enables the planner\'s use of TID scan plans.',
   flags => 'GUC_EXPLAIN',

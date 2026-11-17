@@ -100,6 +100,7 @@ extern RestrictInfo *build_implied_join_equality(PlannerInfo *root,
 												 Relids qualscope,
 												 Index security_level);
 extern void match_foreign_keys_to_quals(PlannerInfo *root);
+extern void generate_starjoin_clusters(PlannerInfo *root);
 
 /*
  * prototypes for plan/analyzejoins.c

@@ -110,6 +110,7 @@ restart:
 	root->group_expr_list = NIL;
 	root->tlist_vars = NIL;
 	root->fkey_list = NIL;
+	root->starjoin_clusters = NIL;
 	root->initial_rels = NIL;
 	root->hasPseudoConstantQuals = false;
 
@@ -331,6 +332,14 @@ restart:
 	 * restriction OR clauses from.
 	 */
 	extract_restriction_or_clauses(root);
+
+	/*
+	 * Detect star-shaped sub-joins so that join_search can skip enumerating
+	 * equivalent join orderings.  Must be done after foreign keys are
+	 * matched to quals and after lateral, PHV and SpecialJoinInfo info is
+	 * available.
+	 */
+	generate_starjoin_clusters(root);
 
 	/*
 	 * Check if eager aggregation is applicable, and if so, set up

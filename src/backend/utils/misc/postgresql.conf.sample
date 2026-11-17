@@ -452,6 +452,7 @@
 #enable_distinct_reordering = on
 #enable_self_join_elimination = on
 #enable_eager_aggregate = on
+#enable_starjoin_ordering = on
 
 # - Planner Cost Constants -
 

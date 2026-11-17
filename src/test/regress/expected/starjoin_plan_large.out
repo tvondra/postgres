@@ -1,0 +1,96 @@
+
+SET enable_starjoin_ordering = off;
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+SELECT count(*) FROM starjoin_plan_pf AS pf
+  JOIN starjoin_plan_p1 AS p1 ON pf.d1 = p1.id
+  JOIN starjoin_plan_p2 AS p2 ON pf.d2 = p2.id
+  JOIN starjoin_plan_p3 AS p3 ON pf.d3 = p3.id AND pf.x = p3.w;
+                                              QUERY PLAN                                               
+-------------------------------------------------------------------------------------------------------
+ Aggregate (actual rows=1.00 loops=1)
+   ->  Nested Loop (actual rows=0.00 loops=1)
+         ->  Nested Loop (actual rows=0.00 loops=1)
+               ->  Hash Join (actual rows=0.00 loops=1)
+                     Hash Cond: ((pf.d3 = p3.id) AND (pf.x = p3.w))
+                     ->  Seq Scan on starjoin_plan_pf pf (actual rows=2000000.00 loops=1)
+                     ->  Hash (actual rows=100000.00 loops=1)
+                           Buckets: 131072  Batches: 1  Memory Usage: 4931kB
+                           ->  Seq Scan on starjoin_plan_p3 p3 (actual rows=100000.00 loops=1)
+               ->  Index Only Scan using starjoin_plan_p1_pkey on starjoin_plan_p1 p1 (never executed)
+                     Index Cond: (id = pf.d1)
+                     Heap Fetches: 0
+                     Index Searches: 0
+         ->  Index Only Scan using starjoin_plan_p2_pkey on starjoin_plan_p2 p2 (never executed)
+               Index Cond: (id = pf.d2)
+               Heap Fetches: 0
+               Index Searches: 0
+(17 rows)
+
+-- Q2: OR clause from which extract_restriction_or_clauses() derives a restriction on p3
+SET enable_starjoin_ordering = on;
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+SELECT count(*) FROM starjoin_plan_pf AS pf
+  JOIN starjoin_plan_p1 AS p1 ON pf.d1 = p1.id
+  JOIN starjoin_plan_p2 AS p2 ON pf.d2 = p2.id
+  JOIN starjoin_plan_p3 AS p3 ON pf.d3 = p3.id
+ WHERE (p3.w = 1 AND pf.x = 1) OR (p3.w = 2 AND pf.x = 2);
+                                                     QUERY PLAN                                                      
+---------------------------------------------------------------------------------------------------------------------
+ Aggregate (actual rows=1.00 loops=1)
+   ->  Nested Loop (actual rows=0.00 loops=1)
+         ->  Nested Loop (actual rows=0.00 loops=1)
+               ->  Nested Loop (actual rows=0.00 loops=1)
+                     Join Filter: ((p3.id = pf.d3) AND (((p3.w = 1) AND (pf.x = 1)) OR ((p3.w = 2) AND (pf.x = 2))))
+                     Rows Removed by Join Filter: 8000
+                     ->  Seq Scan on starjoin_plan_pf pf (actual rows=4000.00 loops=1)
+                           Filter: ((x = 1) OR (x = 2))
+                           Rows Removed by Filter: 1996000
+                     ->  Materialize (actual rows=2.00 loops=4000)
+                           Storage: Memory  Maximum Storage: 17kB
+                           ->  Seq Scan on starjoin_plan_p3 p3 (actual rows=2.00 loops=1)
+                                 Filter: ((w = 1) OR (w = 2))
+                                 Rows Removed by Filter: 99998
+               ->  Index Only Scan using starjoin_plan_p1_pkey on starjoin_plan_p1 p1 (never executed)
+                     Index Cond: (id = pf.d1)
+                     Heap Fetches: 0
+                     Index Searches: 0
+         ->  Index Only Scan using starjoin_plan_p2_pkey on starjoin_plan_p2 p2 (never executed)
+               Index Cond: (id = pf.d2)
+               Heap Fetches: 0
+               Index Searches: 0
+(22 rows)
+
+SET enable_starjoin_ordering = off;
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+SELECT count(*) FROM starjoin_plan_pf AS pf
+  JOIN starjoin_plan_p1 AS p1 ON pf.d1 = p1.id
+  JOIN starjoin_plan_p2 AS p2 ON pf.d2 = p2.id
+  JOIN starjoin_plan_p3 AS p3 ON pf.d3 = p3.id
+ WHERE (p3.w = 1 AND pf.x = 1) OR (p3.w = 2 AND pf.x = 2);
+                                                     QUERY PLAN                                                      
+---------------------------------------------------------------------------------------------------------------------
+ Aggregate (actual rows=1.00 loops=1)
+   ->  Nested Loop (actual rows=0.00 loops=1)
+         ->  Nested Loop (actual rows=0.00 loops=1)
+               ->  Nested Loop (actual rows=0.00 loops=1)
+                     Join Filter: ((p3.id = pf.d3) AND (((p3.w = 1) AND (pf.x = 1)) OR ((p3.w = 2) AND (pf.x = 2))))
+                     Rows Removed by Join Filter: 8000
+                     ->  Seq Scan on starjoin_plan_pf pf (actual rows=4000.00 loops=1)
+                           Filter: ((x = 1) OR (x = 2))
+                           Rows Removed by Filter: 1996000
+                     ->  Materialize (actual rows=2.00 loops=4000)
+                           Storage: Memory  Maximum Storage: 17kB
+                           ->  Seq Scan on starjoin_plan_p3 p3 (actual rows=2.00 loops=1)
+                                 Filter: ((w = 1) OR (w = 2))
+                                 Rows Removed by Filter: 99998
+               ->  Index Only Scan using starjoin_plan_p1_pkey on starjoin_plan_p1 p1 (never executed)
+                     Index Cond: (id = pf.d1)
+                     Heap Fetches: 0
+                     Index Searches: 0
+         ->  Index Only Scan using starjoin_plan_p2_pkey on starjoin_plan_p2 p2 (never executed)
+               Index Cond: (id = pf.d2)
+               Heap Fetches: 0
+               Index Searches: 0
+(22 rows)
+
+DROP TABLE starjoin_plan_pf, starjoin_plan_p1, starjoin_plan_p2, starjoin_plan_p3;

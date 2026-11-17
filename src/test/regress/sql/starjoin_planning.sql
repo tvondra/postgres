@@ -67,6 +67,33 @@ EXPLAIN (COSTS OFF) SELECT count(*) FROM starjoin_planning_f AS f, starjoin_plan
  WHERE f.d0 = d0.id AND f.d1 = d1.id AND f.d2 = d2.id AND f.d3 = d3.id
    AND f.d4 = d4.id AND f.d5 = d5.id AND f.d6 = s.i6 AND f.d7 = s.i7;
 
+-- F: from_collapse_limit, the fact is joined to a dimension (with a higher
+-- relid than the other dimensions) in a separate subproblem
+SET from_collapse_limit = 3;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM starjoin_planning_d1 AS d1, starjoin_planning_d2 AS d2,
+  starjoin_planning_f AS f JOIN starjoin_planning_d3 AS d3 ON f.d3 = d3.id
+ WHERE f.d1 = d1.id AND f.d2 = d2.id;
+RESET from_collapse_limit;
+
+-- G: same, but with default settings (9 rels exceed from_collapse_limit)
+EXPLAIN (COSTS OFF) SELECT count(*) FROM starjoin_planning_d0 AS d0,
+  starjoin_planning_d1 AS d1, starjoin_planning_d2 AS d2, starjoin_planning_d3 AS d3,
+  starjoin_planning_d4 AS d4, starjoin_planning_d5 AS d5, starjoin_planning_d6 AS d6,
+  starjoin_planning_f AS f JOIN starjoin_planning_d7 AS d7 ON f.d7 = d7.id
+ WHERE f.d0 = d0.id AND f.d1 = d1.id AND f.d2 = d2.id AND f.d3 = d3.id
+   AND f.d4 = d4.id AND f.d5 = d5.id AND f.d6 = d6.id;
+
+-- H: join_collapse_limit, right-nested explicit joins
+SET join_collapse_limit = 3;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM starjoin_planning_d1 AS d1
+  JOIN (starjoin_planning_d2 AS d2
+        JOIN (starjoin_planning_f AS f
+              JOIN starjoin_planning_d3 AS d3 ON f.d3 = d3.id
+              JOIN starjoin_planning_d4 AS d4 ON f.d4 = d4.id)
+        ON f.d2 = d2.id)
+  ON f.d1 = d1.id;
+RESET join_collapse_limit;
+
 DROP VIEW starjoin_planning_star;
 DROP TABLE starjoin_planning_f, starjoin_planning_d0, starjoin_planning_d1,
   starjoin_planning_d2, starjoin_planning_d3, starjoin_planning_d4,

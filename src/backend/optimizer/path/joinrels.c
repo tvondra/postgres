@@ -2177,9 +2177,19 @@ get_matching_part_pairs(PlannerInfo *root, RelOptInfo *joinrel,
  *		non-canonical ordering of a starjoin cluster.
  *
  * For every star cluster in root->starjoin_clusters, we enforce the canonical
- * decomposition of any joinrel containinig the fact and at least one cluster
+ * decomposition of any joinrel containing the fact and at least one cluster
  * dimension - the dimensions must form a prefix of the order determined when
  * collecting the starjoin clusters.
+ *
+ * Clusters are computed for the whole query, but the join search may be split
+ * into multiple subproblems (join_collapse_limit, from_collapse_limit, FULL
+ * JOIN), and each subproblem is solved separately. Within a subproblem, only
+ * dimensions that are initial rels of that subproblem (i.e. base relations
+ * joined individually) can be added in the canonical order.  Dimensions
+ * already joined into a joinrel by an earlier subproblem (possibly together
+ * with the fact) can't, so we ignore them here and treat their joinrel just
+ * like any other relation.  Otherwise there might be no valid join order at
+ * all.  Clusters with the fact outside the current subproblem are ignored.
  *
  * This rule preserves exactly one decomposition per joinrel relid set, so
  * each canonical joinrel is still built; redundant orderings are pruned.
@@ -2192,10 +2202,11 @@ starjoin_order_invalid(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
 {
 	ListCell   *lc;
 	Relids		join_relids;
+	Relids		all_relids = NULL;		/* all relids in this subproblem */
+	Relids		baserel_relids = NULL;	/* baserels in this subproblem */
 	bool		violates = false;
-	Relids		current_relids = NULL;	/* relids in the current join problem */
 
-	/* No starjoin optimization outside the stardard DP join search. */
+	/* No starjoin optimization outside the standard DP join search. */
 	if (root->join_rel_level == NULL)
 		return false;
 
@@ -2203,115 +2214,96 @@ starjoin_order_invalid(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
 	if (root->starjoin_clusters == NIL)
 		return false;
 
-	/* relids of the result */
-	join_relids = bms_union(rel1->relids, rel2->relids);
-
-	/*
-	 * The starjoin cluster may span multiple join search problems. We need
-	 * to consider only the subset of the cluster that intersects with our
-	 * current problem, otherwise a relation joined in some later problem
-	 * might block all valid joins. Calculate the relids from the initial
-	 * rels, stored in root->root->join_rel_level[1].
-	 */
+	/* The initial rels of the current subproblem are in join_rel_level[1]. */
 	foreach(lc, root->join_rel_level[1])
 	{
 		RelOptInfo *rel = (RelOptInfo *) lfirst(lc);
-		current_relids = bms_union(current_relids, rel->relids);
+
+		all_relids = bms_add_members(all_relids, rel->relids);
+		if (rel->reloptkind == RELOPT_BASEREL)
+			baserel_relids = bms_add_members(baserel_relids, rel->relids);
 	}
+
+	/* relids of the result */
+	join_relids = bms_union(rel1->relids, rel2->relids);
 
 	/* does this contradict any of the clusters we know about */
 	foreach(lc, root->starjoin_clusters)
 	{
 		StarJoinClusterInfo *c = (StarJoinClusterInfo *) lfirst(lc);
-		Relids	dims;
-		int		ndims;
-		int		idx;
-		Relids	cluster_dims;
+		Relids		cluster_dims;
+		bool		gap = false;
+		int			idx;
 
-		/* Does the starjoin cluster intersect with the current join? */
-		cluster_dims = bms_intersect(c->dim_relids, current_relids);
+		/*
+		 * The fact is not part of this subproblem, nothing to enforce.
+		 *
+		 * FIXME I think this may be overly strict. We should probably enforce
+		 * the canonical order even without the fact, e.g. when joining just
+		 * the dimensions in the snowflake join.
+		 */
+		if (!bms_is_member(c->fact_relid, all_relids))
+			continue;
 
-		/* There are no dimensions, it can't possibly contradict. */
-		if (bms_is_empty(cluster_dims))
+		/* dimensions joined individually in this subproblem */
+		cluster_dims = bms_intersect(c->dim_relids, baserel_relids);
+
+		/*
+		 * If all dimensions are on one side of the join, we've already
+		 * checked the canonical order earlier, when building it. No need to
+		 * redo the check again.
+		 */
+		if (!bms_overlap(rel1->relids, cluster_dims) ||
+			!bms_overlap(rel2->relids, cluster_dims))
 		{
 			bms_free(cluster_dims);
 			continue;
 		}
 
 		/*
-		 * If all dimensions are on one side of the join, we've already
-		 * checked the canonical order earlier, when building it. No need
-		 * to redo the check again.
-		 */
-		dims = bms_intersect(rel1->relids, cluster_dims);
-		if (bms_is_empty(dims))
-		{
-			bms_free(dims);
-			continue;
-		}
-		bms_free(dims);
-
-		dims = bms_intersect(rel2->relids, cluster_dims);
-		if (bms_is_empty(dims))
-		{
-			bms_free(dims);
-			continue;
-		}
-		bms_free(dims);
-
-		/*
-		 * If the fact is not included in join problems we've seen so far,
-		 * we can't deduce anything. It might be that we're split the joins
-		 * so that the dimension is in an earlier problem, in which case
-		 * we must not consider the join invalid (we'd not build any valid
-		 * joins with this join tree).
-		 */
-		if (!bms_is_member(c->fact_relid, current_relids))
-			continue;
-
-		/*
-		 * The fact is somewhere in the join relations (possibly from an
-		 * earlier join problem), so the join has to include it too (if
-		 * there are dimensions on the other side).
+		 * The canonical ordering has to include the fact, and the dimensions
+		 * in the join have to be a prefix of the cluster dimensions (in relid
+		 * order), i.e. there must be no dimension after the first gap.
+		 *
+		 * XXX Using the relid order is fine for now, but if we choose to
+		 * allow snowflake joins, we'll need an explicit (ordered) list.
+		 *
+		 * XXX Can this fact check ever fail, after we validated earlier that
+		 * it's in current_relids? I don't think so. Maybe replace with an
+		 * assert?
 		 */
 		if (!bms_is_member(c->fact_relid, join_relids))
-		{
 			violates = true;
-			break;
-		}
-
-		/*
-		 * Count the prefix length covered by this join. We simply use the
-		 * bitmap of cluster dimensions. For now that's fine, but it we
-		 * choose to allow snowflake joins, we'll need to rethink it and use
-		 * a list or something where the order is not determined by relid
-		 * (probably?)
-		 */
-		ndims = 0;
-		idx = -1;
-		while ((idx = bms_next_member(cluster_dims, idx)) >= 0)
+		else
 		{
-			/* found end of dimension prefix */
-			if (!bms_is_member(idx, join_relids))
-				break;
-
-			ndims++;
+			idx = -1;
+			while ((idx = bms_next_member(cluster_dims, idx)) >= 0)
+			{
+				/*
+				 * XXX We want to fail only if we find a dimension after
+				 * the the gap (i.e. the join is missing one). Not when we
+				 * find the first dimension that's not in the join. Because
+				 * the join may be "smaller" and not the whole subproblem.
+				 */
+				if (!bms_is_member(idx, join_relids))
+					gap = true;
+				else if (gap)
+				{
+					violates = true;
+					break;
+				}
+			}
 		}
 
-		dims = bms_intersect(join_relids, cluster_dims);
-		if (bms_num_members(dims) != ndims)
-		{
-			bms_free(dims);
-			violates = true;
-			break;
-		}
-
-		bms_free(dims);
 		bms_free(cluster_dims);
+
+		if (violates)
+			break;
 	}
 
 	bms_free(join_relids);
-	bms_free(current_relids);
+	bms_free(all_relids);
+	bms_free(baserel_relids);
 
 	return violates;
 }

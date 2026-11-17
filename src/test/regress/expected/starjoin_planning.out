@@ -215,45 +215,141 @@ EXPLAIN (COSTS OFF) SELECT count(*) FROM starjoin_planning_f AS f, starjoin_plan
   (SELECT d6.id AS i6, d7.id AS i7 FROM starjoin_planning_d6 AS d6, starjoin_planning_d7 AS d7) s
  WHERE f.d0 = d0.id AND f.d1 = d1.id AND f.d2 = d2.id AND f.d3 = d3.id
    AND f.d4 = d4.id AND f.d5 = d5.id AND f.d6 = s.i6 AND f.d7 = s.i7;
+                                                            QUERY PLAN                                                            
+----------------------------------------------------------------------------------------------------------------------------------
+ Aggregate
+   ->  Nested Loop
+         ->  Nested Loop
+               ->  Nested Loop
+                     ->  Nested Loop
+                           ->  Nested Loop
+                                 ->  Nested Loop
+                                       ->  Merge Join
+                                             Merge Cond: (d6.id = f.d6)
+                                             Join Filter: (d7.id = f.d7)
+                                             ->  Nested Loop
+                                                   ->  Index Only Scan using starjoin_planning_d6_pkey on starjoin_planning_d6 d6
+                                                   ->  Materialize
+                                                         ->  Seq Scan on starjoin_planning_d7 d7
+                                             ->  Sort
+                                                   Sort Key: f.d6
+                                                   ->  Seq Scan on starjoin_planning_f f
+                                       ->  Index Only Scan using starjoin_planning_d0_pkey on starjoin_planning_d0 d0
+                                             Index Cond: (id = f.d0)
+                                 ->  Index Only Scan using starjoin_planning_d1_pkey on starjoin_planning_d1 d1
+                                       Index Cond: (id = f.d1)
+                           ->  Index Only Scan using starjoin_planning_d2_pkey on starjoin_planning_d2 d2
+                                 Index Cond: (id = f.d2)
+                     ->  Index Only Scan using starjoin_planning_d3_pkey on starjoin_planning_d3 d3
+                           Index Cond: (id = f.d3)
+               ->  Index Only Scan using starjoin_planning_d4_pkey on starjoin_planning_d4 d4
+                     Index Cond: (id = f.d4)
+         ->  Index Only Scan using starjoin_planning_d5_pkey on starjoin_planning_d5 d5
+               Index Cond: (id = f.d5)
+(29 rows)
+
+-- F: from_collapse_limit, the fact is joined to a dimension (with a higher
+-- relid than the other dimensions) in a separate subproblem
+SET from_collapse_limit = 3;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM starjoin_planning_d1 AS d1, starjoin_planning_d2 AS d2,
+  starjoin_planning_f AS f JOIN starjoin_planning_d3 AS d3 ON f.d3 = d3.id
+ WHERE f.d1 = d1.id AND f.d2 = d2.id;
+                            QUERY PLAN                             
+-------------------------------------------------------------------
+ Aggregate
+   ->  Hash Join
+         Hash Cond: (f.d2 = d2.id)
+         ->  Hash Join
+               Hash Cond: (f.d1 = d1.id)
+               ->  Hash Join
+                     Hash Cond: (f.d3 = d3.id)
+                     ->  Seq Scan on starjoin_planning_f f
+                     ->  Hash
+                           ->  Seq Scan on starjoin_planning_d3 d3
+               ->  Hash
+                     ->  Seq Scan on starjoin_planning_d1 d1
+         ->  Hash
+               ->  Seq Scan on starjoin_planning_d2 d2
+(14 rows)
+
+RESET from_collapse_limit;
+-- G: same, but with default settings (9 rels exceed from_collapse_limit)
+EXPLAIN (COSTS OFF) SELECT count(*) FROM starjoin_planning_d0 AS d0,
+  starjoin_planning_d1 AS d1, starjoin_planning_d2 AS d2, starjoin_planning_d3 AS d3,
+  starjoin_planning_d4 AS d4, starjoin_planning_d5 AS d5, starjoin_planning_d6 AS d6,
+  starjoin_planning_f AS f JOIN starjoin_planning_d7 AS d7 ON f.d7 = d7.id
+ WHERE f.d0 = d0.id AND f.d1 = d1.id AND f.d2 = d2.id AND f.d3 = d3.id
+   AND f.d4 = d4.id AND f.d5 = d5.id AND f.d6 = d6.id;
                                            QUERY PLAN                                            
 -------------------------------------------------------------------------------------------------
  Aggregate
-   ->  Merge Join
-         Merge Cond: (d6.id = f.d6)
-         Join Filter: (d7.id = f.d7)
-         ->  Nested Loop
-               ->  Index Only Scan using starjoin_planning_d6_pkey on starjoin_planning_d6 d6
-               ->  Materialize
-                     ->  Seq Scan on starjoin_planning_d7 d7
-         ->  Sort
-               Sort Key: f.d6
+   ->  Hash Join
+         Hash Cond: (f.d6 = d6.id)
+         ->  Hash Join
+               Hash Cond: (f.d5 = d5.id)
                ->  Hash Join
-                     Hash Cond: (f.d5 = d5.id)
+                     Hash Cond: (f.d4 = d4.id)
                      ->  Hash Join
-                           Hash Cond: (f.d4 = d4.id)
+                           Hash Cond: (f.d3 = d3.id)
                            ->  Hash Join
-                                 Hash Cond: (f.d3 = d3.id)
+                                 Hash Cond: (f.d2 = d2.id)
                                  ->  Hash Join
-                                       Hash Cond: (f.d2 = d2.id)
+                                       Hash Cond: (f.d1 = d1.id)
                                        ->  Hash Join
-                                             Hash Cond: (f.d1 = d1.id)
+                                             Hash Cond: (f.d0 = d0.id)
                                              ->  Hash Join
-                                                   Hash Cond: (f.d0 = d0.id)
+                                                   Hash Cond: (f.d7 = d7.id)
                                                    ->  Seq Scan on starjoin_planning_f f
                                                    ->  Hash
-                                                         ->  Seq Scan on starjoin_planning_d0 d0
+                                                         ->  Seq Scan on starjoin_planning_d7 d7
                                              ->  Hash
-                                                   ->  Seq Scan on starjoin_planning_d1 d1
+                                                   ->  Seq Scan on starjoin_planning_d0 d0
                                        ->  Hash
-                                             ->  Seq Scan on starjoin_planning_d2 d2
+                                             ->  Seq Scan on starjoin_planning_d1 d1
                                  ->  Hash
-                                       ->  Seq Scan on starjoin_planning_d3 d3
+                                       ->  Seq Scan on starjoin_planning_d2 d2
                            ->  Hash
-                                 ->  Seq Scan on starjoin_planning_d4 d4
+                                 ->  Seq Scan on starjoin_planning_d3 d3
                      ->  Hash
-                           ->  Seq Scan on starjoin_planning_d5 d5
-(35 rows)
+                           ->  Seq Scan on starjoin_planning_d4 d4
+               ->  Hash
+                     ->  Seq Scan on starjoin_planning_d5 d5
+         ->  Hash
+               ->  Seq Scan on starjoin_planning_d6 d6
+(34 rows)
 
+-- H: join_collapse_limit, right-nested explicit joins
+SET join_collapse_limit = 3;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM starjoin_planning_d1 AS d1
+  JOIN (starjoin_planning_d2 AS d2
+        JOIN (starjoin_planning_f AS f
+              JOIN starjoin_planning_d3 AS d3 ON f.d3 = d3.id
+              JOIN starjoin_planning_d4 AS d4 ON f.d4 = d4.id)
+        ON f.d2 = d2.id)
+  ON f.d1 = d1.id;
+                               QUERY PLAN                                
+-------------------------------------------------------------------------
+ Aggregate
+   ->  Hash Join
+         Hash Cond: (f.d2 = d2.id)
+         ->  Hash Join
+               Hash Cond: (f.d1 = d1.id)
+               ->  Hash Join
+                     Hash Cond: (f.d4 = d4.id)
+                     ->  Hash Join
+                           Hash Cond: (f.d3 = d3.id)
+                           ->  Seq Scan on starjoin_planning_f f
+                           ->  Hash
+                                 ->  Seq Scan on starjoin_planning_d3 d3
+                     ->  Hash
+                           ->  Seq Scan on starjoin_planning_d4 d4
+               ->  Hash
+                     ->  Seq Scan on starjoin_planning_d1 d1
+         ->  Hash
+               ->  Seq Scan on starjoin_planning_d2 d2
+(18 rows)
+
+RESET join_collapse_limit;
 DROP VIEW starjoin_planning_star;
 DROP TABLE starjoin_planning_f, starjoin_planning_d0, starjoin_planning_d1,
   starjoin_planning_d2, starjoin_planning_d3, starjoin_planning_d4,

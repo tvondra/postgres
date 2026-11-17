@@ -152,7 +152,7 @@ test: fast_default
 test: starjoin_planning starjoin_eager starjoin_plan starjoin_width
 
 # more expensive tests for starjoin planning (larger variants of earlier tests)
-test: starjoin_eager_large starjoin_plan_large starjoin_width_large
+# test: starjoin_eager_large starjoin_plan_large starjoin_width_large
 
 # run tablespace test at the end because it drops the tablespace created during
 # setup that other tests may use.

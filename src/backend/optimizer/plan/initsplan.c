@@ -4149,6 +4149,10 @@ check_memoizable(RestrictInfo *restrictinfo)
  *
  * Must be called after match_foreign_keys_to_quals(), and after lateral,
  * PHV and SpecialJoinInfo information have been finalized.
+ *
+ * Clusters are global, for the whole query. It ignores how the whole join
+ * problem got split into smaller problems by join_collapse_limit. We need
+ * to be careful about that when evaluating the join orders.
  */
 void
 generate_starjoin_clusters(PlannerInfo *root)

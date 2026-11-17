@@ -2193,6 +2193,7 @@ starjoin_order_invalid(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
 	ListCell   *lc;
 	Relids		join_relids;
 	bool		violates = false;
+	Relids		current_relids = NULL;	/* relids in the current join problem */
 
 	/* No starjoin optimization outside the stardard DP join search. */
 	if (root->join_rel_level == NULL)
@@ -2205,6 +2206,19 @@ starjoin_order_invalid(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
 	/* relids of the result */
 	join_relids = bms_union(rel1->relids, rel2->relids);
 
+	/*
+	 * The starjoin cluster may span multiple join search problems. We need
+	 * to consider only the subset of the cluster that intersects with our
+	 * current problem, otherwise a relation joined in some later problem
+	 * might block all valid joins. Calculate the relids from the initial
+	 * rels, stored in root->root->join_rel_level[1].
+	 */
+	foreach(lc, root->join_rel_level[1])
+	{
+		RelOptInfo *rel = (RelOptInfo *) lfirst(lc);
+		current_relids = bms_union(current_relids, rel->relids);
+	}
+
 	/* does this contradict any of the clusters we know about */
 	foreach(lc, root->starjoin_clusters)
 	{
@@ -2212,13 +2226,24 @@ starjoin_order_invalid(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
 		Relids	dims;
 		int		ndims;
 		int		idx;
+		Relids	cluster_dims;
+
+		/* Does the starjoin cluster intersect with the current join? */
+		cluster_dims = bms_intersect(c->dim_relids, current_relids);
+
+		/* There are no dimensions, it can't possibly contradict. */
+		if (bms_is_empty(cluster_dims))
+		{
+			bms_free(cluster_dims);
+			continue;
+		}
 
 		/*
 		 * If all dimensions are on one side of the join, we've already
 		 * checked the canonical order earlier, when building it. No need
 		 * to redo the check again.
 		 */
-		dims = bms_intersect(rel1->relids, c->dim_relids);
+		dims = bms_intersect(rel1->relids, cluster_dims);
 		if (bms_is_empty(dims))
 		{
 			bms_free(dims);
@@ -2226,7 +2251,7 @@ starjoin_order_invalid(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
 		}
 		bms_free(dims);
 
-		dims = bms_intersect(rel2->relids, c->dim_relids);
+		dims = bms_intersect(rel2->relids, cluster_dims);
 		if (bms_is_empty(dims))
 		{
 			bms_free(dims);
@@ -2234,7 +2259,21 @@ starjoin_order_invalid(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
 		}
 		bms_free(dims);
 
-		/* the canonical ordering has to include the fact */
+		/*
+		 * If the fact is not included in join problems we've seen so far,
+		 * we can't deduce anything. It might be that we're split the joins
+		 * so that the dimension is in an earlier problem, in which case
+		 * we must not consider the join invalid (we'd not build any valid
+		 * joins with this join tree).
+		 */
+		if (!bms_is_member(c->fact_relid, current_relids))
+			continue;
+
+		/*
+		 * The fact is somewhere in the join relations (possibly from an
+		 * earlier join problem), so the join has to include it too (if
+		 * there are dimensions on the other side).
+		 */
 		if (!bms_is_member(c->fact_relid, join_relids))
 		{
 			violates = true;
@@ -2250,7 +2289,7 @@ starjoin_order_invalid(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
 		 */
 		ndims = 0;
 		idx = -1;
-		while ((idx = bms_next_member(c->dim_relids, idx)) >= 0)
+		while ((idx = bms_next_member(cluster_dims, idx)) >= 0)
 		{
 			/* found end of dimension prefix */
 			if (!bms_is_member(idx, join_relids))
@@ -2259,7 +2298,7 @@ starjoin_order_invalid(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
 			ndims++;
 		}
 
-		dims = bms_intersect(join_relids, c->dim_relids);
+		dims = bms_intersect(join_relids, cluster_dims);
 		if (bms_num_members(dims) != ndims)
 		{
 			bms_free(dims);
@@ -2268,9 +2307,11 @@ starjoin_order_invalid(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
 		}
 
 		bms_free(dims);
+		bms_free(cluster_dims);
 	}
 
 	bms_free(join_relids);
+	bms_free(current_relids);
 
 	return violates;
 }

@@ -125,7 +125,6 @@ static bool max_parallel_hazard_walker(Node *node,
 									   max_parallel_hazard_context *context);
 static bool contain_nonstrict_functions_walker(Node *node, void *context);
 static bool jsonexpr_has_nonstrict_inputs(JsonExpr *jsexpr);
-static bool contain_var_or_param_walker(Node *node, void *context);
 static bool contain_exec_param_walker(Node *node, List *param_ids);
 static bool contain_context_dependent_node(Node *clause);
 static bool contain_context_dependent_node_walker(Node *node, int *flags);
@@ -1261,26 +1260,33 @@ contain_nonstrict_functions_walker(Node *node, void *context)
 static bool
 jsonexpr_has_nonstrict_inputs(JsonExpr *jsexpr)
 {
-	if (contain_var_or_param_walker((Node *) jsexpr->passing_values, NULL))
+	/*
+	 * A NULL context item or path specification makes JSON_EXISTS,
+	 * JSON_QUERY, and JSON_VALUE return NULL, unless the ON EMPTY or ON
+	 * ERROR behavior supplies some other value, which can happen even
+	 * then (e.g., when RETURNING a NOT NULL domain).  A NULL PASSING
+	 * argument doesn't force a NULL result at all; it merely becomes a
+	 * jsonpath variable containing a JSON null.  So treat the construct
+	 * as non-strict unless it has no PASSING arguments and both behaviors
+	 * are NULL, UNKNOWN (which is the same as NULL), or ERROR, in which
+	 * case just check its inputs.
+	 */
+	if (jsexpr->passing_values != NIL)
 		return true;
-	if (contain_var_or_param_walker((Node *) jsexpr->on_empty, NULL))
+	if (jsexpr->on_empty &&
+		jsexpr->on_empty->btype != JSON_BEHAVIOR_NULL &&
+		jsexpr->on_empty->btype != JSON_BEHAVIOR_UNKNOWN &&
+		jsexpr->on_empty->btype != JSON_BEHAVIOR_ERROR)
 		return true;
-	if (contain_var_or_param_walker((Node *) jsexpr->on_error, NULL))
+	if (jsexpr->on_error &&
+		jsexpr->on_error->btype != JSON_BEHAVIOR_NULL &&
+		jsexpr->on_error->btype != JSON_BEHAVIOR_UNKNOWN &&
+		jsexpr->on_error->btype != JSON_BEHAVIOR_ERROR)
 		return true;
 	if (jsexpr->use_json_coercion &&
 		get_typtype(jsexpr->returning->typid) == TYPTYPE_DOMAIN)
 		return true;
 	return false;
-}
-
-static bool
-contain_var_or_param_walker(Node *node, void *context)
-{
-	if (node == NULL)
-		return false;
-	if (IsA(node, Var) || IsA(node, PlaceHolderVar) || IsA(node, Param))
-		return true;
-	return expression_tree_walker(node, contain_var_or_param_walker, context);
 }
 
 /*****************************************************************************
